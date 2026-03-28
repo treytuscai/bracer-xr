@@ -1,8 +1,9 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.XR;
 
+/// <summary>
+/// Wraps Meta hand tracking APIs. Provides wrist anchor and fingertip positions
+/// for both hands each frame.
+/// </summary>
 public class HandTrackingController : MonoBehaviour
 {
     [Header("References (assign in Inspector)")]
