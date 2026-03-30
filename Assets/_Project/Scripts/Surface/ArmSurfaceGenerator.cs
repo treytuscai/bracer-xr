@@ -15,19 +15,12 @@ public class ArmSurfaceGenerator : MonoBehaviour
     [Header("References")]
     public OVRBody bodyTracking;
     public HandTrackingController handTracking;
+    public CalibrationManager calibrationManager;
 
     [Header("Forearm Dimensions")]
     [Tooltip("How much of the forearm to render (0-1)")]
     [Range(0.5f, 1.0f)]
     public float forearmCoverage = 0.85f;
-
-    [Tooltip("Radius at the wrist end (meters)")]
-    [Range(0.02f, 0.06f)]
-    public float wristRadius = 0.03f;
-
-    [Tooltip("Radius at the elbow end (meters)")]
-    [Range(0.03f, 0.07f)]
-    public float elbowRadius = 0.05f;
 
     [Header("Mesh Resolution")]
     [Range(8, 32)]
@@ -240,7 +233,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
 
             Vector3 ringCenter = _smoothedWristPos
                 + forearmDir * (t * renderLength);
-            float radius = Mathf.Lerp(wristRadius, elbowRadius, t)
+            float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, t)
                 + skinOffset;
 
             for (int seg = 0; seg < vertsPerRing; seg++)
@@ -260,15 +253,6 @@ public class ArmSurfaceGenerator : MonoBehaviour
         _mesh.vertices = _vertices;
         _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
-    }
-
-    /// <summary>
-    /// Per-user calibration. Pass circumference in meters.
-    /// </summary>
-    public void SetArmDimensions(float wristCirc, float elbowCirc)
-    {
-        wristRadius = wristCirc / (2f * Mathf.PI);
-        elbowRadius = elbowCirc / (2f * Mathf.PI);
     }
 
     /// <summary>
@@ -297,7 +281,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
 
         Vector3 ringCenter = _smoothedWristPos
             + forearmDir * (axisT * renderLength);
-        float radius = Mathf.Lerp(wristRadius, elbowRadius, axisT)
+        float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, axisT)
             + skinOffset;
 
         Vector3 fromCenter = worldPoint - ringCenter;
