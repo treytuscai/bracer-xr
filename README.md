@@ -152,7 +152,7 @@ These are set on the OVRCameraRig and committed. Listed here for reference — y
 | Black screen on Quest | Camera background = solid black alpha 0. OVRPassthroughLayer = Underlay. Passthrough Support = Required. |
 | Hand tracking not working | OVRManager > Hand Tracking Support must NOT be "Controllers Only". Ensure adequate lighting. |
 | "InteractionSDK OpenXR skeleton" warning | OVRManager > Hand Tracking Skeleton Version → set to **OpenXR**. This is a data format, NOT the Unity OpenXR plugin. |
-| Body tracking not initializing | Body Tracking Support = Required. Joint Set = Upper Body. Hand Tracking must be "Controllers and Hands" (not "Hands Only"). |
+| Body tracking not initializing | Body Tracking Support = Required. Joint Set = Upper Body. |
 | Joints return (0,0,0) | OVRSkeleton needs 1–2 frames to init. Check `IsTracked` before reading. |
 | Build fails: Gradle error | Ensure Android SDK/NDK installed via Unity Hub modules. Min API ≥ 32. Try deleting `Library/Bee/`. |
 | App crashes on launch | Run `adb logcat -s Unity` and look for NullReferenceException. Usually a missing Inspector reference. |
@@ -167,7 +167,7 @@ These are set on the OVRCameraRig and committed. Listed here for reference — y
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 1. Hand Tracking Foundation |  Done | Passthrough + hand skeleton + wrist anchor |
-| 2. Arm Surface Mesh |  In Progress | Body-tracked forearm cylinder + hand mesh |
-| 3. Touch Interaction |  Next | Poke detection from opposite hand |
-| 4. UI Design Integration | Later | Interview-informed UI on arm surface |
+| 2. Arm Surface Mesh |  Done | Body-tracked forearm cylinder + hand mesh |
+| 3. Touch Interaction |  In-Progress | Poke detection from opposite hand |
+| 4. UI Design Integration | Next | Interview-informed UI on arm surface |
 | 5. User Evaluation | Later | Data logging + evaluation protocol |
