@@ -2,11 +2,11 @@ using UnityEngine;
 
 /// <summary>
 /// Generates a tapered cylinder mesh on the forearm surface using
-/// Meta Movement SDK body tracking for real elbow and wrist joints.
+/// hand tracking for wrist position/rotation (more accurate) and
+/// Meta Movement SDK body tracking for elbow position (forearm direction).
 ///
 /// Body tracking joint IDs:
 ///   Body_LeftArmLower  (index 11) = elbow
-///   Body_LeftHandWrist (index 19) = wrist
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -53,7 +53,6 @@ public class ArmSurfaceGenerator : MonoBehaviour
 
     // Body tracking joint indices
     private const int JOINT_LEFT_ARM_LOWER = 11;
-    private const int JOINT_LEFT_WRIST = 19;
 
     // Mesh internals
     private Mesh _mesh;
@@ -139,34 +138,26 @@ public class ArmSurfaceGenerator : MonoBehaviour
     }
 
     /// <summary>
-    /// Reads elbow and wrist positions from OVRBody skeleton.
+    /// Reads elbow position from OVRBody skeleton.
     /// </summary>
-    bool TryGetBodyJoints(out Vector3 wristPos, out Vector3 elbowPos,
-                          out Quaternion wristRot)
+    bool TryGetElbowJoint(out Vector3 elbowPos)
     {
-        wristPos = Vector3.zero;
         elbowPos = Vector3.zero;
-        wristRot = Quaternion.identity;
 
         if (bodyTracking == null) return false;
 
         var skeleton = bodyTracking.GetComponent<OVRSkeleton>();
         if (skeleton == null || skeleton.Bones == null
-            || skeleton.Bones.Count <= JOINT_LEFT_WRIST)
+            || skeleton.Bones.Count <= JOINT_LEFT_ARM_LOWER)
             return false;
 
-        var wristBone = skeleton.Bones[JOINT_LEFT_WRIST];
         var elbowBone = skeleton.Bones[JOINT_LEFT_ARM_LOWER];
 
-        if (wristBone == null || wristBone.Transform == null) return false;
         if (elbowBone == null || elbowBone.Transform == null) return false;
 
-        wristPos = wristBone.Transform.position;
         elbowPos = elbowBone.Transform.position;
-        wristRot = wristBone.Transform.rotation;
 
-        // Positions shouldn't be at origin
-        if (wristPos.sqrMagnitude < 0.001f) return false;
+        // Position shouldn't be at origin
         if (elbowPos.sqrMagnitude < 0.001f) return false;
 
         return true;
@@ -176,10 +167,23 @@ public class ArmSurfaceGenerator : MonoBehaviour
     {
         if (!_meshBuilt) return;
 
-        Vector3 wristPos, elbowPos;
-        Quaternion wristRot;
+        // Need both: hand tracking for wrist (more accurate), body tracking for elbow
+        if (handTracking == null
+            || !handTracking.isLeftHandTracked
+            || handTracking.leftWrist == null)
+        {
+            if (_wasVisible)
+            {
+                _meshRenderer.enabled = false;
+                _wasVisible = false;
+            }
+            return;
+        }
+        Vector3 wristPos = handTracking.leftWrist.position;
+        Quaternion wristRot = handTracking.leftWrist.rotation;
 
-        if (!TryGetBodyJoints(out wristPos, out elbowPos, out wristRot))
+        Vector3 elbowPos;
+        if (!TryGetElbowJoint(out elbowPos))
         {
             if (_wasVisible)
             {
