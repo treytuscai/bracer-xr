@@ -2,11 +2,11 @@ using UnityEngine;
 
 /// <summary>
 /// Generates a tapered cylinder mesh on the forearm surface using
-/// hand tracking for wrist position/rotation (more accurate) and
-/// Meta Movement SDK body tracking for elbow position (forearm direction).
+/// Meta Movement SDK body tracking for real elbow and wrist joints.
 ///
 /// Body tracking joint IDs:
 ///   Body_LeftArmLower  (index 11) = elbow
+///   Body_LeftHandWrist (index 19) = wrist
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -14,7 +14,6 @@ public class ArmSurfaceGenerator : MonoBehaviour
 {
     [Header("References")]
     public OVRBody bodyTracking;
-    public HandTrackingController handTracking;
     public CalibrationManager calibrationManager;
 
     [Header("Forearm Dimensions")]
@@ -34,18 +33,12 @@ public class ArmSurfaceGenerator : MonoBehaviour
     [Range(0.0f, 0.01f)]
     public float skinOffset = 0.002f;
 
-    [Header("Smoothing")]
-    [Range(0.05f, 1f)]
-    public float positionSmoothing = 0.2f;
-
-    [Range(0.05f, 1f)]
-    public float rotationSmoothing = 0.15f;
-
     [Header("Material")]
     public Material forearmMaterial;
 
     // Body tracking joint indices
     private const int JOINT_LEFT_ARM_LOWER = 11;
+    private const int JOINT_LEFT_WRIST = 19;
 
     // Mesh internals
     private Mesh _mesh;
@@ -57,11 +50,10 @@ public class ArmSurfaceGenerator : MonoBehaviour
     private bool _meshBuilt = false;
     private bool _wasVisible = false;
 
-    // Smoothed tracking
-    private Vector3 _smoothedWristPos;
-    private Vector3 _smoothedElbowPos;
-    private Quaternion _smoothedWristRot;
-    private bool _hasInitialPose = false;
+    // Current frame tracking data
+    private Vector3 _wristPos;
+    private Vector3 _elbowPos;
+    private Quaternion _wristRot;
 
     void Start()
     {
@@ -131,26 +123,33 @@ public class ArmSurfaceGenerator : MonoBehaviour
     }
 
     /// <summary>
-    /// Reads elbow position from OVRBody skeleton.
+    /// Reads elbow and wrist positions from OVRBody skeleton.
     /// </summary>
-    bool TryGetElbowJoint(out Vector3 elbowPos)
+    bool TryGetBodyJoints(out Vector3 wristPos, out Vector3 elbowPos,
+                          out Quaternion wristRot)
     {
+        wristPos = Vector3.zero;
         elbowPos = Vector3.zero;
+        wristRot = Quaternion.identity;
 
         if (bodyTracking == null) return false;
 
         var skeleton = bodyTracking.GetComponent<OVRSkeleton>();
         if (skeleton == null || skeleton.Bones == null
-            || skeleton.Bones.Count <= JOINT_LEFT_ARM_LOWER)
+            || skeleton.Bones.Count <= JOINT_LEFT_WRIST)
             return false;
 
+        var wristBone = skeleton.Bones[JOINT_LEFT_WRIST];
         var elbowBone = skeleton.Bones[JOINT_LEFT_ARM_LOWER];
 
+        if (wristBone == null || wristBone.Transform == null) return false;
         if (elbowBone == null || elbowBone.Transform == null) return false;
 
+        wristPos = wristBone.Transform.position;
         elbowPos = elbowBone.Transform.position;
+        wristRot = wristBone.Transform.rotation;
 
-        // Position shouldn't be at origin
+        if (wristPos.sqrMagnitude < 0.001f) return false;
         if (elbowPos.sqrMagnitude < 0.001f) return false;
 
         return true;
@@ -160,23 +159,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
     {
         if (!_meshBuilt) return;
 
-        // Need both: hand tracking for wrist (more accurate), body tracking for elbow
-        if (handTracking == null
-            || !handTracking.isLeftHandTracked
-            || handTracking.leftWrist == null)
-        {
-            if (_wasVisible)
-            {
-                _meshRenderer.enabled = false;
-                _wasVisible = false;
-            }
-            return;
-        }
-        Vector3 wristPos = handTracking.leftWrist.position;
-        Quaternion wristRot = handTracking.leftWrist.rotation;
-
-        Vector3 elbowPos;
-        if (!TryGetElbowJoint(out elbowPos))
+        if (!TryGetBodyJoints(out _wristPos, out _elbowPos, out _wristRot))
         {
             if (_wasVisible)
             {
@@ -193,22 +176,6 @@ public class ArmSurfaceGenerator : MonoBehaviour
             Debug.Log("[ForearmMesh] Body tracking active.");
         }
 
-        // Snap on first frame
-        if (!_hasInitialPose)
-        {
-            _smoothedWristPos = wristPos;
-            _smoothedElbowPos = elbowPos;
-            _smoothedWristRot = wristRot;
-            _hasInitialPose = true;
-        }
-
-        _smoothedWristPos = Vector3.Lerp(
-            _smoothedWristPos, wristPos, positionSmoothing);
-        _smoothedElbowPos = Vector3.Lerp(
-            _smoothedElbowPos, elbowPos, positionSmoothing);
-        _smoothedWristRot = Quaternion.Slerp(
-            _smoothedWristRot, wristRot, rotationSmoothing);
-
         UpdateCylinderVertices();
     }
 
@@ -217,13 +184,12 @@ public class ArmSurfaceGenerator : MonoBehaviour
         int rings = lengthSegments + 1;
         int vertsPerRing = circumferenceSegments + 1;
 
-        Vector3 fullForearm = _smoothedElbowPos - _smoothedWristPos;
+        Vector3 fullForearm = _elbowPos - _wristPos;
         float fullLength = fullForearm.magnitude;
         Vector3 forearmDir = fullForearm.normalized;
         float renderLength = fullLength * forearmCoverage;
 
-        // Radial frame from wrist rotation (pronation/supination)
-        Vector3 wristUp = _smoothedWristRot * Vector3.up;
+        Vector3 wristUp = _wristRot * Vector3.up;
         Vector3 right = Vector3.Cross(forearmDir, wristUp).normalized;
         Vector3 up = Vector3.Cross(right, forearmDir).normalized;
 
@@ -231,7 +197,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
         {
             float t = (float)ring / lengthSegments;
 
-            Vector3 ringCenter = _smoothedWristPos
+            Vector3 ringCenter = _wristPos
                 + forearmDir * (t * renderLength);
             float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, t)
                 + skinOffset;
@@ -264,22 +230,22 @@ public class ArmSurfaceGenerator : MonoBehaviour
         closestPoint = Vector3.zero;
         uv = Vector2.zero;
 
-        if (!_hasInitialPose) return false;
-
-        Vector3 fullForearm = _smoothedElbowPos - _smoothedWristPos;
+        Vector3 fullForearm = _elbowPos - _wristPos;
         float fullLength = fullForearm.magnitude;
+        if (fullLength < 0.01f) return false;
+
         Vector3 forearmDir = fullForearm.normalized;
         float renderLength = fullLength * forearmCoverage;
 
-        Vector3 wristUp = _smoothedWristRot * Vector3.up;
+        Vector3 wristUp = _wristRot * Vector3.up;
         Vector3 right = Vector3.Cross(forearmDir, wristUp).normalized;
         Vector3 up = Vector3.Cross(right, forearmDir).normalized;
 
-        Vector3 toPoint = worldPoint - _smoothedWristPos;
+        Vector3 toPoint = worldPoint - _wristPos;
         float axisT = Vector3.Dot(toPoint, forearmDir) / renderLength;
         axisT = Mathf.Clamp01(axisT);
 
-        Vector3 ringCenter = _smoothedWristPos
+        Vector3 ringCenter = _wristPos
             + forearmDir * (axisT * renderLength);
         float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, axisT)
             + skinOffset;
