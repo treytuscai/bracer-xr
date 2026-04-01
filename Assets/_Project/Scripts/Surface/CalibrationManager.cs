@@ -2,7 +2,7 @@ using UnityEngine;
 
 public class CalibrationManager : MonoBehaviour
 {
-
+    [Header("Forearm Dimensions")]
     [Tooltip("Radius at the wrist end (meters)")]
     [Range(0.02f, 0.06f)]
     public float wristRadius = 0.03f;
@@ -18,17 +18,5 @@ public class CalibrationManager : MonoBehaviour
     {
         wristRadius = wristCirc / (2f * Mathf.PI);
         elbowRadius = elbowCirc / (2f * Mathf.PI);
-    }
-
-    // Start is called before the first frame update
-    void Start()
-    {
-        
-    }
-
-    // Update is called once per frame
-    void Update()
-    {
-        
     }
 }
