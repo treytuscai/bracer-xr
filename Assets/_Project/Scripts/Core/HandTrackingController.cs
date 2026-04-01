@@ -38,12 +38,6 @@ public class HandTrackingController : MonoBehaviour
     // Convenience: Right index fingertip (input finger)
     public Transform rightIndexTip => getBoneTransform(rightSkeleton, OVRSkeleton.BoneId.Hand_IndexTip);
 
-    // Start is called before the first frame update
-    void Start()
-    {
-        
-    }
-
     // Update is called once per frame
     void Update()
     {
