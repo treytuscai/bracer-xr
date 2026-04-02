@@ -7,16 +7,11 @@ using UnityEngine;
 public class HandTrackingController : MonoBehaviour
 {
     [Header("References (assign in Inspector)")]
-    public OVRHand leftHand;
     public OVRHand rightHand;
-    public OVRSkeleton leftSkeleton;
     public OVRSkeleton rightSkeleton;
 
-    // Public accessors for other components
-    public bool isLeftHandTracked => leftHand != null
-        && leftHand.IsTracked
-        && leftHand.HandConfidence >= OVRHand.TrackingConfidence.High;
-
+    // Require non-null, actively tracked, AND high confidence.
+    // High confidence gate prevents acting on degraded tracking
     public bool isRightHandTracked => rightHand != null
         && rightHand.IsTracked
         && rightHand.HandConfidence >= OVRHand.TrackingConfidence.High;
@@ -32,18 +27,6 @@ public class HandTrackingController : MonoBehaviour
         return skeleton.Bones[(int)boneID].Transform;
     }
 
-    // Convenience: Left wrist transform (display arm anchor)
-    public Transform leftWrist => getBoneTransform(leftSkeleton, OVRSkeleton.BoneId.Hand_WristRoot);
-
     // Convenience: Right index fingertip (input finger)
     public Transform rightIndexTip => getBoneTransform(rightSkeleton, OVRSkeleton.BoneId.Hand_IndexTip);
-
-    // Update is called once per frame
-    void Update()
-    {
-        if (isLeftHandTracked && leftWrist != null)
-        {
-            Debug.Log($"Left wrist position: {leftWrist.position}");
-        }
-    }
 }
