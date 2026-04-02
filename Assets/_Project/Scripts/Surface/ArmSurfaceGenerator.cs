@@ -55,6 +55,31 @@ public class ArmSurfaceGenerator : MonoBehaviour
     private Vector3 _elbowPos;
     private Quaternion _wristRot;
 
+    /// <summary>
+    /// Source-of-truth check for whether body tracking is actively
+    /// producing valid skeleton data this frame. Mirrors the pattern
+    /// used by HandTrackingController.isRightHandTracked.
+    ///
+    /// Note: OVRBody doesn't expose a confidence tier like OVRHand does.
+    /// Body tracking is binary (valid or not). Silent fallback to
+    /// low-fidelity mode can be diagnosed via adb, not the API.
+    /// </summary>
+    public bool IsTracking
+    {
+        get
+        {
+            if (bodyTracking == null) return false;
+
+            var skeleton = bodyTracking.GetComponent<OVRSkeleton>();
+            if (skeleton == null) return false;
+
+            return bodyTracking.enabled
+                && skeleton.IsDataValid
+                && skeleton.Bones != null
+                && skeleton.Bones.Count > JOINT_LEFT_WRIST;
+        }
+    }
+
     void Start()
     {
         _meshFilter = GetComponent<MeshFilter>();
@@ -128,38 +153,23 @@ public class ArmSurfaceGenerator : MonoBehaviour
     bool TryGetBodyJoints(out Vector3 wristPos, out Vector3 elbowPos,
                           out Quaternion wristRot)
     {
-        wristPos = Vector3.zero;
-        elbowPos = Vector3.zero;
-        wristRot = Quaternion.identity;
-
-        if (bodyTracking == null) return false;
-
         var skeleton = bodyTracking.GetComponent<OVRSkeleton>();
-        if (skeleton == null || skeleton.Bones == null
-            || skeleton.Bones.Count <= JOINT_LEFT_WRIST)
-            return false;
-
         var wristBone = skeleton.Bones[JOINT_LEFT_WRIST];
         var elbowBone = skeleton.Bones[JOINT_LEFT_ARM_LOWER];
-
-        if (wristBone == null || wristBone.Transform == null) return false;
-        if (elbowBone == null || elbowBone.Transform == null) return false;
 
         wristPos = wristBone.Transform.position;
         elbowPos = elbowBone.Transform.position;
         wristRot = wristBone.Transform.rotation;
 
-        if (wristPos.sqrMagnitude < 0.001f) return false;
-        if (elbowPos.sqrMagnitude < 0.001f) return false;
-
-        return true;
+        // Reject near-origin positions: tracking system is initialized
+        // but hasn't produced real spatial data yet
+        return wristPos.sqrMagnitude >= 0.001f
+            && elbowPos.sqrMagnitude >= 0.001f;
     }
 
     void LateUpdate()
     {
-        if (!_meshBuilt) return;
-
-        if (!TryGetBodyJoints(out _wristPos, out _elbowPos, out _wristRot))
+        if (!_meshBuilt || !IsTracking || !TryGetBodyJoints(out _wristPos, out _elbowPos, out _wristRot))
         {
             if (_wasVisible)
             {
