@@ -1,5 +1,18 @@
 using UnityEngine;
 
+/// <summary>
+/// Stores per-user forearm dimensions used by ArmSurfaceGenerator
+/// to size the tapered cylinder mesh. Radii can be set manually
+/// in the Inspector or programmatically via SetArmDimensions().
+///
+/// Current implementation: static values set once per session.
+/// Does not adapt dynamically to muscle flexion or skin deformation
+/// during use.
+///
+/// Consumers:
+///   - ArmSurfaceGenerator: reads wristRadius/elbowRadius each frame
+///     to interpolate cylinder ring radii along the forearm axis
+/// </summary>
 public class CalibrationManager : MonoBehaviour
 {
     [Header("Forearm Dimensions")]
@@ -12,7 +25,9 @@ public class CalibrationManager : MonoBehaviour
     public float elbowRadius = 0.05f;
 
     /// <summary>
-    /// Per-user calibration. Pass circumference in meters.
+    /// Converts circumference measurements to radii.
+    /// Circumference is easier to measure physically,
+    /// so this is the expected input for any future calibration UI.
     /// </summary>
     public void SetArmDimensions(float wristCirc, float elbowCirc)
     {
