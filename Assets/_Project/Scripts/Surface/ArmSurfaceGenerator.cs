@@ -3,10 +3,20 @@ using UnityEngine;
 /// <summary>
 /// Generates a tapered cylinder mesh on the forearm surface using
 /// Meta Movement SDK body tracking for real elbow and wrist joints.
+/// The mesh serves as both the visual forearm overlay and the
+/// projection surface for on-skin UI elements.
 ///
-/// Body tracking joint IDs:
+/// Body tracking joint IDs (IOBT skeleton):
 ///   Body_LeftArmLower  (index 11) = elbow
 ///   Body_LeftHandWrist (index 19) = wrist
+///
+/// Dependencies:
+///   - OVRBody: provides body skeleton with elbow joint position
+///   - CalibrationManager: provides per-user wrist/elbow radii
+///
+/// Consumers:
+///   - TouchInputManager: calls GetClosestSurfacePoint() for hit testing
+///   - VisualFeedbackController: reads mesh for shader-based feedback
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -36,7 +46,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
     [Header("Material")]
     public Material forearmMaterial;
 
-    // Body tracking joint indices
+    // IOBT skeleton joint indices for left forearm
     private const int JOINT_LEFT_ARM_LOWER = 11;
     private const int JOINT_LEFT_WRIST = 19;
 
@@ -50,7 +60,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
     private bool _meshBuilt = false;
     private bool _wasVisible = false;
 
-    // Current frame tracking data
+    // Cached per-frame joint data, updated in LateUpdate
     private Vector3 _wristPos;
     private Vector3 _elbowPos;
     private Quaternion _wristRot;
@@ -88,10 +98,12 @@ public class ArmSurfaceGenerator : MonoBehaviour
         if (forearmMaterial != null)
             _meshRenderer.material = forearmMaterial;
 
-        _mesh = new Mesh();
-        _mesh.name = "ForearmCylinder";
+        _mesh = new Mesh { name = "ForearmCylinder" };
         _meshFilter.mesh = _mesh;
 
+        // Pre-build mesh topology (verts, UVs, triangles).
+        // Vertex positions are all zero. They get placed correctly
+        // each frame in UpdateCylinderVertices().
         BuildMesh();
         _meshRenderer.enabled = false;
 
@@ -99,6 +111,12 @@ public class ArmSurfaceGenerator : MonoBehaviour
             Debug.LogError("[ForearmMesh] OVRBody reference not assigned.");
     }
 
+    /// <summary>
+    /// Builds mesh topology once at startup. Creates a cylinder grid
+    /// with (lengthSegments+1) rings of (circumferenceSegments+1) verts.
+    /// UV layout: U wraps around circumference [0,1], V runs along
+    /// forearm axis from wrist (0) to elbow (1).
+    /// </summary>
     void BuildMesh()
     {
         int rings = lengthSegments + 1;
@@ -131,6 +149,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
                 int current = ring * vertsPerRing + seg;
                 int next = current + vertsPerRing;
 
+                // Two triangles per quad
                 _triangles[ti++] = current;
                 _triangles[ti++] = next;
                 _triangles[ti++] = current + 1;
@@ -148,7 +167,10 @@ public class ArmSurfaceGenerator : MonoBehaviour
     }
 
     /// <summary>
-    /// Reads elbow and wrist positions from OVRBody skeleton.
+    /// Extracts wrist and elbow world positions from the IOBT skeleton.
+    /// Called only after IsTracking confirms skeleton validity.
+    /// Returns false if positions are near-zero (tracking initialized
+    /// but no real spatial data yet).
     /// </summary>
     bool TryGetBodyJoints(out Vector3 wristPos, out Vector3 elbowPos,
                           out Quaternion wristRot)
@@ -189,6 +211,15 @@ public class ArmSurfaceGenerator : MonoBehaviour
         UpdateCylinderVertices();
     }
 
+    /// <summary>
+    /// Repositions all mesh vertices to form a tapered cylinder between
+    /// wrist and elbow. Radius interpolates from calibrated wrist radius
+    /// to elbow radius along the forearm axis.
+    ///
+    /// Coordinate frame built from:
+    ///   - forearmDir: wrist -> elbow axis
+    ///   - right/up: perpendicular plane derived from wrist rotation
+    /// </summary>
     void UpdateCylinderVertices()
     {
         int rings = lengthSegments + 1;
@@ -199,6 +230,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
         Vector3 forearmDir = fullForearm.normalized;
         float renderLength = fullLength * forearmCoverage;
 
+        // Build a perpendicular frame using wrist rotation
         Vector3 wristUp = _wristRot * Vector3.up;
         Vector3 right = Vector3.Cross(forearmDir, wristUp).normalized;
         Vector3 up = Vector3.Cross(right, forearmDir).normalized;
@@ -209,6 +241,8 @@ public class ArmSurfaceGenerator : MonoBehaviour
 
             Vector3 ringCenter = _wristPos
                 + forearmDir * (t * renderLength);
+
+            // Taper: wrist radius at t=0, elbow radius at t=1
             float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, t)
                 + skinOffset;
 
@@ -232,7 +266,16 @@ public class ArmSurfaceGenerator : MonoBehaviour
     }
 
     /// <summary>
-    /// Returns closest surface point and UV for touch mapping.
+    /// Projects a world-space point onto the cylinder surface.
+    /// Returns the closest point on the surface and the corresponding
+    /// UV coordinates for touch/UI mapping.
+    ///
+    /// UV mapping:
+    ///   U [0,1] = circumferential position (wraps around arm)
+    ///   V [0,1] = axial position (0 = wrist, 1 = elbow end of render zone)
+    ///
+    /// Used by TouchInputManager to convert fingertip position into
+    /// a surface hit point + UV for interaction routing.
     /// </summary>
     public bool GetClosestSurfacePoint(Vector3 worldPoint,
         out Vector3 closestPoint, out Vector2 uv)
@@ -251,15 +294,18 @@ public class ArmSurfaceGenerator : MonoBehaviour
         Vector3 right = Vector3.Cross(forearmDir, wristUp).normalized;
         Vector3 up = Vector3.Cross(right, forearmDir).normalized;
 
+        // Project point onto forearm axis to find axial position
         Vector3 toPoint = worldPoint - _wristPos;
         float axisT = Vector3.Dot(toPoint, forearmDir) / renderLength;
         axisT = Mathf.Clamp01(axisT);
 
+        // Find the ring center and radius at this axial position
         Vector3 ringCenter = _wristPos
             + forearmDir * (axisT * renderLength);
         float radius = Mathf.Lerp(calibrationManager.wristRadius, calibrationManager.elbowRadius, axisT)
             + skinOffset;
 
+        // Project onto the ring circumference to find angular position
         Vector3 fromCenter = worldPoint - ringCenter;
         float rightComp = Vector3.Dot(fromCenter, right);
         float upComp = Vector3.Dot(fromCenter, up);
@@ -268,6 +314,7 @@ public class ArmSurfaceGenerator : MonoBehaviour
         closestPoint = ringCenter
             + (Mathf.Cos(angle) * right + Mathf.Sin(angle) * up) * radius;
 
+        // Map angle to [0,1] UV space
         float u = angle / (Mathf.PI * 2f);
         if (u < 0) u += 1f;
         uv = new Vector2(u, axisT);
