@@ -31,13 +31,17 @@ public class HandTrackingController : MonoBehaviour
     /// or the requested bone doesn't exist, allowing callers to
     /// null-check without knowing SDK internals.
     /// </summary>
-    public Transform getBoneTransform(OVRSkeleton skeleton, OVRSkeleton.BoneId boneID)
+    public Transform getBoneTransform(OVRSkeleton skeleton, string boneName)
     {
         if (skeleton == null || skeleton.Bones == null) return null;
-        if ((int)boneID >= skeleton.Bones.Count) return null;
-        return skeleton.Bones[(int)boneID].Transform;
+        foreach (var bone in skeleton.Bones)
+        {
+            if (bone.Transform != null && bone.Transform.name == boneName)
+                return bone.Transform;
+        }
+        return null;
     }
 
     // Convenience: Right index fingertip (input finger)
-    public Transform rightIndexTip => getBoneTransform(rightSkeleton, OVRSkeleton.BoneId.Hand_IndexTip);
+    public Transform rightIndexTip => getBoneTransform(rightSkeleton, "XRHand_IndexTip");
 }
