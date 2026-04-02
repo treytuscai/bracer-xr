@@ -122,6 +122,55 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &120328105
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 120328106}
+  - component: {fileID: 120328107}
+  m_Layer: 0
+  m_Name: VisualFeedbackController
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &120328106
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 120328105}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 565971089}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &120328107
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 120328105}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 903865c8c06f445e7ade0d0de74908e0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  touchInputManager: {fileID: 1712984849}
+  armSurfaceGenerator: {fileID: 1092937300}
+  baseColor: {r: 0.1, g: 0.1, b: 0.1, a: 0.3}
+  hoverColor: {r: 0.3, g: 0.6, b: 1, a: 0.5}
+  pressColor: {r: 0.2, g: 0.9, b: 0.4, a: 0.8}
 --- !u!1 &155411361
 GameObject:
   m_ObjectHideFlags: 0
@@ -525,6 +574,8 @@ Transform:
   - {fileID: 745195949}
   - {fileID: 1092937303}
   - {fileID: 1239371883}
+  - {fileID: 1712984848}
+  - {fileID: 120328106}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &665919481
@@ -614,7 +665,7 @@ PrefabInstance:
     - target: {fileID: 114252240061623322, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 114392993255165844, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
@@ -639,7 +690,7 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -652,30 +703,6 @@ Transform:
     type: 3}
   m_PrefabInstance: {fileID: 720602433}
   m_PrefabAsset: {fileID: 0}
---- !u!114 &720602435 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 720602433}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 2609c54f376cffc4da1ab9401cc1a36f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
---- !u!114 &720602436 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 720602433}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: cb7623a8f0b49cf4dbaa40aea4d4be64, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!1 &745195946
 GameObject:
   m_ObjectHideFlags: 0
@@ -869,14 +896,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   bodyTracking: {fileID: 745195947}
-  handTracking: {fileID: 1409056029}
   calibrationManager: {fileID: 1239371884}
   forearmCoverage: 0.85
   circumferenceSegments: 16
   lengthSegments: 6
-  skinOffset: 0.002
-  positionSmoothing: 0.2
-  rotationSmoothing: 0.15
+  skinOffset: 0.004
   forearmMaterial: {fileID: 2100000, guid: b5611364614844652b4dc3a398451159, type: 2}
 --- !u!23 &1092937301
 MeshRenderer:
@@ -1033,9 +1057,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 260e45a709f6b480aa5815c09322053f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  leftHand: {fileID: 720602436}
   rightHand: {fileID: 2123695744}
-  leftSkeleton: {fileID: 720602435}
   rightSkeleton: {fileID: 2123695743}
 --- !u!1 &1529137805
 GameObject:
@@ -1068,6 +1090,57 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1715298000}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1712984847
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1712984848}
+  - component: {fileID: 1712984849}
+  m_Layer: 0
+  m_Name: TouchInputManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1712984848
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1712984847}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 565971089}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1712984849
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1712984847}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7ee97469263b9415994ade4033cd128a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  armSurfaceGenerator: {fileID: 1092937300}
+  handTrackingController: {fileID: 1409056029}
+  hoverDistance: 0.005
+  pressDistance: 0.001
+  touchState: 0
+  currentUV: {x: 0, y: 0}
+  contactPoint: {x: 0, y: 0, z: 0}
 --- !u!4 &1715298000 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 459718, guid: 126d619cf4daa52469682f85c1378b4a,
