@@ -1,8 +1,18 @@
 using UnityEngine;
 
 /// <summary>
-/// Wraps Meta hand tracking APIs. Provides wrist anchor and fingertip positions
-/// for both hands each frame.
+/// Wraps Meta OVRHand/OVRSkeleton APIs into a clean interface for
+/// the rest of the system. Exposes per-frame joint positions and
+/// high-confidence tracking state for both hands.
+///
+/// Architecture role:
+///   - Right hand: input hand — index fingertip drives touch detection
+///   - Inverse configuration (right display, left input) deferred
+///     to a later iteration
+///
+/// Consumers:
+///   - TouchInputManager: reads isRightHandTracked + rightIndexTip
+///   - ArmSurfaceGenerator: could use leftWrist for future anchoring
 /// </summary>
 public class HandTrackingController : MonoBehaviour
 {
@@ -17,8 +27,9 @@ public class HandTrackingController : MonoBehaviour
         && rightHand.HandConfidence >= OVRHand.TrackingConfidence.High;
 
     /// <summary>
-    /// Returns the world space transform of the specified bone.
-    /// Returns null if the bone is not tracked or bone unavailable.
+    /// Generic bone accessor. Returns null if skeleton isn't ready
+    /// or the requested bone doesn't exist, allowing callers to
+    /// null-check without knowing SDK internals.
     /// </summary>
     public Transform getBoneTransform(OVRSkeleton skeleton, OVRSkeleton.BoneId boneID)
     {
