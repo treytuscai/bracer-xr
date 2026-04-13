@@ -68,24 +68,21 @@ public class TouchInputManager : MonoBehaviour
 
         // Project fingertip onto the arm cylinder surface
         if (!armSurfaceGenerator.GetClosestSurfacePoint(
-                handTrackingController.rightIndexTip.position, out Vector3 closestPoint, out Vector2 uv))
+                handTrackingController.rightIndexTip.position,
+                out Vector3 closestPoint, out Vector2 uv, out float signedDistance))
         {
             touchState = TouchState.None;
             return;
         }
 
-        // Distance between actual fingertip and its projection on the surface
-        float distance = Vector3.Distance(handTrackingController.rightIndexTip.position, closestPoint);
-
-        // State transitions based on distance thresholds
-        // Press checked first since pressDistance < hoverDistance
-        if (distance <= pressDistance)
+        // signedDistance >= 0 means finger is outside → use threshold checks
+        if (signedDistance <= pressDistance)
         {
             touchState = TouchState.Press;
             currentUV = uv;
             contactPoint = closestPoint;
         }
-        else if (distance <= hoverDistance)
+        else if (signedDistance <= hoverDistance)
         {
             touchState = TouchState.Hover;
             currentUV = uv;

@@ -168,9 +168,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   touchInputManager: {fileID: 1712984849}
   armSurfaceGenerator: {fileID: 1092937300}
-  baseColor: {r: 0.1, g: 0.1, b: 0.1, a: 0.3}
-  hoverColor: {r: 0.3, g: 0.6, b: 1, a: 0.5}
-  pressColor: {r: 0.2, g: 0.9, b: 0.4, a: 0.8}
+  feedbackRadius: 0.05
 --- !u!1 &155411361
 GameObject:
   m_ObjectHideFlags: 0
@@ -900,7 +898,7 @@ MonoBehaviour:
   forearmCoverage: 0.85
   circumferenceSegments: 16
   lengthSegments: 6
-  skinOffset: 0.004
+  skinOffset: 0.001
   forearmMaterial: {fileID: 2100000, guid: b5611364614844652b4dc3a398451159, type: 2}
 --- !u!23 &1092937301
 MeshRenderer:
@@ -1136,7 +1134,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   armSurfaceGenerator: {fileID: 1092937300}
   handTrackingController: {fileID: 1409056029}
-  hoverDistance: 0.005
+  hoverDistance: 0.01
   pressDistance: 0.001
   touchState: 0
   currentUV: {x: 0, y: 0}
@@ -1424,7 +1422,7 @@ PrefabInstance:
     - target: {fileID: 114252240061623322, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 114392993255165844, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
@@ -1454,7 +1452,7 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

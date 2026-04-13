@@ -278,8 +278,9 @@ public class ArmSurfaceGenerator : MonoBehaviour
     /// a surface hit point + UV for interaction routing.
     /// </summary>
     public bool GetClosestSurfacePoint(Vector3 worldPoint,
-        out Vector3 closestPoint, out Vector2 uv)
+        out Vector3 closestPoint, out Vector2 uv, out float signedDistance)
     {
+        signedDistance = float.MaxValue;
         closestPoint = Vector3.zero;
         uv = Vector2.zero;
 
@@ -318,6 +319,9 @@ public class ArmSurfaceGenerator : MonoBehaviour
         float u = angle / (Mathf.PI * 2f);
         if (u < 0) u += 1f;
         uv = new Vector2(u, axisT);
+
+        float radialDist = Mathf.Sqrt(rightComp * rightComp + upComp * upComp);
+        signedDistance = radialDist - radius;  // negative = inside cylinder
 
         return true;
     }
