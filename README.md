@@ -168,6 +168,6 @@ These are set on the OVRCameraRig and committed. Listed here for reference — y
 |-------|--------|-------------|
 | 1. Hand Tracking Foundation |  Done | Passthrough + hand skeleton + wrist anchor |
 | 2. Arm Surface Mesh |  Done | Body-tracked forearm cylinder + hand mesh |
-| 3. Touch Interaction |  In-Progress | Poke detection from opposite hand |
+| 3. Touch Interaction |  Done | Poke detection from opposite hand |
 | 4. UI Design Integration | Next | Interview-informed UI on arm surface |
 | 5. User Evaluation | Later | Data logging + evaluation protocol |
