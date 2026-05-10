@@ -247,8 +247,10 @@ public class ForearmDepthSurface : MonoBehaviour
 
         float connSq = connectivityThreshold * connectivityThreshold;
         float maxSq = maxAxisLength * maxAxisLength;
-        int[] dr = { -1, 1, 0, 0 };
-        int[] dc = { 0, 0, -1, 1 };
+
+        // 8 connected
+        int[] dr = { -1, -1, -1, 0, 0, 1, 1, 1 };
+        int[] dc = { -1,  0,  1,-1, 1,-1, 0, 1 };
 
         while (_bfs.Count > 0)
         {
