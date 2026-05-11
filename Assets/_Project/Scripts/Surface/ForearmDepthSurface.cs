@@ -3,26 +3,34 @@ using System.Collections.Generic;
 using Meta.XR;
 
 /// <summary>
-/// Wrist-anchored forearm surface = v1's wrist→elbow line filter as SEED,
-/// then BFS flood-fill via depth connectivity to expand outward.
+/// Reconstructs the forearm surface as a triangle mesh each frame using the
+/// Quest 3 depth buffer, anchored to wrist and elbow bones from OVRSkeleton.
 ///
-/// Why this works when the IOBT angle is off:
-///   - The wrist→elbow line still clips part of the real forearm (a strip
-///     where the wrong angle happens to intersect skin). Cylinder filter
-///     keeps those cells as a stable, multi-cell seed.
-///   - Flood-fill expands from those cells onto neighboring depth pixels
-///     that are 3D-connected (within connectivityThreshold). Skin is
-///     continuous, so the flood walks the whole forearm.
-///   - Hands are removed from the depth texture, so the flood naturally
-///     stops at the wrist (no leak onto hand). Background depth jumps stop
-///     it at arm edges. maxAxisLength caps anything still connected.
+/// Pipeline (runs every LateUpdate):
+///   1. Sample:  Project wrist/elbow into screen space, build a distance-aware
+///               padded bbox, cast a grid of depth rays via EnvironmentRaycastManager.
+///   2. Seed:    Mark cells inside a cylinder around the wrist->elbow axis line.
+///               This catches a stable strip of forearm even when IOBT elbow is off.
+///   3. Flood:   BFS from seed cells onto depth-connected neighbors, bounded by
+///               connectivity threshold, a loose radial cap, and longitudinal limits.
+///               Expands across the real forearm surface past where the axis missed.
+///   4. Mesh:    Convert kept cells to vertices (local space), tile adjacent 2x2
+///               blocks into quads/triangles, reject edges spanning depth gaps.
+///   5. UV:      Map each vertex to (U, V) in a wrist-anchored cylindrical frame.
+///               U = angle around the arm axis, V = distance from wrist normalized
+///               by bone length. Follows forearm rotation, ignores hand flexion.
 ///
-/// Pipeline:
-///   1. axis = (E - W).normalized; far end = W + axis * weLen * extensionFactor
-///   2. Sample depth grid in bbox(wristProj, farProj) + padding.
-///   3. Seed pass: mark cells inside the wrist-axis cylinder.
-///   4. Flood pass: BFS from seeds; add neighbors with 3D step < threshold.
-///   5. Build mesh + wrist-frame UVs from kept cells.
+/// Key constraints:
+///   - Depth rays must be camera-aligned (from centerEyeAnchor through screen-space
+///     pixels). The depth buffer is a 2D camera projection. Rays from other origins
+///     (e.g. fingertip toward arm, radial from bone axis) don't map to depth pixels
+///     and return nothing. This is architectural, not tunable.
+///   - IOBT elbow position is used for direction only. It reports short on bend.
+///     Flood-fill handles expansion past the reported elbow.
+///
+/// Public API: IsValid, WristPosition, ElbowPosition, AxisDir, AxisRight,
+///             AxisUp, AxisLength, SurfaceMesh — consumed by TouchInputManager
+///             and VisualFeedbackController.
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
