@@ -167,23 +167,32 @@ public class ForearmDepthSurface : MonoBehaviour
         return _wrist != null && _elbow != null;
     }
 
-    bool Sample(Vector3 a, Vector3 b)
+    bool Sample(Vector3 wristPos, Vector3 elbowPos)
     {
-        Vector3 sa = _cam.WorldToScreenPoint(a);
-        if (sa.z <= 0f) return false;
-        Vector3 sb = _cam.WorldToScreenPoint(b);
-        Vector2 sa2 = new Vector2(sa.x, sa.y);
-        Vector2 sb2 = (sb.z > 0f) ? new Vector2(sb.x, sb.y) : sa2;
+        // Project bone positions into screen space for sampling bounds
+        Vector3 wristScreen = _cam.WorldToScreenPoint(wristPos);
+        if (wristScreen.z <= 0f) return false;
+        Vector3 elbowScreen = _cam.WorldToScreenPoint(elbowPos);
+        if (elbowScreen.z <= 0f) return false;
 
-        float xMin = Mathf.Max(0, Mathf.Min(sa2.x, sb2.x) - samplePadding);
-        float xMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(sa2.x, sb2.x) + samplePadding);
-        float yMin = Mathf.Max(0, Mathf.Min(sa2.y, sb2.y) - samplePadding);
-        float yMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(sa2.y, sb2.y) + samplePadding);
+        Vector2 wristPx = new Vector2(wristScreen.x, wristScreen.y);
+        Vector2 elbowPx = new Vector2(elbowScreen.x, elbowScreen.y);
+
+        // Build a padded bounding box around both bone projections, clamped to screen.
+        // This is the region we'll sample depth rays from. Padding catches the arm
+        // width that extends beyond the bone line.
+        float xMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - samplePadding);
+        float xMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + samplePadding);
+        float yMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - samplePadding);
+        float yMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + samplePadding);
         if (xMax - xMin < pixelStride || yMax - yMin < pixelStride) return false;
 
+        // Grid dimensions from the screen-space bbox. Min 2 so we can form quads.
         _cols = Mathf.Max(2, Mathf.CeilToInt((xMax - xMin) / pixelStride));
         _rows = Mathf.Max(2, Mathf.CeilToInt((yMax - yMin) / pixelStride));
 
+        // Reallocate only when grid size changes. Per-cell clearing happens
+        // in the raycast loop below, so stale data from same-sized frames is safe.
         if (_hits == null || _hits.GetLength(0) != _rows || _hits.GetLength(1) != _cols)
         {
             _hits = new Vector3[_rows, _cols];
@@ -191,13 +200,23 @@ public class ForearmDepthSurface : MonoBehaviour
             _kept = new bool[_rows, _cols];
         }
 
+        // Cast depth rays through each grid cell and store 3D hit positions.
+        // Cells without valid depth are flagged so downstream stages skip them.
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
+                // Reset state — no cell carries data from previous frames
                 _hasDepth[r, c] = false;
                 _kept[r, c] = false;
-                Ray ray = _cam.ScreenPointToRay(
-                    new Vector3(xMin + c * pixelStride, yMin + r * pixelStride, 0));
+                _hits[r, c] = Vector3.zero;
+
+                // Map grid cell back to screen pixel coordinates.
+                // xMin/yMin are already clamped to screen bounds, so every
+                // ray goes through a valid depth buffer pixel.
+                Vector3 screenPx = new Vector3(xMin + c * pixelStride, yMin + r * pixelStride, 0);
+                Ray ray = _cam.ScreenPointToRay(screenPx);
+
+                // Sample the depth buffer at this pixel via EnvironmentRaycastManager
                 if (raycastManager.Raycast(ray, out var hit))
                 {
                     _hits[r, c] = hit.point;
