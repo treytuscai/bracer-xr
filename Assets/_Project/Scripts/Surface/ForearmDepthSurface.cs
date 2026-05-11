@@ -29,24 +29,38 @@ using Meta.XR;
 public class ForearmDepthSurface : MonoBehaviour
 {
     [Header("References")]
+    [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
+
+    [Tooltip("MRUK depth sampler. Casts rays against the depth buffer")]
     public EnvironmentRaycastManager raycastManager;
+
+    [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
+
+    [Tooltip("Material for rendering the forearm surface. Falls back to transparent cyan if unset")]
     public Material surfaceMaterial;
 
     [Header("Bones")]
+    [Tooltip("Index of the wrist bone in OVRSkeleton.Bones (OpenXR hand skeleton)")]
     public int wristBoneIndex = 19;
+    
+    [Tooltip("Index of the elbow bone in OVRSkeleton.Bones (IOBT body skeleton). " +
+             "Used for direction only. Position can be unreliable on bend")]
     public int elbowBoneIndex = 11;
 
-    [Header("Wrist Frame (UV stability)")]
-    public Vector3 wristUpLocal = Vector3.up;
-
     [Header("Sampling")]
+    [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
     [Range(2, 20)] public int pixelStride = 8;
 
     [Header("Seed (wrist->elbow cylinder filter)")]
+    [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
     [Range(0.02f, 0.12f)] public float maxRadialDist = 0.07f;
+
+    [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
+
+    [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
     [Range(0f, 0.10f)] public float maxFromElbow = 0.05f;
 
     [Header("Flood (depth connectivity expansion)")]
@@ -54,37 +68,62 @@ public class ForearmDepthSurface : MonoBehaviour
              "This is what lets the flood expand off the wrong-angle seed line " +
              "onto the actual forearm surface.")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
+    
+    [Tooltip("Multiplier on maxRadialDist for the flood's radial bound. " +
+             "Looser than the seed to allow expansion past where the axis misses, " +
+             "tight enough to reject nearby surfaces like tables")]
     [Range(1f, 3f)] public float floodRadialMultiplier = 1.5f;
 
     [Header("Mesh")]
-    [Tooltip("Drop quads whose longest edge exceeds this (m). Should be ≥ connectivityThreshold " +
-             "or quads across the arm width (where curvature creates 3D step) get dropped.")]
+    [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
+             "to allow for surface curvature between cells that connected through different flood paths")]
     [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.030f;
 
     [Header("Debug")]
+    [Tooltip("Show a green line from wrist to elbow on device")]
     public bool drawAxis = true;
 
-    Transform _wrist, _elbow; Camera _cam;
-    MeshFilter _meshFilter; MeshRenderer _meshRenderer; Mesh _mesh; LineRenderer _line;
+    // Wrist frame hint for UV stability. Change if bone's local Y
+    // doesn't give a stable perpendicular to the forearm axis
+    static readonly Vector3 _wristUpLocal = Vector3.up;
 
-    Vector3[,] _hits;
-    bool[,] _hasDepth; // raw: did we get a depth hit here?
-    bool[,] _kept;      // pipeline output: does this cell go into the mesh?
-    int _rows, _cols;
-    int[,] _cellToVert;
+    // Cached bone transforms, resolved once from OVRSkeleton
+    Transform _wrist, _elbow; 
 
+    // Camera reference, cached in Start
+    Camera _cam;
+
+    // Mesh components
+    MeshFilter _meshFilter; 
+    MeshRenderer _meshRenderer; 
+    Mesh _mesh; 
+    LineRenderer _line;
+
+    // Per-frame depth sampling grid (all same [_rows, _cols] shape)
+    Vector3[,] _hits;   // 3D world position from depth raycast
+    bool[,] _hasDepth;  // Did the raycast return a hit for this cell
+    bool[,] _kept;      // Did seed + flood accept this cell into the surface
+    int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
+    int _rows, _cols;   // Current grid dimensions
+
+    // Mesh construction buffers (pre-allocated, cleared each frame)
     readonly List<Vector3> _verts = new List<Vector3>(2048);
     readonly List<int> _tris = new List<int>(4096);
     readonly List<Vector2> _uvs = new List<Vector2>(2048);
+    
+    // BFS queue for flood pass (pre-allocated, cleared each use)
     readonly Queue<int> _bfs = new Queue<int>(2048);
 
     // 8-connected grid neighbor offsets: row and col deltas paired by index
     static readonly int[] _neighborDr = { -1, -1, -1,  0, 0,  1, 1, 1 };
     static readonly int[] _neighborDc = { -1,  0,  1, -1, 1, -1, 0, 1 };
 
-    Vector3 _wristPos, _elbowPos, _axis, _axisRight, _axisUp;
-    float _axisLength;
-    bool _hasFrame;
+    // Frame state computed in LateUpdate, consumed by UV() and public API
+    Vector3 _wristPos, _elbowPos;   // Cached bone world positions
+    Vector3 _axis;                  // Wrist->elbow direction (normalized)
+    Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
+    float _axisLength;              // Wrist-to-elbow distance for UV normalization
+    bool _hasFrame;                 // True if this frame produced a valid mesh
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -180,7 +219,7 @@ public class ForearmDepthSurface : MonoBehaviour
         // perpendicular to the arm axis. This follows forearm rotation
         // (pronation/supination) so UVs rotate with the physical surface,
         // but ignores hand flexion so UVs don't shift when the wrist bends.
-        Vector3 wristUp = (_wrist.rotation * wristUpLocal).normalized;
+        Vector3 wristUp = (_wrist.rotation * _wristUpLocal).normalized;
         _axisRight = Vector3.Cross(_axis, wristUp).normalized;
         _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
 
