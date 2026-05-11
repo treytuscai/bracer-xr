@@ -65,7 +65,7 @@ public class ForearmDepthSurface : MonoBehaviour
     public bool drawAxis = true;
 
     Transform _wrist, _elbow; Camera _cam;
-    MeshFilter _mf; MeshRenderer _mr; Mesh _mesh; LineRenderer _line;
+    MeshFilter _meshFilter; MeshRenderer _meshRenderer; Mesh _mesh; LineRenderer _line;
 
     Vector3[,] _hits;
     bool[,] _hasDepth; // raw: did we get a depth hit here?
@@ -86,31 +86,54 @@ public class ForearmDepthSurface : MonoBehaviour
     float _axisLength;
     bool _hasFrame;
 
+    /// <summary>
+    /// Initializes the dynamic mesh, assigns or creates a surface material,
+    /// sets up the debug axis line, and caches the camera reference.
+    /// </summary>
     void Start()
     {
-        _mf = GetComponent<MeshFilter>(); _mr = GetComponent<MeshRenderer>();
-        _mesh = new Mesh { name = "ForearmDepth" }; _mesh.MarkDynamic();
-        _mf.mesh = _mesh;
-        if (surfaceMaterial != null) _mr.material = surfaceMaterial;
-        else _mr.material = MakeFallback();
+        // Set up the mesh that gets rebuilt every frame
+        _meshFilter = GetComponent<MeshFilter>();
+        _meshRenderer = GetComponent<MeshRenderer>();
+        _mesh = new Mesh { name = "ForearmDepth" };
+        _mesh.MarkDynamic(); // Tell Unity this mesh changes every frame
+        _meshFilter.mesh = _mesh;
 
-        var go = new GameObject("DebugAxis"); go.transform.SetParent(transform, false);
-        _line = go.AddComponent<LineRenderer>();
-        _line.useWorldSpace = true; _line.widthMultiplier = 0.004f; _line.positionCount = 2;
+        // Use assigned material if provided, otherwise a transparent cyan fallback
+        // for debugging mesh coverage without needing a shader in the Inspector
+        _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
+
+        // Debug line for visualizing the wrist->elbow axis on device
+        var debugLine = new GameObject("DebugAxis");
+        debugLine.transform.SetParent(transform, false);
+        _line = debugLine.AddComponent<LineRenderer>();
+        _line.useWorldSpace = true;
+        _line.widthMultiplier = 0.004f;
+        _line.positionCount = 2;
         _line.material = new Material(Shader.Find("Sprites/Default"));
         _line.startColor = _line.endColor = Color.green;
         _line.enabled = false;
+
+        // Cache camera reference. Doesn't change at runtime
+        _cam = centerEyeAnchor.GetComponent<Camera>();
     }
 
+    /// <summary>
+    /// Creates a semi-transparent cyan material for visualizing the mesh
+    /// when no surface material is assigned in the Inspector.
+    /// </summary>
     Material MakeFallback()
     {
-        var m = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-        m.color = new Color(0f, 1f, 1f, 0.5f);
-        m.SetFloat("_Surface", 1);
-        m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-        m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-        m.SetInt("_ZWrite", 0); m.renderQueue = 3000;
-        return m;
+        var fallback = new Material(Shader.Find("Universal Render Pipeline/Lit"))
+        {
+            color = new Color(0f, 1f, 1f, 0.5f)
+        };
+        fallback.SetFloat("_Surface", 1);
+        fallback.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        fallback.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        fallback.SetInt("_ZWrite", 0);
+        fallback.renderQueue = 3000;
+        return fallback;
     }
 
     /// <summary>
@@ -128,7 +151,7 @@ public class ForearmDepthSurface : MonoBehaviour
         // Bail if required references are missing
         if (raycastManager == null || bodySkeleton == null || _cam == null) return;
 
-        // Wait for skeleton to populate — bones may not exist on first frames
+        // Wait for skeleton to populate. Bones may not exist on first frames
         if (bodySkeleton.Bones == null || bodySkeleton.Bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return;
 
         // Resolve bone transforms. Can be null if skeleton is still initializing
