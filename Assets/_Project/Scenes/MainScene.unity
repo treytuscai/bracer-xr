@@ -897,18 +897,16 @@ MonoBehaviour:
   raycastManager: {fileID: 2129304608}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 0}
-  depthManager: {fileID: 2129304607}
   wristBoneIndex: 19
   elbowBoneIndex: 11
   wristUpLocal: {x: 0, y: 1, z: 0}
   pixelStride: 10
-  samplePadding: 60
-  maxAxisLength: 0.4
   maxRadialDist: 0.08
-  minAxisT: -0.02
+  minFromWrist: -0.02
+  maxFromElbow: 0.05
   connectivityThreshold: 0.025
+  floodRadialMultiplier: 1.5
   maxQuadEdge: 0.03
-  skinOffset: 0.002
   drawAxis: 1
 --- !u!23 &995909437
 MeshRenderer:

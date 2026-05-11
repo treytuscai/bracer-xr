@@ -60,7 +60,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Drop quads whose longest edge exceeds this (m). Should be ≥ connectivityThreshold " +
              "or quads across the arm width (where curvature creates 3D step) get dropped.")]
     [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.030f;
-    [Range(0f, 0.01f)] public float skinOffset = 0.002f;
 
     [Header("Debug")]
     public bool drawAxis = true;
@@ -72,6 +71,7 @@ public class ForearmDepthSurface : MonoBehaviour
     bool[,] _hasDepth; // raw: did we get a depth hit here?
     bool[,] _kept;      // pipeline output: does this cell go into the mesh?
     int _rows, _cols;
+    int[,] _cellToVert;
 
     readonly List<Vector3> _verts = new List<Vector3>(2048);
     readonly List<int> _tris = new List<int>(4096);
@@ -371,42 +371,92 @@ public class ForearmDepthSurface : MonoBehaviour
         return m;
     }
 
+
+    /// <summary>
+    /// Builds a triangle mesh from kept depth cells. Each kept cell becomes a vertex
+    /// (converted to local space for Unity's mesh system). Adjacent 2x2 cell blocks
+    /// form quads (split into two triangles) or single triangles if one corner is
+    /// missing. Edges that span depth gaps are rejected via QuadEdgesOK/TriEdgesOK.
+    /// </summary>
     void BuildMesh()
     {
+        // Reset mesh data from previous frame
         _verts.Clear(); _tris.Clear(); _uvs.Clear();
-        Vector3 camPos = _cam.transform.position;
 
-        int[,] idx = new int[_rows, _cols];
+        // Reuse or reallocate the grid->vertex index lookup
+        if (_cellToVert == null || _cellToVert.GetLength(0) != _rows || _cellToVert.GetLength(1) != _cols)
+            _cellToVert = new int[_rows, _cols];
+
+        // Build vertex list from kept cells. Each kept cell becomes a vertex.
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
-                if (!_kept[r, c]) { idx[r, c] = -1; continue; }
-                Vector3 p = _hits[r, c];
-                if (skinOffset > 0f) p += (camPos - p).normalized * skinOffset;
-                idx[r, c] = _verts.Count;
-                _verts.Add(transform.InverseTransformPoint(p));
-                _uvs.Add(UV(_hits[r, c]));
+                // Rejected cells get -1 so the triangle loop knows to skip them.
+                if (!_kept[r, c]) { _cellToVert[r, c] = -1; continue; }
+
+                Vector3 hitPos = _hits[r, c];
+
+                // Store the index this vertex will have once added
+                _cellToVert[r, c] = _verts.Count;
+                _verts.Add(transform.InverseTransformPoint(hitPos));
+                _uvs.Add(UV(hitPos));
             }
 
+        // Quads with edges longer than this get dropped to avoid stretching
+        // across depth gaps
         float maxSq = maxQuadEdge * maxQuadEdge;
+
+        // Walk every 2x2 cell block and try to form quads (two triangles).
+        // All winding is CCW so normals face the camera consistently.
         for (int r = 0; r < _rows - 1; r++)
             for (int c = 0; c < _cols - 1; c++)
             {
-                int tl = idx[r, c], tr = idx[r, c+1], bl = idx[r+1, c], br = idx[r+1, c+1];
-                int n = (tl>=0?1:0) + (tr>=0?1:0) + (bl>=0?1:0) + (br>=0?1:0);
-                if (n < 3) continue;
-                if (n == 4)
+                // Each block has four corners: top-left, top-right, bottom-left, bottom-right.
+                int topLeft = _cellToVert[r, c];
+                int topRight = _cellToVert[r, c+1];
+                int botLeft = _cellToVert[r+1, c];
+                int botRight = _cellToVert[r+1, c+1];
+
+                // Count how many corners have vertices
+                int vertCount = (topLeft >= 0 ? 1 : 0) + (topRight >= 0 ? 1 : 0) 
+                              + (botLeft >= 0 ? 1 : 0) + (botRight >= 0 ? 1: 0);
+
+                // Need at least 3 corners to form a triangle
+                if (vertCount < 3) continue;
+
+                // Full quad! 
+                if (vertCount == 4)
                 {
-                    if (!EdgesOK(_hits[r,c], _hits[r,c+1], _hits[r+1,c], _hits[r+1,c+1], maxSq)) continue;
-                    _tris.Add(tl); _tris.Add(bl); _tris.Add(tr);
-                    _tris.Add(tr); _tris.Add(bl); _tris.Add(br);
+                    // Check that no edge is too long before emitting
+                    if (!QuadEdgesOK(_hits[r,c], _hits[r,c+1], _hits[r+1,c], _hits[r+1,c+1], maxSq)) 
+                        continue;
+
+                    // Split quad into two triangles
+                    _tris.Add(topLeft); _tris.Add(botLeft); _tris.Add(topRight);
+                    _tris.Add(topRight); _tris.Add(botLeft); _tris.Add(botRight);
                 }
-                else if (tl < 0) { _tris.Add(tr); _tris.Add(bl); _tris.Add(br); }
-                else if (tr < 0) { _tris.Add(tl); _tris.Add(bl); _tris.Add(br); }
-                else if (bl < 0) { _tris.Add(tl); _tris.Add(br); _tris.Add(tr); }
-                else             { _tris.Add(tl); _tris.Add(bl); _tris.Add(tr); }
+            
+                // Three corners! Form a single triangle from whichever three exist,
+                // but only if no edge stretches across a depth gap.
+                else if (topLeft  < 0) {
+                    if (!TriEdgesOK(_hits[r,c+1], _hits[r+1,c], _hits[r+1,c+1], maxSq)) continue;
+                    _tris.Add(topRight); _tris.Add(botLeft);  _tris.Add(botRight);
+                }
+                else if (topRight < 0) {
+                    if (!TriEdgesOK(_hits[r,c], _hits[r+1,c], _hits[r+1,c+1], maxSq)) continue;
+                    _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(botRight);
+                }
+                else if (botLeft  < 0) {
+                    if (!TriEdgesOK(_hits[r,c], _hits[r,c+1], _hits[r+1,c+1], maxSq)) continue;
+                    _tris.Add(topLeft);  _tris.Add(botRight); _tris.Add(topRight);
+                }
+                else {
+                    if (!TriEdgesOK(_hits[r,c], _hits[r+1,c], _hits[r,c+1], maxSq)) continue;
+                    _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(topRight);
+                }
             }
 
+        // Upload to GPU
         _mesh.Clear();
         _mesh.SetVertices(_verts);
         _mesh.SetUVs(0, _uvs);
@@ -415,9 +465,15 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.RecalculateBounds();
     }
 
-    static bool EdgesOK(Vector3 a, Vector3 b, Vector3 c, Vector3 d, float maxSq) =>
-        (a-b).sqrMagnitude < maxSq && (a-c).sqrMagnitude < maxSq
-        && (c-d).sqrMagnitude < maxSq && (b-d).sqrMagnitude < maxSq;
+    // Check all four edges of a quad against max length
+    static bool QuadEdgesOK(Vector3 a, Vector3 b, Vector3 c, Vector3 d, float maxSq) =>
+        (a - b).sqrMagnitude < maxSq && (a - c).sqrMagnitude < maxSq
+        && (c - d).sqrMagnitude < maxSq && (b - d).sqrMagnitude < maxSq;
+
+    // Check all three edges of a triangle against max length
+    static bool TriEdgesOK(Vector3 a, Vector3 b, Vector3 c, float maxSq) =>
+        (a - b).sqrMagnitude < maxSq && (b - c).sqrMagnitude < maxSq
+        && (a - c).sqrMagnitude < maxSq;
 
     Vector2 UV(Vector3 p)
     {
