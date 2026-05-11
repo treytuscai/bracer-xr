@@ -128,14 +128,10 @@ public class ForearmDepthSurface : MonoBehaviour
         if (weLen < 0.05f) return;
         _axis = we / weLen;
 
-        // Seed line ends at the IOBT elbow position. If elbow is calculated
-        // short, flood-fill expands beyond it via depth connectivity.
-        float farLen = Mathf.Min(weLen, maxAxisLength);
-
-        if (!Sample(_wristPos, _wristPos + _axis * farLen)) return;
+        if (!Sample(_wristPos, _elbowPos)) return;
 
         // Stage 1: seed = v1's cylinder filter around the wrist→elbow line.
-        SeedFromAxisLine(_wristPos, _axis, farLen);
+        SeedFromAxisLine(_wristPos, _axis, weLen);
 
         // Stage 2: flood from seeds via depth connectivity.
         // This is what catches forearm cells the wrong-angle line misses.
