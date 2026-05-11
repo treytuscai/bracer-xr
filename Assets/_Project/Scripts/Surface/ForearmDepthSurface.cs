@@ -358,19 +358,32 @@ public class ForearmDepthSurface : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Finds the distance from the wrist to the farthest kept cell along the
+    /// arm axis. This becomes _axisLength, used to normalize UV V coordinates
+    /// to the 0–1 range.
+    /// </summary>
     float ComputeExtent()
     {
-        float m = 0f;
+        float maxDist = 0f;
+
+        // Walk every cell in the grid looking for the farthest kept cell
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
+                // Only care about cells that made it through seed + flood
                 if (!_kept[r, c]) continue;
-                float t = Vector3.Dot(_hits[r, c] - _wristPos, _axis);
-                if (t > m) m = t;
-            }
-        return m;
-    }
 
+                // Project this cell's position onto the arm axis.
+                // Positive = toward elbow, negative = behind wrist (ignored
+                // since maxDist starts at 0).
+                float distFromWrist = Vector3.Dot(_hits[r, c] - _wristPos, _axis);
+
+                // Track the farthest point, which defines the length of the mesh
+                if (distFromWrist > maxDist) maxDist = distFromWrist;
+            }
+        return maxDist;
+    }
 
     /// <summary>
     /// Builds a triangle mesh from kept depth cells. Each kept cell becomes a vertex
@@ -475,18 +488,37 @@ public class ForearmDepthSurface : MonoBehaviour
         (a - b).sqrMagnitude < maxSq && (b - c).sqrMagnitude < maxSq
         && (a - c).sqrMagnitude < maxSq;
 
-    Vector2 UV(Vector3 p)
+    /// <summary>
+    /// Converts a 3D world-space point on the forearm into a 2D UV coordinate.
+    /// V (0–1) = distance along the arm axis from wrist to farthest cell.
+    /// U (0–1) = angle around the arm axis in the wrist's reference frame.
+    /// This is what maps the cylindrical forearm surface to a flat 2D texture space.
+    /// </summary>
+    Vector2 UV(Vector3 point)
     {
-        Vector3 fw = p - _wristPos;
-        float along = Vector3.Dot(fw, _axis);
-        float v = Mathf.Clamp01(along / Mathf.Max(_axisLength, 1e-3f));
-        Vector3 axisPt = _wristPos + _axis * along;
-        Vector3 rad = p - axisPt;
-        float rm = rad.magnitude;
-        if (rm < 1e-5f) return new Vector2(0.5f, v);
-        rad /= rm;
-        float a = Mathf.Atan2(Vector3.Dot(rad, _axisRight), Vector3.Dot(rad, _axisUp));
-        return new Vector2((a + Mathf.PI) / (2f * Mathf.PI), v);
+        // V coordinate: how far along the arm axis from the wrist
+        Vector3 fromWrist = point - _wristPos;
+        float distAlongAxis = Vector3.Dot(fromWrist, _axis);
+        float v = Mathf.Clamp01(distAlongAxis / Mathf.Max(_axisLength, 1e-3f));
+
+        // Find the closest point on the axis line to get the radial direction
+        Vector3 closestAxisPoint = _wristPos + _axis * distAlongAxis;
+        Vector3 radialDir = point - closestAxisPoint;
+        float radialDist = radialDir.magnitude;
+
+        // Point is exactly on the axis. No meaningful angle, default to U = 0.5
+        if (radialDist < 1e-5f) return new Vector2(0.5f, v);
+
+        // U coordinate: angle around the axis in the wrist's reference frame.
+        // Atan2 gives a signed angle (-π to π), normalized to 0–1.
+        radialDir /= radialDist;
+        float angle = Mathf.Atan2(
+            Vector3.Dot(radialDir, _axisRight),
+            Vector3.Dot(radialDir, _axisUp));
+
+        float u = (angle + Mathf.PI) / (2f * Mathf.PI);
+
+        return new Vector2(u, v);
     }
 
     public bool    IsValid       => _hasFrame;
