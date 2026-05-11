@@ -113,61 +113,71 @@ public class ForearmDepthSurface : MonoBehaviour
         return m;
     }
 
+    /// <summary>
+    /// Per-frame pipeline: resolves bones, samples depth in a screen-space bbox,
+    /// seeds a cylinder filter around the wrist->elbow line, flood-fills via depth
+    /// connectivity, builds an orthogonal wrist frame for UVs, and outputs the mesh.
+    /// Runs in LateUpdate so bone transforms are finalized before reading.
+    /// </summary>
     void LateUpdate()
     {
+        // Reset frame validity. Downstream consumers check IsValid
         _hasFrame = false;
         if (_line) _line.enabled = false;
 
-        if (raycastManager == null || bodySkeleton == null || centerEyeAnchor == null) return;
-        if (!ResolveBones()) return;
-        _cam = centerEyeAnchor.GetComponent<Camera>(); if (_cam == null) _cam = Camera.main;
-        if (_cam == null) return;
+        // Bail if required references are missing
+        if (raycastManager == null || bodySkeleton == null || _cam == null) return;
 
+        // Wait for skeleton to populate — bones may not exist on first frames
+        if (bodySkeleton.Bones == null || bodySkeleton.Bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return;
+
+        // Resolve bone transforms. Can be null if skeleton is still initializing
+        _wrist = bodySkeleton.Bones[wristBoneIndex].Transform;
+        _elbow = bodySkeleton.Bones[elbowBoneIndex].Transform;
+        if (_wrist == null || _elbow == null) return;
+
+        // Cache positions and compute arm direction
         _wristPos = _wrist.position;
         _elbowPos = _elbow.position;
-        Quaternion wristRot = _wrist.rotation;
+        _axis = (_elbowPos - _wristPos).normalized;
 
-        Vector3 we = _elbowPos - _wristPos;
-        float weLen = we.magnitude;
-        if (weLen < 0.05f) return;
-        _axis = we / weLen;
-
+        // Sample depth buffer in a padded screen-space bbox around the arm
         if (!Sample(_wristPos, _elbowPos)) return;
 
-        // Stage 1: seed = v1's cylinder filter around the wrist→elbow line.
+        // Stage 1: seed = cylinder filter around the wrist->elbow line.
+        // Catches a stable strip of forearm cells even when IOBT elbow is off.
         SeedFromAxisLine(_wristPos, _elbowPos);
 
         // Stage 2: flood from seeds via depth connectivity.
-        // This is what catches forearm cells the wrong-angle line misses.
+        // Expands onto forearm cells the seed cylinder missed.
         FloodFromSeeds(_wristPos, _elbowPos);
 
-        Vector3 wristUp = (wristRot * wristUpLocal).normalized;
+        // Build orthogonal wrist frame for UV stability.
+        // Uses the wrist bone's up as a hint, then cross products force it
+        // perpendicular to the arm axis. This follows forearm rotation
+        // (pronation/supination) so UVs rotate with the physical surface,
+        // but ignores hand flexion so UVs don't shift when the wrist bends.
+        Vector3 wristUp = (_wrist.rotation * wristUpLocal).normalized;
         _axisRight = Vector3.Cross(_axis, wristUp).normalized;
         _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
 
-        _axisLength = ComputeExtent();
-        if (_axisLength < 0.05f) return;
+        // Use bone distance for UV normalization. Stable across frames
+        // unlike depth coverage extent, adapts to different arm lengths
+        _axisLength = (_elbowPos - _wristPos).magnitude;
 
+        // Stage 3: build triangle mesh from kept cells
         BuildMesh();
 
+        // Mark frame as valid for external consumers
         _hasFrame = true;
+
+        // Debug: draw wrist->elbow line on device
         if (_line && drawAxis)
         {
             _line.enabled = true;
             _line.SetPosition(0, _wristPos);
-            _line.SetPosition(1, _wristPos + _axis * _axisLength);
+            _line.SetPosition(1, _elbowPos);
         }
-    }
-
-    bool ResolveBones()
-    {
-        if (_wrist != null && _elbow != null) return true;
-        if (bodySkeleton.Bones == null) return false;
-        int needed = Mathf.Max(wristBoneIndex, elbowBoneIndex);
-        if (bodySkeleton.Bones.Count <= needed) return false;
-        _wrist = bodySkeleton.Bones[wristBoneIndex].Transform;
-        _elbow = bodySkeleton.Bones[elbowBoneIndex].Transform;
-        return _wrist != null && _elbow != null;
     }
 
     /// <summary>
@@ -356,33 +366,6 @@ public class ForearmDepthSurface : MonoBehaviour
                 _bfs.Enqueue(nr * _cols + nc);
             }
         }
-    }
-
-    /// <summary>
-    /// Finds the distance from the wrist to the farthest kept cell along the
-    /// arm axis. This becomes _axisLength, used to normalize UV V coordinates
-    /// to the 0–1 range.
-    /// </summary>
-    float ComputeExtent()
-    {
-        float maxDist = 0f;
-
-        // Walk every cell in the grid looking for the farthest kept cell
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-            {
-                // Only care about cells that made it through seed + flood
-                if (!_kept[r, c]) continue;
-
-                // Project this cell's position onto the arm axis.
-                // Positive = toward elbow, negative = behind wrist (ignored
-                // since maxDist starts at 0).
-                float distFromWrist = Vector3.Dot(_hits[r, c] - _wristPos, _axis);
-
-                // Track the farthest point, which defines the length of the mesh
-                if (distFromWrist > maxDist) maxDist = distFromWrist;
-            }
-        return maxDist;
     }
 
     /// <summary>
