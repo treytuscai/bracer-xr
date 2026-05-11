@@ -188,13 +188,22 @@ public class ForearmDepthSurface : MonoBehaviour
         Vector2 wristPx = new Vector2(wristScreen.x, wristScreen.y);
         Vector2 elbowPx = new Vector2(elbowScreen.x, elbowScreen.y);
 
+        // Convert the arm's physical radius to screen pixels based on distance.
+        // focalPx = vertical focal length in pixels (how many pixels per radian).
+        // armRadiusPx = how many pixels the arm extends beyond the bone line.
+        // 1.5x multiplier gives margin for curvature and depth noise at edges.
+        float armMidDist = Vector3.Distance(_cam.transform.position, (_wristPos + _elbowPos) * 0.5f);
+        float focalPx = _cam.pixelHeight / (2f * Mathf.Tan(_cam.fieldOfView * 0.5f * Mathf.Deg2Rad));
+        float armRadiusPx = maxRadialDist / armMidDist * focalPx;
+        float dynamicPadding = armRadiusPx * 1.5f;
+
         // Build a padded bounding box around both bone projections, clamped to screen.
         // This is the region we'll sample depth rays from. Padding catches the arm
         // width that extends beyond the bone line.
-        float xMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - samplePadding);
-        float xMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + samplePadding);
-        float yMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - samplePadding);
-        float yMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + samplePadding);
+        float xMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - dynamicPadding);
+        float xMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + dynamicPadding);
+        float yMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - dynamicPadding);
+        float yMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + dynamicPadding);
         if (xMax - xMin < pixelStride || yMax - yMin < pixelStride) return false;
 
         // Grid dimensions from the screen-space bbox. Min 2 so we can form quads.
