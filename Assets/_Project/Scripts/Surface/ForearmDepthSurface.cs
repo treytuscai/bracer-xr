@@ -44,7 +44,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Sampling")]
     [Range(2, 20)] public int pixelStride = 8;
     [Range(20, 200)] public int samplePadding = 60;
-    [Range(0.20f, 0.50f)] public float maxAxisLength = 0.40f;
 
     [Header("Seed (wrist->elbow cylinder filter)")]
     [Range(0.02f, 0.12f)] public float maxRadialDist = 0.07f;
@@ -78,6 +77,10 @@ public class ForearmDepthSurface : MonoBehaviour
     readonly List<int> _tris = new List<int>(4096);
     readonly List<Vector2> _uvs = new List<Vector2>(2048);
     readonly Queue<int> _bfs = new Queue<int>(2048);
+
+    // 8-connected grid neighbor offsets: row and col deltas paired by index
+    static readonly int[] _neighborDr = { -1, -1, -1,  0, 0,  1, 1, 1 };
+    static readonly int[] _neighborDc = { -1,  0,  1, -1, 1, -1, 0, 1 };
 
     Vector3 _wristPos, _elbowPos, _axis, _axisRight, _axisUp;
     float _axisLength;
@@ -136,7 +139,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Stage 2: flood from seeds via depth connectivity.
         // This is what catches forearm cells the wrong-angle line misses.
-        FloodFromSeeds(_wristPos);
+        FloodFromSeeds(_wristPos, _elbowPos);
 
         Vector3 wristUp = (wristRot * wristUpLocal).normalized;
         _axisRight = Vector3.Cross(_axis, wristUp).normalized;
@@ -266,14 +269,16 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Flood: BFS from every seed cell. Add neighbors that have valid depth,
-    /// aren't already kept, and whose 3D hit is within connectivityThreshold
-    /// of their parent's hit (= depth-connected skin) AND within maxAxisLength
-    /// of the wrist (cap). Walks across the actual forearm surface, even where
-    /// the seed line missed it because the IOBT angle was off.
+    /// Flood pass: BFS from every seed cell, expanding onto neighboring depth
+    /// cells that are 3D-connected (within connectivityThreshold) and within
+    /// the wrist->elbow longitudinal bounds. This is what catches forearm surface
+    /// the seed cylinder missed when the IOBT elbow angle is off.
     /// </summary>
-    void FloodFromSeeds(Vector3 wristPos)
+    void FloodFromSeeds(Vector3 wristPos, Vector3 elbowPos)
     {
+        // Enqueue all seed cells as BFS starting points.
+        // Cells are stored as flat indices (r * _cols + c) to avoid
+        // allocating tuples. Decoded back via idx / _cols and idx % _cols.
         _bfs.Clear();
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
@@ -281,29 +286,44 @@ public class ForearmDepthSurface : MonoBehaviour
 
         if (_bfs.Count == 0) return;
 
+        // Wrist->elbow direction for longitudinal bounds
+        Vector3 axis = (elbowPos - wristPos).normalized;
+
+        // Max 3D distance between adjacent grid hits to count as
+        // the same surface (avoids sqrt per neighbor)
         float connSq = connectivityThreshold * connectivityThreshold;
-        float maxSq = maxAxisLength * maxAxisLength;
 
-        // 8 connected
-        int[] dr = { -1, -1, -1, 0, 0, 1, 1, 1 };
-        int[] dc = { -1,  0,  1,-1, 1,-1, 0, 1 };
-
+        // Process the queue until no more connected cells can be reached
         while (_bfs.Count > 0)
         {
+            // Decode flat index back to grid coordinates
             int idx = _bfs.Dequeue();
             int r = idx / _cols, c = idx % _cols;
-            Vector3 here = _hits[r, c];
+            Vector3 currentHit = _hits[r, c];
 
-            for (int n = 0; n < 4; n++)
+            // Check all 8 neighbors for possible expansion
+            for (int n = 0; n < 8; n++)
             {
-                int nr = r + dr[n], nc = c + dc[n];
+                // Neighbor grid coordinates; skip if out of bounds
+                int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
                 if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
+
+                // Skip if already part of the surface or has no depth data
                 if (_kept[nr, nc] || !_hasDepth[nr, nc]) continue;
 
-                Vector3 there = _hits[nr, nc];
-                if ((there - here).sqrMagnitude > connSq) continue;
-                if ((there - wristPos).sqrMagnitude > maxSq) continue;
+                Vector3 neighborHit = _hits[nr, nc];
 
+                // Depth connectivity: reject if neighbor is too far in 3D
+                if ((neighborHit - currentHit).sqrMagnitude > connSq) continue;
+
+                // Same longitudinal bounds as the seed pass.
+                // Don't flood before the wrist or past the elbow
+                float fromWrist = Vector3.Dot(neighborHit - wristPos, axis);
+                if (fromWrist < minFromWrist) continue;
+                float fromElbow = Vector3.Dot(neighborHit - elbowPos, axis);
+                if (fromElbow > maxFromElbow) continue;
+
+                // Cell passed all checks. Add to surface and continue expanding
                 _kept[nr, nc] = true;
                 _bfs.Enqueue(nr * _cols + nc);
             }
