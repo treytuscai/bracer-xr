@@ -55,6 +55,7 @@ public class ForearmDepthSurface : MonoBehaviour
              "This is what lets the flood expand off the wrong-angle seed line " +
              "onto the actual forearm surface.")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
+    [Range(1f, 3f)] public float floodRadialMultiplier = 1.5f;
 
     [Header("Mesh")]
     [Tooltip("Drop quads whose longest edge exceeds this (m). Should be ≥ connectivityThreshold " +
@@ -277,9 +278,11 @@ public class ForearmDepthSurface : MonoBehaviour
 
     /// <summary>
     /// Flood pass: BFS from every seed cell, expanding onto neighboring depth
-    /// cells that are 3D-connected (within connectivityThreshold) and within
-    /// the wrist->elbow longitudinal bounds. This is what catches forearm surface
-    /// the seed cylinder missed when the IOBT elbow angle is off.
+    /// cells that pass three checks: 3D-connected (within connectivityThreshold),
+    /// within a loose radial bound around the arm axis (floodRadialMultiplier x
+    /// maxRadialDist, to prevent leaking onto nearby surfaces like tables), and
+    /// within the wrist->elbow longitudinal bounds. This is what catches forearm
+    /// surface the seed cylinder missed when the IOBT elbow angle is off.
     /// </summary>
     void FloodFromSeeds(Vector3 wristPos, Vector3 elbowPos)
     {
@@ -299,6 +302,12 @@ public class ForearmDepthSurface : MonoBehaviour
         // Max 3D distance between adjacent grid hits to count as
         // the same surface (avoids sqrt per neighbor)
         float connSq = connectivityThreshold * connectivityThreshold;
+
+        // Looser radial cap than the seed pass. Allows the flood to expand
+        // past where the wrong-angle axis line reaches, while still rejecting
+        // nearby surfaces (e.g. table) that are depth-connected but off the arm
+        float floodRadius = maxRadialDist * floodRadialMultiplier;
+        float maxFloodRadialSq = floodRadius * floodRadius;
 
         // Process the queue until no more connected cells can be reached
         while (_bfs.Count > 0)
@@ -322,6 +331,10 @@ public class ForearmDepthSurface : MonoBehaviour
 
                 // Depth connectivity: reject if neighbor is too far in 3D
                 if ((neighborHit - currentHit).sqrMagnitude > connSq) continue;
+
+                // Radial bound: don't flood onto surfaces far from the arm axis
+                float radialSq = Vector3.Cross(neighborHit - elbowPos, axis).sqrMagnitude;
+                if (radialSq > maxFloodRadialSq) continue;
 
                 // Same longitudinal bounds as the seed pass.
                 // Don't flood before the wrist or past the elbow
