@@ -243,19 +243,24 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void SeedFromAxisLine(Vector3 wristPos, Vector3 elbowPos)
     {
+        // Wrist->elbow direction for longitudinal bounds
         Vector3 axis = (elbowPos - wristPos).normalized;
+
+        // Max perpendicular distance from the axis line
+        // to count as inside the cylinder (avoids sqrt per cell)
         float maxRSq = maxRadialDist * maxRadialDist;
 
+        // Walk every sampled depth cell and test against the cylinder
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
+                // Skip cells with no depth data
                 if (!_hasDepth[r, c]) continue;
                 Vector3 p = _hits[r, c];
 
                 // Longitudinal bounds: reject points beyond each end of the arm segment
                 float fromWrist = Vector3.Dot(p - wristPos, axis);
                 if (fromWrist < minFromWrist) continue;
-
                 float fromElbow = Vector3.Dot(p - elbowPos, axis);
                 if (fromElbow > maxFromElbow) continue;
 
@@ -264,6 +269,8 @@ public class ForearmDepthSurface : MonoBehaviour
                 // directly. The result is the same regardless of which point on the
                 // line we measure from.
                 float radialSq = Vector3.Cross(p - elbowPos, axis).sqrMagnitude;
+
+                 // Cell is inside the cylinder — mark as seed for flood pass
                 if (radialSq <= maxRSq) _kept[r, c] = true;
             }
     }
