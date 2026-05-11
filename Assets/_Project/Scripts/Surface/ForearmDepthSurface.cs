@@ -167,6 +167,12 @@ public class ForearmDepthSurface : MonoBehaviour
         return _wrist != null && _elbow != null;
     }
 
+    /// <summary>
+    /// Projects wrist and elbow into screen space, builds a padded bounding box,
+    /// then casts a grid of depth rays through that region. Populates _hits,
+    /// _hasDepth, and _kept arrays for downstream seed and flood passes.
+    /// Returns false if either bone is behind the camera or the bbox is too small.
+    /// </summary>
     bool Sample(Vector3 wristPos, Vector3 elbowPos)
     {
         // Project bone positions into screen space for sampling bounds
