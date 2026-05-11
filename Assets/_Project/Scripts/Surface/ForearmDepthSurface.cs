@@ -46,9 +46,10 @@ public class ForearmDepthSurface : MonoBehaviour
     [Range(20, 200)] public int samplePadding = 60;
     [Range(0.20f, 0.50f)] public float maxAxisLength = 0.40f;
 
-    [Header("Seed (wrist→elbow cylinder filter)")]
+    [Header("Seed (wrist->elbow cylinder filter)")]
     [Range(0.02f, 0.12f)] public float maxRadialDist = 0.07f;
-    [Range(-0.05f, 0f)] public float minAxisT = -0.02f;
+    [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
+    [Range(0f, 0.10f)] public float maxFromElbow = 0.05f;
 
     [Header("Flood (depth connectivity expansion)")]
     [Tooltip("Max 3D step between adjacent grid hits to count as connected (m). " +
@@ -131,7 +132,7 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!Sample(_wristPos, _elbowPos)) return;
 
         // Stage 1: seed = v1's cylinder filter around the wrist→elbow line.
-        SeedFromAxisLine(_wristPos, _axis, weLen);
+        SeedFromAxisLine(_wristPos, _elbowPos);
 
         // Stage 2: flood from seeds via depth connectivity.
         // This is what catches forearm cells the wrong-angle line misses.
@@ -207,21 +208,35 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Seed: mark cells that fall inside the cylinder around the wrist→axis line.
-    /// Same logic as v1; output is a stable multi-cell seed for flood.
+    /// Seed pass: marks depth cells that fall inside a cylinder around the
+    /// wrist→elbow line. These become the starting cells for the flood-fill.
+    /// Three filters run in order: too far before the wrist? skip.
+    /// Too far past the elbow? skip. Too far from the line? skip.
     /// </summary>
-    void SeedFromAxisLine(Vector3 wristPos, Vector3 axis, float farLen)
+    void SeedFromAxisLine(Vector3 wristPos, Vector3 elbowPos)
     {
+        Vector3 axis = (elbowPos - wristPos).normalized;
         float maxRSq = maxRadialDist * maxRadialDist;
+
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
                 if (!_hasDepth[r, c]) continue;
                 Vector3 p = _hits[r, c];
-                float along = Vector3.Dot(p - wristPos, axis);
-                if (along < minAxisT || along > farLen) continue;
-                Vector3 axisPt = wristPos + axis * along;
-                if ((p - axisPt).sqrMagnitude <= maxRSq) _kept[r, c] = true;
+
+                // Longitudinal bounds: reject points beyond each end of the arm segment
+                float fromWrist = Vector3.Dot(p - wristPos, axis);
+                if (fromWrist < minFromWrist) continue;
+
+                float fromElbow = Vector3.Dot(p - elbowPos, axis);
+                if (fromElbow > maxFromElbow) continue;
+
+                // Radial bound: perpendicular distance from the wrist->elbow line.
+                // Cross product with a unit vector gives the perpendicular component
+                // directly. The result is the same regardless of which point on the
+                // line we measure from.
+                float radialSq = Vector3.Cross(p - elbowPos, axis).sqrMagnitude;
+                if (radialSq <= maxRSq) _kept[r, c] = true;
             }
     }
 
