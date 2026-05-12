@@ -899,13 +899,14 @@ MonoBehaviour:
   surfaceMaterial: {fileID: 0}
   wristBoneIndex: 19
   elbowBoneIndex: 11
-  wristUpLocal: {x: 0, y: 1, z: 0}
   pixelStride: 10
   maxRadialDist: 0.08
   minFromWrist: -0.02
   maxFromElbow: 0.05
   connectivityThreshold: 0.025
   floodRadialMultiplier: 1.5
+  smoothPasses: 3
+  smoothRangeThreshold: 0.02
   maxQuadEdge: 0.03
   drawAxis: 1
 --- !u!23 &995909437

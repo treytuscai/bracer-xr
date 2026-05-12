@@ -82,6 +82,10 @@ public class ForearmDepthSurface : MonoBehaviour
              "tight enough to reject nearby surfaces like tables")]
     [Range(1f, 3f)] public float floodRadialMultiplier = 1.5f;
 
+    [Header("Smoothing")]
+    [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
+    public int smoothPasses = 3;
+
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
@@ -109,6 +113,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // Per-frame depth sampling grid (all same [_rows, _cols] shape)
     Vector3[,] _hits;   // 3D world position from depth raycast
+    Vector3[,] _smoothed; // Scratch buffer for smoothing
     bool[,] _hasDepth;  // Did the raycast return a hit for this cell
     bool[,] _kept;      // Did seed + flood accept this cell into the surface
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
@@ -234,6 +239,9 @@ public class ForearmDepthSurface : MonoBehaviour
         // Use bone distance for UV normalization. Stable across frames
         // unlike depth coverage extent, adapts to different arm lengths
         _axisLength = (_elbowPos - _wristPos).magnitude;
+
+        // Apply Laplacian smoothing to remove-per pixel depth noise
+        SmoothKeptCells();
 
         // Stage 3: build triangle mesh from kept cells
         BuildMesh();
@@ -435,6 +443,63 @@ public class ForearmDepthSurface : MonoBehaviour
                 _kept[nr, nc] = true;
                 _bfs.Enqueue(nr * _cols + nc);
             }
+        }
+    }
+
+    /// <summary>
+    /// Laplacian smoothing on kept depth cells. Removes per-pixel depth noise
+    /// so the mesh looks smooth like skin. Jacobi iteration: each pass snapshots
+    /// all positions, then averages each cell toward its neighbors from the
+    /// snapshot. Order-independent. Multiple passes spread influence further
+    /// with Gaussian-shaped falloff. Only _kept cells participate. Flood-fill
+    /// already guarantees surface connectivity.
+    /// </summary>
+    void SmoothKeptCells()
+    {
+        // No-op when smoothing is disabled.
+        if (smoothPasses <= 0) return;
+
+        // Scratch buffer for Jacobi snapshot (reallocate on grid resize)
+        if (_smoothed == null || _smoothed.GetLength(0) != _rows || 
+                                 _smoothed.GetLength(1) != _cols)
+        {
+            _smoothed = new Vector3[_rows, _cols];
+        }
+
+        for (int pass = 0; pass < smoothPasses; pass++)
+        {
+            // Freeze positions so earlier cells don't influence later ones
+            System.Array.Copy(_hits, _smoothed, _hits.Length);
+
+            for (int r = 0; r < _rows; r++)
+                for (int c = 0; c < _cols; c++)
+                {
+                    // Skip non-kept cells
+                    if (!_kept[r, c]) continue;
+
+                    // Self-weight prevents overshooting
+                    Vector3 sum = _smoothed[r, c];
+                    float weight = 1f;
+
+                    // Pull toward each valid neighbor's position (8-connected)
+                    for (int n = 0; n < 8; n++)
+                    {
+                        int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
+
+                        // Bounds check: skip neighbors outside the grid
+                        if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
+                        
+                        // Only average with kept cells
+                        if (!_kept[nr, nc]) continue;
+
+                        sum += _smoothed[nr, nc];
+                        weight += 1f;
+                    }
+
+                    // Write the averaged position. Division by total weight
+                    // produces the centroid of this cell + its valid neighbors.
+                    _hits[r, c] = sum / weight;
+                }
         }
     }
 
