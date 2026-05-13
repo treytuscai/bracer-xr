@@ -86,6 +86,12 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
     public int smoothPasses = 3;
 
+    [Header("Edge Smoothing")]
+    [Tooltip("1D smoothing passes along boundary contour chains")]
+    [Range(0, 5)] public int edgeSmoothPasses = 2;
+    [Tooltip("Half-width of the moving average window along boundary chains")]
+    [Range(1, 6)] public int edgeWindowRadius = 3;
+
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
@@ -118,6 +124,11 @@ public class ForearmDepthSurface : MonoBehaviour
     bool[,] _kept;      // Did seed + flood accept this cell into the surface
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
+
+    // Reusable buffers for boundary chain extraction
+    readonly List<Vector2Int> _boundaryChain = new List<Vector2Int>(512);
+    readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
+    bool[,] _boundaryVisited;
 
     // Mesh construction buffers (pre-allocated, cleared each frame)
     readonly List<Vector3> _verts = new List<Vector3>(2048);
@@ -242,6 +253,8 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Apply Laplacian smoothing to remove-per pixel depth noise
         SmoothKeptCells();
+
+        SmoothBoundary();
 
         // Stage 3: build triangle mesh from kept cells
         BuildMesh();
@@ -500,6 +513,126 @@ public class ForearmDepthSurface : MonoBehaviour
                     // produces the centroid of this cell + its valid neighbors.
                     _hits[r, c] = sum / weight;
                 }
+        }
+    }
+
+    /// <summary>
+    /// Extracts ordered boundary contours from the kept-cell grid and
+    /// applies a 1D moving average along each chain. Smooths edge shape
+    /// without pulling vertices toward interior. Boundary = kept cell
+    /// with at least one non-kept or out-of-bounds neighbor.
+    /// </summary>
+    void SmoothBoundary()
+    {
+        if (edgeSmoothPasses <= 0) return;
+
+        // Tag boundary cells
+        if (_boundaryVisited == null || _boundaryVisited.GetLength(0) != _rows ||
+                                        _boundaryVisited.GetLength(1) != _cols)
+            _boundaryVisited = new bool[_rows, _cols];
+
+        for (int pass = 0; pass < edgeSmoothPasses; pass++)
+        {
+            // Reset visited flags for chain extraction
+            for (int r = 0; r < _rows; r++)
+                for (int c = 0; c < _cols; c++)
+                    _boundaryVisited[r, c] = false;
+
+            // Find and smooth each connected boundary contour
+            for (int r = 0; r < _rows; r++)
+                for (int c = 0; c < _cols; c++)
+                {
+                    if (!IsBoundaryCell(r, c) || _boundaryVisited[r, c]) continue;
+
+                    // Trace an ordered chain starting from this cell
+                    TraceChain(r, c);
+
+                    if (_boundaryChain.Count < 3) continue;
+
+                    // 1D moving average along the chain
+                    _chainSmoothed.Clear();
+                    for (int i = 0; i < _boundaryChain.Count; i++)
+                    {
+                        Vector3 sum = Vector3.zero;
+                        int count = 0;
+
+                        // Window centered on i, clamped to chain bounds
+                        int lo = Mathf.Max(0, i - edgeWindowRadius);
+                        int hi = Mathf.Min(_boundaryChain.Count - 1, i + edgeWindowRadius);
+
+                        for (int j = lo; j <= hi; j++)
+                        {
+                            var cell = _boundaryChain[j];
+                            sum += _hits[cell.x, cell.y];
+                            count++;
+                        }
+
+                        _chainSmoothed.Add(sum / count);
+                    }
+
+                    // Write smoothed positions back
+                    for (int i = 0; i < _boundaryChain.Count; i++)
+                    {
+                        var cell = _boundaryChain[i];
+                        _hits[cell.x, cell.y] = _chainSmoothed[i];
+                    }
+                }
+        }
+    }
+
+    /// <summary>
+    /// Is this cell kept with at least one non-kept or OOB neighbor?
+    /// </summary>
+    bool IsBoundaryCell(int r, int c)
+    {
+        if (!_kept[r, c]) return false;
+        for (int n = 0; n < 8; n++)
+        {
+            int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
+            if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols || !_kept[nr, nc])
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Greedy contour walk from a starting boundary cell. At each step,
+    /// picks the nearest unvisited boundary neighbor. Produces an ordered
+    /// chain in _boundaryChain.
+    /// </summary>
+    void TraceChain(int startR, int startC)
+    {
+        _boundaryChain.Clear();
+        int r = startR, c = startC;
+
+        while (true)
+        {
+            _boundaryVisited[r, c] = true;
+            _boundaryChain.Add(new Vector2Int(r, c));
+
+            // Find next unvisited boundary neighbor (prefer 4-connected for
+            // cleaner chain order, fall back to 8-connected)
+            int bestR = -1, bestC = -1;
+            bool found = false;
+
+            for (int n = 0; n < 8; n++)
+            {
+                int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
+                if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
+                if (_boundaryVisited[nr, nc] || !IsBoundaryCell(nr, nc)) continue;
+
+                bestR = nr;
+                bestC = nc;
+                found = true;
+
+                // 4-connected neighbors are indices 1,3,4,6 in the offset arrays.
+                // Prefer these for straighter chain ordering.
+                if (n == 1 || n == 3 || n == 4 || n == 6) break;
+            }
+
+            if (!found) break;
+            r = bestR;
+            c = bestC;
         }
     }
 

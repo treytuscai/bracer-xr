@@ -1,3 +1,22 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:916f33d1d6e42cd374142bb1639a721e01de69d946c17c679ea2700ca7fb8241
-size 637
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 939e07d58bc74256b6cb58d86fe35a56, type: 3}
+  m_Name: OculusProjectSetupSettings
+  m_EditorClassIdentifier: 
+  boolProperties:
+    keys:
+    - Meta.XR.SDK.fc0ffeb121aa9841d339c43cfbfce66e.Ignored.Android
+    - Meta.XR.SDK.5c7289ec557af63ae9fe7dc8bb186ecb.Ignored.Android
+    values: 0101
+  intProperties:
+    keys: []
+    values: 

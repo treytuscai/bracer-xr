@@ -906,7 +906,7 @@ MonoBehaviour:
   connectivityThreshold: 0.025
   floodRadialMultiplier: 1.5
   smoothPasses: 3
-  smoothRangeThreshold: 0.02
+  edgeSmoothPasses: 4
   maxQuadEdge: 0.03
   drawAxis: 1
 --- !u!23 &995909437
