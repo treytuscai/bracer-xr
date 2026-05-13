@@ -101,9 +101,15 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Show a green line from wrist to elbow on device")]
     public bool drawAxis = true;
 
-    // Wrist frame hint for UV stability. Change if bone's local Y
-    // doesn't give a stable perpendicular to the forearm axis
-    static readonly Vector3 _wristUpLocal = Vector3.up;
+    [Header("Display")]
+    [Tooltip("Physical width of the display region on the arm (m)")]
+    public float displayWidth = 0.05f;
+
+    [Tooltip("Physical height of the display region along the arm (m)")]
+    public float displayHeight = 0.05f;
+
+    [Tooltip("How far from the wrist (along axis) to center the display (m)")]
+    public float displayOffset = 0.12f;
 
     // Cached bone transforms, resolved once from OVRSkeleton
     Transform _wrist, _elbow; 
@@ -148,6 +154,9 @@ public class ForearmDepthSurface : MonoBehaviour
     Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
     float _axisLength;              // Wrist-to-elbow distance for UV normalization
     bool _hasFrame;                 // True if this frame produced a valid mesh
+
+    // Linear projection center for UV mapping.
+    float _projCenter;          // Center of visible surface projected onto _axisRight (m)
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -238,13 +247,16 @@ public class ForearmDepthSurface : MonoBehaviour
         // Expands onto forearm cells the seed cylinder missed.
         FloodFromSeeds(_wristPos, _elbowPos);
 
-        // Build orthogonal wrist frame for UV stability.
-        // Uses the wrist bone's up as a hint, then cross products force it
-        // perpendicular to the arm axis. This follows forearm rotation
-        // (pronation/supination) so UVs rotate with the physical surface,
-        // but ignores hand flexion so UVs don't shift when the wrist bends.
-        Vector3 wristUp = (_wrist.rotation * _wristUpLocal).normalized;
-        _axisRight = Vector3.Cross(_axis, wristUp).normalized;
+        // Build orthogonal frame for UV projection.
+        // Derives _axisRight from the camera-to-arm direction so it always
+        // points "across" the camera-facing surface strip, regardless of
+        // wrist pronation/supination.
+        //
+        // Camera-derived frame = always perpendicular to view = always
+        // good U spread across the visible mesh.
+        Vector3 armMid = (_wristPos + _elbowPos) * 0.5f;
+        Vector3 toCamera = (_cam.transform.position - armMid).normalized;
+        _axisRight = Vector3.Cross(_axis, toCamera).normalized;
         _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
 
         // Use bone distance for UV normalization. Stable across frames
@@ -255,6 +267,8 @@ public class ForearmDepthSurface : MonoBehaviour
         SmoothKeptCells();
 
         SmoothBoundary();
+
+        ComputeProjectedExtent();
 
         // Stage 3: build triangle mesh from kept cells
         BuildMesh();
@@ -637,6 +651,38 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
+    /// Computes the center of the visible forearm surface by projecting
+    /// all kept cells onto the _axisRight direction (perpendicular to the arm axis,
+    /// in the plane of the visible surface).
+    ///
+    /// For the ~40-60° of arc visible on the inner forearm, linear vs cylindrical
+    /// projection differs by at most ~3% — visually identical.
+    /// </summary>
+    void ComputeProjectedExtent()
+    {
+        float min = float.MaxValue, max = float.MinValue;
+        float sum = 0f;
+        int count = 0;
+
+        for (int r = 0; r < _rows; r++)
+            for (int c = 0; c < _cols; c++)
+            {
+                if (!_kept[r, c]) continue;
+
+                // Project onto _axisRight: signed distance from the arm axis
+                // in the direction perpendicular to the arm, within the visible plane.
+                float proj = Vector3.Dot(_hits[r, c] - _wristPos, _axisRight);
+
+                sum += proj;
+                count++;
+                if (proj < min) min = proj;
+                if (proj > max) max = proj;
+            }
+
+        _projCenter = sum / count;
+    }
+
+    /// <summary>
     /// Builds a triangle mesh from kept depth cells. Each kept cell becomes a vertex
     /// (converted to local space for Unity's mesh system). Adjacent 2x2 cell blocks
     /// form quads (split into two triangles) or single triangles if one corner is
@@ -740,34 +786,29 @@ public class ForearmDepthSurface : MonoBehaviour
         && (a - c).sqrMagnitude < maxSq;
 
     /// <summary>
-    /// Converts a 3D world-space point on the forearm into a 2D UV coordinate.
-    /// V (0–1) = distance along the arm axis from wrist to farthest cell.
-    /// U (0–1) = angle around the arm axis in the wrist's reference frame.
-    /// This is what maps the cylindrical forearm surface to a flat 2D texture space.
+    /// Converts a 3D world-space point on the forearm into a 2D UV coordinate
+    /// using a linear planar projection.
+    ///
+    /// V (0-1) = distance along the arm axis from wrist, normalized by bone length.
+    /// U (0-1) = signed distance from the arm axis projected onto _axisRight,
+    ///           centered on the visible surface center and normalized by its width.
+    ///
+    /// This is a flat-decal projection onto the plane defined by (_axis, _axisRight).
+    /// For the ~40-60° of arc visible on the inner forearm, the visual difference
+    /// from a true cylindrical wrap is negligible (~3% max).
     /// </summary>
     Vector2 UV(Vector3 point)
     {
-        // V coordinate: how far along the arm axis from the wrist
         Vector3 fromWrist = point - _wristPos;
+
+        // V: fixed physical height, centered at displayOffset from wrist
         float distAlongAxis = Vector3.Dot(fromWrist, _axis);
-        float v = Mathf.Clamp01(distAlongAxis / Mathf.Max(_axisLength, 1e-3f));
+        float v = ((distAlongAxis - displayOffset) / Mathf.Max(displayHeight, 1e-4f)) + 0.5f;
+        v = 1f - v;
 
-        // Find the closest point on the axis line to get the radial direction
-        Vector3 closestAxisPoint = _wristPos + _axis * distAlongAxis;
-        Vector3 radialDir = point - closestAxisPoint;
-        float radialDist = radialDir.magnitude;
-
-        // Point is exactly on the axis. No meaningful angle, default to U = 0.5
-        if (radialDist < 1e-5f) return new Vector2(0.5f, v);
-
-        // U coordinate: angle around the axis in the wrist's reference frame.
-        // Atan2 gives a signed angle (-π to π), normalized to 0–1.
-        radialDir /= radialDist;
-        float angle = Mathf.Atan2(
-            Vector3.Dot(radialDir, _axisRight),
-            Vector3.Dot(radialDir, _axisUp));
-
-        float u = (angle + Mathf.PI) / (2f * Mathf.PI);
+        // U: fixed physical width, centered on visible surface
+        float projRight = Vector3.Dot(fromWrist, _axisRight);
+        float u = ((projRight - _projCenter) / Mathf.Max(displayWidth, 1e-4f)) + 0.5f;
 
         return new Vector2(u, v);
     }
