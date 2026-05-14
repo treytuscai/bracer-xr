@@ -910,8 +910,8 @@ MonoBehaviour:
   edgeWindowRadius: 3
   maxQuadEdge: 0.03
   drawAxis: 0
-  displayWidth: 0.05
-  displayHeight: 0.05
+  displayWidth: 0.24
+  displayHeight: 0.12
   displayOffset: 0.12
 --- !u!23 &995909437
 MeshRenderer:
