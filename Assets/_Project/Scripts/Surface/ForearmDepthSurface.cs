@@ -660,7 +660,6 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void ComputeProjectedExtent()
     {
-        float min = float.MaxValue, max = float.MinValue;
         float sum = 0f;
         int count = 0;
 
@@ -675,8 +674,6 @@ public class ForearmDepthSurface : MonoBehaviour
 
                 sum += proj;
                 count++;
-                if (proj < min) min = proj;
-                if (proj > max) max = proj;
             }
 
         _projCenter = sum / count;
