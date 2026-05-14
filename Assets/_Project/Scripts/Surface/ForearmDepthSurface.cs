@@ -733,6 +733,30 @@ public class ForearmDepthSurface : MonoBehaviour
             }
         }
 
+        // Smooth per-row bounds along V so the fade edge is a smooth curve
+        // instead of a stair-step following the grid boundary.
+        for (int pass = 0; pass < 3; pass++)
+        {
+            float[] sMin = new float[_rows];
+            float[] sMax = new float[_rows];
+            for (int r = 0; r < _rows; r++)
+            {
+                if (rowProjMin[r] == float.MaxValue) { sMin[r] = rowProjMin[r]; sMax[r] = rowProjMax[r]; continue; }
+
+                float sumMin = rowProjMin[r], sumMax = rowProjMax[r];
+                int n = 1;
+                if (r > 0 && rowProjMin[r - 1] < float.MaxValue)
+                    { sumMin += rowProjMin[r - 1]; sumMax += rowProjMax[r - 1]; n++; }
+                if (r < _rows - 1 && rowProjMin[r + 1] < float.MaxValue)
+                    { sumMin += rowProjMin[r + 1]; sumMax += rowProjMax[r + 1]; n++; }
+
+                sMin[r] = sumMin / n;
+                sMax[r] = sumMax / n;
+            }
+            System.Array.Copy(sMin, rowProjMin, _rows);
+            System.Array.Copy(sMax, rowProjMax, _rows);
+        }
+
         // Build vertex list from kept cells. Each kept cell becomes a vertex.
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
