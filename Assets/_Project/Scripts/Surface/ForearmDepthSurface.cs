@@ -117,6 +117,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // Camera reference, cached in Start
     Camera _cam;
 
+    // True if this frame produced a valid mesh
+    bool _hasFrame;
+
     // Mesh components
     MeshFilter _meshFilter; 
     MeshRenderer _meshRenderer; 
@@ -153,7 +156,7 @@ public class ForearmDepthSurface : MonoBehaviour
     Vector3 _wristPos, _elbowPos;   // Cached bone world positions
     Vector3 _axis;                  // Wrist->elbow direction (normalized)
     Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
-    float _axisLength;              // Wrist-to-elbow distance for UV normalization
+    float _projCenter;              // Linear projection center for UV mapping.
 
     // Pronation tracking: measures how much the forearm has rotated relative
     // to the camera view. Used to offset U so rotating the wrist scrolls
@@ -163,8 +166,11 @@ public class ForearmDepthSurface : MonoBehaviour
     static readonly Vector3 _wristUpLocal = Vector3.up;
     float _pronationAngle;          // Signed angle (rad) of forearm rotation
     float _smoothedPronation;       // Temporally smoothed to reduce bone jitter
-    bool _hasFrame;                 // True if this frame produced a valid mesh
-    float _projCenter;              // Linear projection center for UV mapping.
+
+    // Orientation tracking: detects whether the arm is held vertically (portrait)
+    // or horizontally (landscape) in the camera view, and rotates UVs to keep
+    // the UI content upright.
+    float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -276,13 +282,15 @@ public class ForearmDepthSurface : MonoBehaviour
         float cos = Vector3.Dot(boneRight, _axisRight);
         float sin = Vector3.Dot(Vector3.Cross(boneRight, _axisRight), _axis);
         _pronationAngle = Mathf.Atan2(sin, cos);
-
-        // Smooth to suppress bone tracking jitter
         _smoothedPronation = Mathf.Lerp(_smoothedPronation, _pronationAngle, 0.15f);
 
-        // Use bone distance for UV normalization. Stable across frames
-        // unlike depth coverage extent, adapts to different arm lengths
-        _axisLength = (_elbowPos - _wristPos).magnitude;
+        // Measure orientation: snap to nearest 90°
+        // Detect arm orientation on screen
+        float screenX = Vector3.Dot(_axis, _cam.transform.right);
+        float screenY = Vector3.Dot(_axis, _cam.transform.up);
+        float absX = Mathf.Abs(screenX);
+        float absY = Mathf.Abs(screenY);
+        _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
 
         // Apply Laplacian smoothing to remove-per pixel depth noise
         SmoothKeptCells();
@@ -867,37 +875,42 @@ public class ForearmDepthSurface : MonoBehaviour
     Vector2 UV(Vector3 point)
     {
         Vector3 fromWrist = point - _wristPos;
+        bool isLandscape = Mathf.Abs(_orientationAngle) > Mathf.PI * 0.25f;
 
-        // V: fixed physical height, centered at displayOffset from wrist
+        // V: along arm
         float distAlongAxis = Vector3.Dot(fromWrist, _axis);
-        float v = ((distAlongAxis - displayOffset) / Mathf.Max(displayHeight, 1e-4f)) + 0.5f;
+        float v = ((distAlongAxis - displayOffset) / 
+                    Mathf.Max(isLandscape ? displayWidth : displayHeight, 1e-4f)) + 0.5f;
         v = 1f - v;
 
-        // U: fixed physical width, centered on visible surface
+        // U: across arm
         float projRight = Vector3.Dot(fromWrist, _axisRight);
-        float u = ((projRight - _projCenter) / Mathf.Max(displayWidth, 1e-4f)) + 0.5f;
+        float u = ((projRight - _projCenter) / 
+                    Mathf.Max(isLandscape ? displayHeight : displayWidth, 1e-4f)) + 0.5f;
 
-        // Scroll U based on forearm rotation.
-        // PI divisor: 180° of pronation = 1.0 UV shift (full texture width).
-        // The old 2*PI divisor meant max forearm rotation (~180°) only shifted 0.5.
-        u += _smoothedPronation / Mathf.PI;
+        // Pronation offset: binary, matching isLandscape
+        float pronationOffset = isLandscape ? Mathf.PI * 0.75f : 0f;
+        u += (_smoothedPronation + pronationOffset) / Mathf.PI;
+
+        // Rotate UVs around center to counteract arm screen orientation.
+        // Keeps UI content upright whether the arm is vertical or horizontal.
+        // Snaps to 90° increments, smoothly animated via _smoothedOrientation.
+        float a = _orientationAngle;
+        float cu = u - 0.5f, cv = v - 0.5f;
+        float cosA = Mathf.Cos(a), sinA = Mathf.Sin(a);
+        u = cu * cosA - cv * sinA + 0.5f;
+        v = cu * sinA + cv * cosA + 0.5f;
 
         return new Vector2(u, v);
     }
 
-    public bool    IsValid         => _hasFrame;
-    public Vector3 WristPosition   => _wristPos;
-    public Vector3 ElbowPosition   => _elbowPos;
-    public Vector3 AxisDir         => _axis;
-    public Vector3 AxisRight       => _axisRight;
-    public Vector3 AxisUp          => _axisUp;
-    public float   AxisLength      => _axisLength;
-    public Mesh    SurfaceMesh     => _mesh;
-
-    /// <summary>
-    /// Signed pronation angle in radians. ~0 = palm up (reference pose),
-    /// ±π = palm down. Use to select which UI to show or to drive
-    /// scroll position across a wider virtual canvas.
-    /// </summary>
-    public float   PronationAngle  => _smoothedPronation;
+    public bool    IsValid          => _hasFrame;
+    public Vector3 WristPosition    => _wristPos;
+    public Vector3 ElbowPosition    => _elbowPos;
+    public Vector3 AxisDir          => _axis;
+    public Vector3 AxisRight        => _axisRight;
+    public Vector3 AxisUp           => _axisUp;
+    public Mesh    SurfaceMesh      => _mesh;
+    public float   PronationAngle   => _smoothedPronation;
+    public float   OrientationAngle => _orientationAngle;
 }

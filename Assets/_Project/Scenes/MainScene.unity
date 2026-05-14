@@ -912,7 +912,7 @@ MonoBehaviour:
   drawAxis: 0
   displayWidth: 0.24
   displayHeight: 0.12
-  displayOffset: 0.12
+  displayOffset: 0.13
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
