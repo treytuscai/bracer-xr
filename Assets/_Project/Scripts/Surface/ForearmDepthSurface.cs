@@ -140,6 +140,7 @@ public class ForearmDepthSurface : MonoBehaviour
     readonly List<Vector3> _verts = new List<Vector3>(2048);
     readonly List<int> _tris = new List<int>(4096);
     readonly List<Vector2> _uvs = new List<Vector2>(2048);
+    readonly List<Vector2> _edgeDists = new List<Vector2>(2048);
     
     // BFS queue for flood pass (pre-allocated, cleared each use)
     readonly Queue<int> _bfs = new Queue<int>(2048);
@@ -153,10 +154,17 @@ public class ForearmDepthSurface : MonoBehaviour
     Vector3 _axis;                  // Wrist->elbow direction (normalized)
     Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
     float _axisLength;              // Wrist-to-elbow distance for UV normalization
-    bool _hasFrame;                 // True if this frame produced a valid mesh
 
-    // Linear projection center for UV mapping.
-    float _projCenter;          // Center of visible surface projected onto _axisRight (m)
+    // Pronation tracking: measures how much the forearm has rotated relative
+    // to the camera view. Used to offset U so rotating the wrist scrolls
+    // through different regions of a wider virtual canvas.
+    // _axisRight (camera-derived) handles projection quality.
+    // _pronationAngle (bone-derived vs camera-derived) handles content selection.
+    static readonly Vector3 _wristUpLocal = Vector3.up;
+    float _pronationAngle;          // Signed angle (rad) of forearm rotation
+    float _smoothedPronation;       // Temporally smoothed to reduce bone jitter
+    bool _hasFrame;                 // True if this frame produced a valid mesh
+    float _projCenter;              // Linear projection center for UV mapping.
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -258,6 +266,19 @@ public class ForearmDepthSurface : MonoBehaviour
         Vector3 toCamera = (_cam.transform.position - armMid).normalized;
         _axisRight = Vector3.Cross(_axis, toCamera).normalized;
         _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
+
+        // Measure pronation: signed angle between bone-derived and camera-derived
+        // reference frames, projected onto the plane perpendicular to the arm axis.
+        // This tells us how much the physical forearm has rotated relative to what
+        // the camera is currently seeing. Palm-up ≈ 0, palm-down ≈ ±π.
+        Vector3 wristUp = (_wrist.rotation * _wristUpLocal).normalized;
+        Vector3 boneRight = Vector3.Cross(_axis, wristUp).normalized;
+        float cos = Vector3.Dot(boneRight, _axisRight);
+        float sin = Vector3.Dot(Vector3.Cross(boneRight, _axisRight), _axis);
+        _pronationAngle = Mathf.Atan2(sin, cos);
+
+        // Smooth to suppress bone tracking jitter
+        _smoothedPronation = Mathf.Lerp(_smoothedPronation, _pronationAngle, 0.15f);
 
         // Use bone distance for UV normalization. Stable across frames
         // unlike depth coverage extent, adapts to different arm lengths
@@ -688,11 +709,29 @@ public class ForearmDepthSurface : MonoBehaviour
     void BuildMesh()
     {
         // Reset mesh data from previous frame
-        _verts.Clear(); _tris.Clear(); _uvs.Clear();
+        _verts.Clear(); _tris.Clear(); _uvs.Clear(); _edgeDists.Clear();
 
         // Reuse or reallocate the grid->vertex index lookup
         if (_cellToVert == null || _cellToVert.GetLength(0) != _rows || _cellToVert.GetLength(1) != _cols)
             _cellToVert = new int[_rows, _cols];
+
+        // Per-row projected bounds along _axisRight (meters).
+        // Each row gets its own edges so the fade strips follow the
+        // actual mesh boundary at every V-slice.
+        float[] rowProjMin = new float[_rows];
+        float[] rowProjMax = new float[_rows];
+        for (int r = 0; r < _rows; r++)
+        {
+            rowProjMin[r] = float.MaxValue;
+            rowProjMax[r] = float.MinValue;
+            for (int c = 0; c < _cols; c++)
+            {
+                if (!_kept[r, c]) continue;
+                float proj = Vector3.Dot(_hits[r, c] - _wristPos, _axisRight);
+                if (proj < rowProjMin[r]) rowProjMin[r] = proj;
+                if (proj > rowProjMax[r]) rowProjMax[r] = proj;
+            }
+        }
 
         // Build vertex list from kept cells. Each kept cell becomes a vertex.
         for (int r = 0; r < _rows; r++)
@@ -703,10 +742,15 @@ public class ForearmDepthSurface : MonoBehaviour
 
                 Vector3 hitPos = _hits[r, c];
 
-                // Store the index this vertex will have once added
+                // Physical distance from this row's nearest mesh edge (meters).
+                // Stored in UV1.x so the shader can smoothstep per-fragment.
+                float proj = Vector3.Dot(hitPos - _wristPos, _axisRight);
+                float dist = Mathf.Max(0f, Mathf.Min(proj - rowProjMin[r], rowProjMax[r] - proj));
+
                 _cellToVert[r, c] = _verts.Count;
                 _verts.Add(transform.InverseTransformPoint(hitPos));
                 _uvs.Add(UV(hitPos));
+                _edgeDists.Add(new Vector2(dist, 0f));
             }
 
         // Quads with edges longer than this get dropped to avoid stretching
@@ -767,6 +811,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.Clear();
         _mesh.SetVertices(_verts);
         _mesh.SetUVs(0, _uvs);
+        _mesh.SetUVs(1, _edgeDists);
         _mesh.SetTriangles(_tris, 0);
         _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
@@ -784,15 +829,16 @@ public class ForearmDepthSurface : MonoBehaviour
 
     /// <summary>
     /// Converts a 3D world-space point on the forearm into a 2D UV coordinate
-    /// using a linear planar projection.
+    /// using a linear planar projection with rotation-based content scrolling.
     ///
-    /// V (0-1) = distance along the arm axis from wrist, normalized by bone length.
-    /// U (0-1) = signed distance from the arm axis projected onto _axisRight,
-    ///           centered on the visible surface center and normalized by its width.
+    /// V (0-1) = distance along the arm axis.
+    /// U (0-1) = position across the arm, centered on visible surface,
+    ///           offset by pronation angle to scroll through a wider virtual canvas.
     ///
-    /// This is a flat-decal projection onto the plane defined by (_axis, _axisRight).
-    /// For the ~40-60° of arc visible on the inner forearm, the visual difference
-    /// from a true cylindrical wrap is negligible (~3% max).
+    /// The camera-derived _axisRight keeps lines straight (projection quality).
+    /// The bone-derived _pronationAngle shifts U so rotating the wrist reveals
+    /// different content regions (content selection). These are independent:
+    /// straight lines at every rotation angle.
     /// </summary>
     Vector2 UV(Vector3 point)
     {
@@ -807,15 +853,27 @@ public class ForearmDepthSurface : MonoBehaviour
         float projRight = Vector3.Dot(fromWrist, _axisRight);
         float u = ((projRight - _projCenter) / Mathf.Max(displayWidth, 1e-4f)) + 0.5f;
 
+        // Scroll U based on forearm rotation.
+        // PI divisor: 180° of pronation = 1.0 UV shift (full texture width).
+        // The old 2*PI divisor meant max forearm rotation (~180°) only shifted 0.5.
+        u += _smoothedPronation / Mathf.PI;
+
         return new Vector2(u, v);
     }
 
-    public bool    IsValid       => _hasFrame;
-    public Vector3 WristPosition => _wristPos;
-    public Vector3 ElbowPosition => _elbowPos;
-    public Vector3 AxisDir       => _axis;
-    public Vector3 AxisRight     => _axisRight;
-    public Vector3 AxisUp        => _axisUp;
-    public float   AxisLength    => _axisLength;
-    public Mesh    SurfaceMesh   => _mesh;
+    public bool    IsValid         => _hasFrame;
+    public Vector3 WristPosition   => _wristPos;
+    public Vector3 ElbowPosition   => _elbowPos;
+    public Vector3 AxisDir         => _axis;
+    public Vector3 AxisRight       => _axisRight;
+    public Vector3 AxisUp          => _axisUp;
+    public float   AxisLength      => _axisLength;
+    public Mesh    SurfaceMesh     => _mesh;
+
+    /// <summary>
+    /// Signed pronation angle in radians. ~0 = palm up (reference pose),
+    /// ±π = palm down. Use to select which UI to show or to drive
+    /// scroll position across a wider virtual canvas.
+    /// </summary>
+    public float   PronationAngle  => _smoothedPronation;
 }
