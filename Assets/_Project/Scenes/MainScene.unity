@@ -903,7 +903,7 @@ MonoBehaviour:
   maxRadialDist: 0.08
   minFromWrist: -0.02
   maxFromElbow: 0.05
-  connectivityThreshold: 0.025
+  connectivityThreshold: 0.005
   floodRadialMultiplier: 1.5
   smoothPasses: 3
   edgeSmoothPasses: 4
