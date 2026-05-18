@@ -896,7 +896,7 @@ MonoBehaviour:
   bodySkeleton: {fileID: 745195948}
   raycastManager: {fileID: 2129304608}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
+  surfaceMaterial: {fileID: 0}
   wristBoneIndex: 19
   elbowBoneIndex: 11
   pixelStride: 8

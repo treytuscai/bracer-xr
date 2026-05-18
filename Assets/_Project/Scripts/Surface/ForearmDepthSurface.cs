@@ -1,6 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
 using Meta.XR;
+using Unity.Jobs;
+using Surface.Helpers;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the
@@ -128,11 +130,13 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // Per-frame depth sampling grid (all same [_rows, _cols] shape)
     Vector3[,] _hits;   // 3D world position from depth raycast
-    Vector3[,] _smoothed; // Scratch buffer for smoothing
     bool[,] _hasDepth;  // Did the raycast return a hit for this cell
     bool[,] _kept;      // Did seed + flood accept this cell into the surface
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
+
+    // Surface Buffer for the Job System
+    private SurfaceBuffer _buffer = new SurfaceBuffer();
 
     // Reusable buffers for boundary chain extraction
     readonly List<Vector2Int> _boundaryChain = new List<Vector2Int>(512);
@@ -293,7 +297,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
 
         // Apply Laplacian smoothing to remove-per pixel depth noise
-        SmoothKeptCells();
+        RunSmoothing();
 
         SmoothBoundary();
 
@@ -503,61 +507,40 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Laplacian smoothing on kept depth cells. Removes per-pixel depth noise
-    /// so the mesh looks smooth like skin. Jacobi iteration: each pass snapshots
-    /// all positions, then averages each cell toward its neighbors from the
-    /// snapshot. Order-independent. Multiple passes spread influence further
-    /// with Gaussian-shaped falloff. Only _kept cells participate. Flood-fill
-    /// already guarantees surface connectivity.
+    /// Applies a Laplacian smoothing pass across the reconstructed surface.
+    /// This runs in parallel on the GPU-optimized background threads using Burst.
     /// </summary>
-    void SmoothKeptCells()
+    void RunSmoothing()
     {
-        // No-op when smoothing is disabled.
         if (smoothPasses <= 0) return;
 
-        // Scratch buffer for Jacobi snapshot (reallocate on grid resize)
-        if (_smoothed == null || _smoothed.GetLength(0) != _rows || 
-                                 _smoothed.GetLength(1) != _cols)
+        // 1. Setup & Copy Data
+        _buffer.ResizeIfNeeded(_rows, _cols);
+        _buffer.Pack(_hits, _kept, _rows, _cols);
+
+        // 2. Execute Jobs
+        for (int i = 0; i < smoothPasses; i++)
         {
-            _smoothed = new Vector3[_rows, _cols];
+            var job = new SmoothSurfaceJob {
+                SourcePositions = _buffer.Source,
+                IsSurfaceCell = _buffer.IsSurface,
+                SmoothedPositions = _buffer.Smoothed,
+                GridHeight = _rows, GridWidth = _cols
+            };
+
+            job.Schedule(_rows * _cols, 64).Complete();
+
+            // Swap buffers for the next pass (Ping-Pong)
+            var temp = _buffer.Source;
+            _buffer.Source = _buffer.Smoothed;
+            _buffer.Smoothed = temp;
         }
 
-        for (int pass = 0; pass < smoothPasses; pass++)
-        {
-            // Freeze positions so earlier cells don't influence later ones
-            System.Array.Copy(_hits, _smoothed, _hits.Length);
-
-            for (int r = 0; r < _rows; r++)
-                for (int c = 0; c < _cols; c++)
-                {
-                    // Skip non-kept cells
-                    if (!_kept[r, c]) continue;
-
-                    // Self-weight prevents overshooting
-                    Vector3 sum = _smoothed[r, c];
-                    float weight = 1f;
-
-                    // Pull toward each valid neighbor's position (8-connected)
-                    for (int n = 0; n < 8; n++)
-                    {
-                        int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
-
-                        // Bounds check: skip neighbors outside the grid
-                        if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
-                        
-                        // Only average with kept cells
-                        if (!_kept[nr, nc]) continue;
-
-                        sum += _smoothed[nr, nc];
-                        weight += 1f;
-                    }
-
-                    // Write the averaged position. Division by total weight
-                    // produces the centroid of this cell + its valid neighbors.
-                    _hits[r, c] = sum / weight;
-                }
-        }
+        // 3. Move back to 2D for the rest of pipeline
+        _buffer.Unpack(_hits, _rows, _cols);
     }
+
+    void OnDestroy() => _buffer.Dispose();
 
     /// <summary>
     /// Extracts ordered boundary contours from the kept-cell grid and
