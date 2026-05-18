@@ -128,10 +128,6 @@ public class ForearmDepthSurface : MonoBehaviour
     Mesh _mesh; 
     LineRenderer _line;
 
-    // Per-frame depth sampling grid (all same [_rows, _cols] shape)
-    Vector3[,] _hits;   // 3D world position from depth raycast
-    bool[,] _hasDepth;  // Did the raycast return a hit for this cell
-    bool[,] _kept;      // Did seed + flood accept this cell into the surface
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
 
@@ -148,9 +144,6 @@ public class ForearmDepthSurface : MonoBehaviour
     readonly List<int> _tris = new List<int>(4096);
     readonly List<Vector2> _uvs = new List<Vector2>(2048);
     readonly List<Vector2> _edgeDists = new List<Vector2>(2048);
-    
-    // BFS queue for flood pass (pre-allocated, cleared each use)
-    readonly Queue<int> _bfs = new Queue<int>(2048);
 
     // 8-connected grid neighbor offsets: row and col deltas paired by index
     static readonly int[] _neighborDr = { -1, -1, -1,  0, 0,  1, 1, 1 };
@@ -254,16 +247,11 @@ public class ForearmDepthSurface : MonoBehaviour
         _elbowPos = _elbow.position;
         _axis = (_elbowPos - _wristPos).normalized;
 
-        // Sample depth buffer in a padded screen-space bbox around the arm
+        // 1. Raycast Depth Buffer
         if (!Sample(_wristPos, _elbowPos)) return;
 
-        // Stage 1: seed = cylinder filter around the wrist->elbow line.
-        // Catches a stable strip of forearm cells even when IOBT elbow is off.
-        SeedFromAxisLine(_wristPos, _elbowPos);
-
-        // Stage 2: flood from seeds via depth connectivity.
-        // Expands onto forearm cells the seed cylinder missed.
-        FloodFromSeeds(_wristPos, _elbowPos);
+        // 2. Surface Extraction (Seed & Flood Jobs)
+        RunExtractionJobs();
 
         // Build orthogonal frame for UV projection.
         // Derives _axisRight from the camera-to-arm direction so it always
@@ -296,14 +284,10 @@ public class ForearmDepthSurface : MonoBehaviour
         float absY = Mathf.Abs(screenY);
         _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
 
-        // Apply Laplacian smoothing to remove-per pixel depth noise
+        // 3. Post-Processing & Mesh Gen
         RunSmoothing();
-
         SmoothBoundary();
-
         ComputeProjectedExtent();
-
-        // Stage 3: build triangle mesh from kept cells
         BuildMesh();
 
         // Mark frame as valid for external consumers
@@ -357,14 +341,8 @@ public class ForearmDepthSurface : MonoBehaviour
         _cols = Mathf.Max(2, Mathf.CeilToInt((xMax - xMin) / pixelStride));
         _rows = Mathf.Max(2, Mathf.CeilToInt((yMax - yMin) / pixelStride));
 
-        // Reallocate only when grid size changes. Per-cell clearing happens
-        // in the raycast loop below, so stale data from same-sized frames is safe.
-        if (_hits == null || _hits.GetLength(0) != _rows || _hits.GetLength(1) != _cols)
-        {
-            _hits = new Vector3[_rows, _cols];
-            _hasDepth = new bool[_rows, _cols];
-            _kept = new bool[_rows, _cols];
-        }
+        // Resize native buffer
+        _buffer.ResizeIfNeeded(_rows, _cols);
 
         // Cast depth rays through each grid cell and store 3D hit positions.
         // Cells without valid depth are flagged so downstream stages skip them.
@@ -372,9 +350,10 @@ public class ForearmDepthSurface : MonoBehaviour
             for (int c = 0; c < _cols; c++)
             {
                 // Reset state — no cell carries data from previous frames
-                _hasDepth[r, c] = false;
-                _kept[r, c] = false;
-                _hits[r, c] = Vector3.zero;
+                int idx = r * _cols + c;
+                _buffer.HasDepth[idx] = false;
+                _buffer.IsSurface[idx] = false;
+                _buffer.Hits[idx] = Vector3.zero;
 
                 // Map grid cell back to screen pixel coordinates.
                 // xMin/yMin are already clamped to screen bounds, so every
@@ -385,125 +364,55 @@ public class ForearmDepthSurface : MonoBehaviour
                 // Sample the depth buffer at this pixel via EnvironmentRaycastManager
                 if (raycastManager.Raycast(ray, out var hit))
                 {
-                    _hits[r, c] = hit.point;
-                    _hasDepth[r, c] = true;
+                    _buffer.Hits[idx] = hit.point;
+                    _buffer.HasDepth[idx] = true;
                 }
             }
         return true;
     }
 
     /// <summary>
-    /// Seed pass: marks depth cells that fall inside a cylinder around the
-    /// wrist->elbow line. These become the starting cells for the flood-fill.
-    /// Three filters run in order: too far before the wrist? skip.
-    /// Too far past the elbow? skip. Too far from the line? skip.
+    /// Executes the Burst-compiled Jobs to extract the forearm surface from the raw depth data.
+    /// Stage 1 (Seed): A parallel job that marks depth cells inside a cylinder around the wrist->elbow axis.
+    /// Stage 2 (Flood): A background job that expands from the seeds using a BFS to find all 3D-connected forearm cells.
+    /// Blocks the main thread until the flood fill is complete.
     /// </summary>
-    void SeedFromAxisLine(Vector3 wristPos, Vector3 elbowPos)
+    void RunExtractionJobs()
     {
-        // Wrist->elbow direction for longitudinal bounds
-        Vector3 axis = (elbowPos - wristPos).normalized;
+        // Clear the queue from the previous frame
+        _buffer.BFSQueue.Clear();
 
-        // Max perpendicular distance from the axis line
-        // to count as inside the cylinder (avoids sqrt per cell)
-        float maxRSq = maxRadialDist * maxRadialDist;
+        // Stage 1: seed = cylinder filter around the wrist->elbow line.
+        // Catches a stable strip of forearm cells even when IOBT elbow is off.
+        var seedJob = new SeedFromAxisJob {
+            Hits = _buffer.Hits,
+            HasDepth = _buffer.HasDepth,
+            Kept = _buffer.IsSurface,
+            BFSQueueWriter = _buffer.BFSQueue.AsParallelWriter(),
+            WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
+            MaxRSq = maxRadialDist * maxRadialDist, 
+            MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
+        };
+        JobHandle seedHandle = seedJob.Schedule(_rows * _cols, 64);
 
-        // Walk every sampled depth cell and test against the cylinder
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-            {
-                // Skip cells with no depth data
-                if (!_hasDepth[r, c]) continue;
-                Vector3 p = _hits[r, c];
-
-                // Longitudinal bounds: reject points beyond each end of the arm segment
-                float fromWrist = Vector3.Dot(p - wristPos, axis);
-                if (fromWrist < minFromWrist) continue;
-                float fromElbow = Vector3.Dot(p - elbowPos, axis);
-                if (fromElbow > maxFromElbow) continue;
-
-                // Radial bound: perpendicular distance from the wrist->elbow line.
-                // Cross product with a unit vector gives the perpendicular component
-                // directly. The result is the same regardless of which point on the
-                // line we measure from.
-                float radialSq = Vector3.Cross(p - elbowPos, axis).sqrMagnitude;
-
-                 // Cell is inside the cylinder — mark as seed for flood pass
-                if (radialSq <= maxRSq) _kept[r, c] = true;
-            }
-    }
-
-    /// <summary>
-    /// Flood pass: BFS from every seed cell, expanding onto neighboring depth
-    /// cells that pass three checks: 3D-connected (within connectivityThreshold),
-    /// within a loose radial bound around the arm axis (floodRadialMultiplier x
-    /// maxRadialDist, to prevent leaking onto nearby surfaces like tables), and
-    /// within the wrist->elbow longitudinal bounds. This is what catches forearm
-    /// surface the seed cylinder missed when the IOBT elbow angle is off.
-    /// </summary>
-    void FloodFromSeeds(Vector3 wristPos, Vector3 elbowPos)
-    {
-        // Enqueue all seed cells as BFS starting points.
-        // Cells are stored as flat indices (r * _cols + c) to avoid
-        // allocating tuples. Decoded back via idx / _cols and idx % _cols.
-        _bfs.Clear();
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-                if (_kept[r, c]) _bfs.Enqueue(r * _cols + c);
-
-        if (_bfs.Count == 0) return;
-
-        // Wrist->elbow direction for longitudinal bounds
-        Vector3 axis = (elbowPos - wristPos).normalized;
-
-        // Max 3D distance between adjacent grid hits to count as
-        // the same surface (avoids sqrt per neighbor)
-        float connSq = connectivityThreshold * connectivityThreshold;
-
-        // Looser radial cap than the seed pass. Allows the flood to expand
-        // past where the wrong-angle axis line reaches, while still rejecting
-        // nearby surfaces (e.g. table) that are depth-connected but off the arm
+        // Stage 2: flood from seeds via depth connectivity.
+        // Expands onto forearm cells the seed cylinder missed.
         float floodRadius = maxRadialDist * floodRadialMultiplier;
-        float maxFloodRadialSq = floodRadius * floodRadius;
-
-        // Process the queue until no more connected cells can be reached
-        while (_bfs.Count > 0)
-        {
-            // Decode flat index back to grid coordinates
-            int idx = _bfs.Dequeue();
-            int r = idx / _cols, c = idx % _cols;
-            Vector3 currentHit = _hits[r, c];
-
-            // Check all 8 neighbors for possible expansion
-            for (int n = 0; n < 8; n++)
-            {
-                // Neighbor grid coordinates; skip if out of bounds
-                int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
-                if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
-
-                // Skip if already part of the surface or has no depth data
-                if (_kept[nr, nc] || !_hasDepth[nr, nc]) continue;
-
-                Vector3 neighborHit = _hits[nr, nc];
-
-                // Depth connectivity: reject if neighbor is too far in 3D
-                if ((neighborHit - currentHit).sqrMagnitude > connSq) continue;
-
-                // Radial bound: don't flood onto surfaces far from the arm axis
-                float radialSq = Vector3.Cross(neighborHit - elbowPos, axis).sqrMagnitude;
-                if (radialSq > maxFloodRadialSq) continue;
-
-                // Same longitudinal bounds as the seed pass.
-                // Don't flood before the wrist or past the elbow
-                float fromWrist = Vector3.Dot(neighborHit - wristPos, axis);
-                if (fromWrist < minFromWrist) continue;
-                float fromElbow = Vector3.Dot(neighborHit - elbowPos, axis);
-                if (fromElbow > maxFromElbow) continue;
-
-                // Cell passed all checks. Add to surface and continue expanding
-                _kept[nr, nc] = true;
-                _bfs.Enqueue(nr * _cols + nc);
-            }
-        }
+        var floodJob = new FloodFromSeedsJob {
+            BFSQueue = _buffer.BFSQueue,
+            Hits = _buffer.Hits,
+            HasDepth = _buffer.HasDepth,
+            Kept = _buffer.IsSurface,
+            Cols = _cols, Rows = _rows,
+            WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
+            ConnSq = connectivityThreshold * connectivityThreshold, 
+            MaxFloodRadialSq = floodRadius * floodRadius,
+            MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
+        };
+        
+        // Schedule flood, wait for seed to finish first, then block until flood is done
+        JobHandle floodHandle = floodJob.Schedule(seedHandle);
+        floodHandle.Complete();
     }
 
     /// <summary>
@@ -514,30 +423,23 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         if (smoothPasses <= 0) return;
 
-        // 1. Setup & Copy Data
-        _buffer.ResizeIfNeeded(_rows, _cols);
-        _buffer.Pack(_hits, _kept, _rows, _cols);
-
-        // 2. Execute Jobs
+        // Execute Jobs
         for (int i = 0; i < smoothPasses; i++)
         {
             var job = new SmoothSurfaceJob {
-                SourcePositions = _buffer.Source,
-                IsSurfaceCell = _buffer.IsSurface,
-                SmoothedPositions = _buffer.Smoothed,
+                Hits = _buffer.Hits,
+                IsSurface = _buffer.IsSurface,
+                Smoothed = _buffer.Smoothed,
                 GridHeight = _rows, GridWidth = _cols
             };
 
             job.Schedule(_rows * _cols, 64).Complete();
 
-            // Swap buffers for the next pass (Ping-Pong)
-            var temp = _buffer.Source;
-            _buffer.Source = _buffer.Smoothed;
+            // Swap directly inside the buffer
+            var temp = _buffer.Hits;
+            _buffer.Hits = _buffer.Smoothed;
             _buffer.Smoothed = temp;
         }
-
-        // 3. Move back to 2D for the rest of pipeline
-        _buffer.Unpack(_hits, _rows, _cols);
     }
 
     void OnDestroy() => _buffer.Dispose();
@@ -589,7 +491,7 @@ public class ForearmDepthSurface : MonoBehaviour
                         for (int j = lo; j <= hi; j++)
                         {
                             var cell = _boundaryChain[j];
-                            sum += _hits[cell.x, cell.y];
+                            sum += _buffer.Hits[cell.x * _cols + cell.y];
                             count++;
                         }
 
@@ -600,7 +502,7 @@ public class ForearmDepthSurface : MonoBehaviour
                     for (int i = 0; i < _boundaryChain.Count; i++)
                     {
                         var cell = _boundaryChain[i];
-                        _hits[cell.x, cell.y] = _chainSmoothed[i];
+                        _buffer.Hits[cell.x * _cols + cell.y] = _chainSmoothed[i];
                     }
                 }
         }
@@ -611,11 +513,11 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     bool IsBoundaryCell(int r, int c)
     {
-        if (!_kept[r, c]) return false;
+        if (!_buffer.IsSurface[r * _cols + c]) return false;
         for (int n = 0; n < 8; n++)
         {
             int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
-            if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols || !_kept[nr, nc])
+            if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols || !_buffer.IsSurface[nr * _cols + nc])
                 return true;
         }
         return false;
@@ -678,11 +580,11 @@ public class ForearmDepthSurface : MonoBehaviour
         for (int r = 0; r < _rows; r++)
             for (int c = 0; c < _cols; c++)
             {
-                if (!_kept[r, c]) continue;
+                if (!_buffer.IsSurface[r * _cols + c]) continue;
 
                 // Project onto _axisRight: signed distance from the arm axis
                 // in the direction perpendicular to the arm, within the visible plane.
-                float proj = Vector3.Dot(_hits[r, c] - _wristPos, _axisRight);
+                float proj = Vector3.Dot(_buffer.Hits[r * _cols + c] - _wristPos, _axisRight);
 
                 sum += proj;
                 count++;
@@ -717,8 +619,8 @@ public class ForearmDepthSurface : MonoBehaviour
             rowProjMax[r] = float.MinValue;
             for (int c = 0; c < _cols; c++)
             {
-                if (!_kept[r, c]) continue;
-                float proj = Vector3.Dot(_hits[r, c] - _wristPos, _axisRight);
+                if (!_buffer.IsSurface[r * _cols + c]) continue;
+                float proj = Vector3.Dot(_buffer.Hits[r * _cols + c] - _wristPos, _axisRight);
                 if (proj < rowProjMin[r]) rowProjMin[r] = proj;
                 if (proj > rowProjMax[r]) rowProjMax[r] = proj;
             }
@@ -753,9 +655,9 @@ public class ForearmDepthSurface : MonoBehaviour
             for (int c = 0; c < _cols; c++)
             {
                 // Rejected cells get -1 so the triangle loop knows to skip them.
-                if (!_kept[r, c]) { _cellToVert[r, c] = -1; continue; }
+                if (!_buffer.IsSurface[r * _cols + c]) { _cellToVert[r, c] = -1; continue; }
 
-                Vector3 hitPos = _hits[r, c];
+                Vector3 hitPos = _buffer.Hits[r * _cols + c];
 
                 // Physical distance from this row's nearest mesh edge (meters).
                 // Stored in UV1.x so the shader can smoothstep per-fragment.
@@ -794,7 +696,7 @@ public class ForearmDepthSurface : MonoBehaviour
                 if (vertCount == 4)
                 {
                     // Check that no edge is too long before emitting
-                    if (!QuadEdgesOK(_hits[r,c], _hits[r,c+1], _hits[r+1,c], _hits[r+1,c+1], maxSq)) 
+                    if (!QuadEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) 
                         continue;
 
                     // Split quad into two triangles
@@ -805,19 +707,19 @@ public class ForearmDepthSurface : MonoBehaviour
                 // Three corners! Form a single triangle from whichever three exist,
                 // but only if no edge stretches across a depth gap.
                 else if (topLeft  < 0) {
-                    if (!TriEdgesOK(_hits[r,c+1], _hits[r+1,c], _hits[r+1,c+1], maxSq)) continue;
+                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
                     _tris.Add(topRight); _tris.Add(botLeft);  _tris.Add(botRight);
                 }
                 else if (topRight < 0) {
-                    if (!TriEdgesOK(_hits[r,c], _hits[r+1,c], _hits[r+1,c+1], maxSq)) continue;
+                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
                     _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(botRight);
                 }
                 else if (botLeft  < 0) {
-                    if (!TriEdgesOK(_hits[r,c], _hits[r,c+1], _hits[r+1,c+1], maxSq)) continue;
+                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
                     _tris.Add(topLeft);  _tris.Add(botRight); _tris.Add(topRight);
                 }
                 else {
-                    if (!TriEdgesOK(_hits[r,c], _hits[r+1,c], _hits[r,c+1], maxSq)) continue;
+                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[r*_cols+c+1], maxSq)) continue;
                     _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(topRight);
                 }
             }

@@ -12,10 +12,9 @@ namespace Surface.Helpers
     [BurstCompile]
     public struct SmoothSurfaceJob : IJobParallelFor
     {
-        [ReadOnly] public NativeArray<Vector3> SourcePositions;
-        [ReadOnly] public NativeArray<bool> IsSurfaceCell; // Map of cells kept by flood-fill
-        
-        [WriteOnly] public NativeArray<Vector3> SmoothedPositions;
+        [ReadOnly] public NativeArray<Vector3> Hits;
+        [WriteOnly] public NativeArray<Vector3> Smoothed;
+        [ReadOnly] public NativeArray<bool> IsSurface;
 
         public int GridHeight; // Rows
         public int GridWidth;  // Columns
@@ -24,9 +23,9 @@ namespace Surface.Helpers
         {
             // 1. Validate if this point is part of the tracked arm surface.
             // If not, we don't smooth it, just pass the raw data through.
-            if (!IsSurfaceCell[flatIndex])
+            if (!IsSurface[flatIndex])
             {
-                SmoothedPositions[flatIndex] = SourcePositions[flatIndex];
+                Smoothed[flatIndex] = Smoothed[flatIndex];
                 return;
             }
 
@@ -36,7 +35,7 @@ namespace Surface.Helpers
 
             // 3. Initialize the accumulator with the current point's position (Self-Weight).
             // Starting with a weight of 1.0 prevents the mesh from shrinking too aggressively.
-            Vector3 positionSum = SourcePositions[flatIndex];
+            Vector3 positionSum = Hits[flatIndex];
             float totalWeight = 1f;
 
             // 4. Sample the 3x3 Neighborhood (Moore Neighborhood).
@@ -60,9 +59,9 @@ namespace Surface.Helpers
                         
                         // 6. Connectivity Check: Only average with cells that actually 
                         // exist on the arm (ignore holes or background depth).
-                        if (IsSurfaceCell[neighborFlatIndex])
+                        if (IsSurface[neighborFlatIndex])
                         {
-                            positionSum += SourcePositions[neighborFlatIndex];
+                            positionSum += Hits[neighborFlatIndex];
                             totalWeight += 1f;
                         }
                     }
@@ -71,7 +70,7 @@ namespace Surface.Helpers
 
             // 7. Calculate the Centroid.
             // This pulls the vertex toward the average position of its neighbors.
-            SmoothedPositions[flatIndex] = positionSum / totalWeight;
+            Smoothed[flatIndex] = positionSum / totalWeight;
         }
     }
 }
