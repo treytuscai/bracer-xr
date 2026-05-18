@@ -135,9 +135,8 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceBuffer _buffer = new SurfaceBuffer();
 
     // Reusable buffers for boundary chain extraction
-    readonly List<Vector2Int> _boundaryChain = new List<Vector2Int>(512);
+    readonly List<int> _boundaryChain = new List<int>(512);
     readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
-    bool[,] _boundaryVisited;
 
     // Mesh construction buffers (pre-allocated, cleared each frame)
     readonly List<Vector3> _verts = new List<Vector3>(2048);
@@ -145,9 +144,6 @@ public class ForearmDepthSurface : MonoBehaviour
     readonly List<Vector2> _uvs = new List<Vector2>(2048);
     readonly List<Vector2> _edgeDists = new List<Vector2>(2048);
 
-    // 8-connected grid neighbor offsets: row and col deltas paired by index
-    static readonly int[] _neighborDr = { -1, -1, -1,  0, 0,  1, 1, 1 };
-    static readonly int[] _neighborDc = { -1,  0,  1, -1, 1, -1, 0, 1 };
 
     // Frame state computed in LateUpdate, consumed by UV() and public API
     Vector3 _wristPos, _elbowPos;   // Cached bone world positions
@@ -286,7 +282,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // 3. Post-Processing & Mesh Gen
         RunSmoothing();
-        SmoothBoundary();
+        RunBoundarySmoothing();
         ComputeProjectedExtent();
         BuildMesh();
 
@@ -442,127 +438,27 @@ public class ForearmDepthSurface : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Extracts ordered boundary contours from the kept-cell grid and applies a 1D moving average 
+    /// along each chain to smooth jagged mesh edges. Runs on the main thread using flat-indexed 
+    /// native buffers to maintain zero garbage collection.
+    /// </summary>
+    void RunBoundarySmoothing()
+    {
+        BoundarySmoother.ProcessBoundary(
+            edgeSmoothPasses, 
+            edgeWindowRadius, 
+            _rows, 
+            _cols, 
+            _buffer.Hits, 
+            _buffer.IsSurface, 
+            _buffer.BoundaryVisited, 
+            _boundaryChain, 
+            _chainSmoothed
+        );
+    }
+
     void OnDestroy() => _buffer.Dispose();
-
-    /// <summary>
-    /// Extracts ordered boundary contours from the kept-cell grid and
-    /// applies a 1D moving average along each chain. Smooths edge shape
-    /// without pulling vertices toward interior. Boundary = kept cell
-    /// with at least one non-kept or out-of-bounds neighbor.
-    /// </summary>
-    void SmoothBoundary()
-    {
-        if (edgeSmoothPasses <= 0) return;
-
-        // Tag boundary cells
-        if (_boundaryVisited == null || _boundaryVisited.GetLength(0) != _rows ||
-                                        _boundaryVisited.GetLength(1) != _cols)
-            _boundaryVisited = new bool[_rows, _cols];
-
-        for (int pass = 0; pass < edgeSmoothPasses; pass++)
-        {
-            // Reset visited flags for chain extraction
-            for (int r = 0; r < _rows; r++)
-                for (int c = 0; c < _cols; c++)
-                    _boundaryVisited[r, c] = false;
-
-            // Find and smooth each connected boundary contour
-            for (int r = 0; r < _rows; r++)
-                for (int c = 0; c < _cols; c++)
-                {
-                    if (!IsBoundaryCell(r, c) || _boundaryVisited[r, c]) continue;
-
-                    // Trace an ordered chain starting from this cell
-                    TraceChain(r, c);
-
-                    if (_boundaryChain.Count < 3) continue;
-
-                    // 1D moving average along the chain
-                    _chainSmoothed.Clear();
-                    for (int i = 0; i < _boundaryChain.Count; i++)
-                    {
-                        Vector3 sum = Vector3.zero;
-                        int count = 0;
-
-                        // Window centered on i, clamped to chain bounds
-                        int lo = Mathf.Max(0, i - edgeWindowRadius);
-                        int hi = Mathf.Min(_boundaryChain.Count - 1, i + edgeWindowRadius);
-
-                        for (int j = lo; j <= hi; j++)
-                        {
-                            var cell = _boundaryChain[j];
-                            sum += _buffer.Hits[cell.x * _cols + cell.y];
-                            count++;
-                        }
-
-                        _chainSmoothed.Add(sum / count);
-                    }
-
-                    // Write smoothed positions back
-                    for (int i = 0; i < _boundaryChain.Count; i++)
-                    {
-                        var cell = _boundaryChain[i];
-                        _buffer.Hits[cell.x * _cols + cell.y] = _chainSmoothed[i];
-                    }
-                }
-        }
-    }
-
-    /// <summary>
-    /// Is this cell kept with at least one non-kept or OOB neighbor?
-    /// </summary>
-    bool IsBoundaryCell(int r, int c)
-    {
-        if (!_buffer.IsSurface[r * _cols + c]) return false;
-        for (int n = 0; n < 8; n++)
-        {
-            int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
-            if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols || !_buffer.IsSurface[nr * _cols + nc])
-                return true;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Greedy contour walk from a starting boundary cell. At each step,
-    /// picks the nearest unvisited boundary neighbor. Produces an ordered
-    /// chain in _boundaryChain.
-    /// </summary>
-    void TraceChain(int startR, int startC)
-    {
-        _boundaryChain.Clear();
-        int r = startR, c = startC;
-
-        while (true)
-        {
-            _boundaryVisited[r, c] = true;
-            _boundaryChain.Add(new Vector2Int(r, c));
-
-            // Find next unvisited boundary neighbor (prefer 4-connected for
-            // cleaner chain order, fall back to 8-connected)
-            int bestR = -1, bestC = -1;
-            bool found = false;
-
-            for (int n = 0; n < 8; n++)
-            {
-                int nr = r + _neighborDr[n], nc = c + _neighborDc[n];
-                if (nr < 0 || nc < 0 || nr >= _rows || nc >= _cols) continue;
-                if (_boundaryVisited[nr, nc] || !IsBoundaryCell(nr, nc)) continue;
-
-                bestR = nr;
-                bestC = nc;
-                found = true;
-
-                // 4-connected neighbors are indices 1,3,4,6 in the offset arrays.
-                // Prefer these for straighter chain ordering.
-                if (n == 1 || n == 3 || n == 4 || n == 6) break;
-            }
-
-            if (!found) break;
-            r = bestR;
-            c = bestC;
-        }
-    }
 
     /// <summary>
     /// Computes the center of the visible forearm surface by projecting

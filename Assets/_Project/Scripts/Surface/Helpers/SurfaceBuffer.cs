@@ -11,6 +11,7 @@ namespace Surface.Helpers
         public NativeArray<bool> IsSurface;
         public NativeArray<bool> HasDepth;
         public NativeQueue<int> BFSQueue;
+        public NativeArray<bool> BoundaryVisited;
 
         private int _currentSize = -1;
 
@@ -26,6 +27,7 @@ namespace Surface.Helpers
             IsSurface = new NativeArray<bool>(total, Allocator.Persistent);
             HasDepth = new NativeArray<bool>(total, Allocator.Persistent);
             BFSQueue = new NativeQueue<int>(Allocator.Persistent);
+            BoundaryVisited = new NativeArray<bool>(total, Allocator.Persistent);
             
             _currentSize = total;
         }
@@ -36,6 +38,7 @@ namespace Surface.Helpers
             if (Smoothed.IsCreated) Smoothed.Dispose();
             if (IsSurface.IsCreated) IsSurface.Dispose();
             if (HasDepth.IsCreated) HasDepth.Dispose();
+            if (BoundaryVisited.IsCreated) BoundaryVisited.Dispose();
             if (BFSQueue.IsCreated) BFSQueue.Dispose();
             _currentSize = -1;
         }
