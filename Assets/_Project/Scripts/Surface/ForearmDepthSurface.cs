@@ -44,20 +44,10 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
-
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
-
     [Tooltip("Material for rendering the forearm surface. Falls back to transparent cyan if unset")]
     public Material surfaceMaterial;
-
-    [Header("Bones")]
-    [Tooltip("Index of the wrist bone in OVRSkeleton.Bones (OpenXR hand skeleton)")]
-    public int wristBoneIndex = 19;
-    
-    [Tooltip("Index of the elbow bone in OVRSkeleton.Bones (IOBT body skeleton). " +
-             "Used for direction only. Position can be unreliable on bend")]
-    public int elbowBoneIndex = 11;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -66,21 +56,18 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Seed (wrist->elbow cylinder filter)")]
     [Tooltip("(Also used in Flood) Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
     [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
-
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
-
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
     [Range(0f, 0.10f)] public float maxFromElbow = 0.05f;
 
     [Header("Flood (depth connectivity expansion)")]
-    [Tooltip("Max 3D step between adjacent grid hits to count as connected (m). " +
-             "This is what lets the flood expand off the wrong-angle seed line " +
-             "onto the actual forearm surface.")]
+    [Tooltip("Max 3D step between adjacent grid hits to count as connected (m).")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
 
     [Header("Smoothing")]
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
+    [Range(0, 5)]
     public int smoothPasses = 3;
 
     [Header("Edge Smoothing")]
@@ -94,20 +81,19 @@ public class ForearmDepthSurface : MonoBehaviour
              "to allow for surface curvature between cells that connected through different flood paths")]
     [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.030f;
 
+    [Header("Display")]
+    [Tooltip("Physical width of the display region on the arm (m)")]
+    public float displayWidth = 0.05f;
+    [Tooltip("Physical height of the display region along the arm (m)")]
+    public float displayHeight = 0.05f;
+    [Tooltip("How far from the wrist (along axis) to center the display (m)")]
+    public float displayOffset = 0.12f;
+
+    [Header("Debug")]
     [Tooltip("Skip seed/flood. Treat every valid depth pixel as surface and mesh it. " +
              "Use to visualize the raw unprojection independent of arm-finding logic. " +
              "When on, bump maxQuadEdge to ~0.5 so the mesh doesn't get pruned by edge length.")]
     public bool bypassSeedFlood = false;
-
-    [Header("Display")]
-    [Tooltip("Physical width of the display region on the arm (m)")]
-    public float displayWidth = 0.05f;
-
-    [Tooltip("Physical height of the display region along the arm (m)")]
-    public float displayHeight = 0.05f;
-
-    [Tooltip("How far from the wrist (along axis) to center the display (m)")]
-    public float displayOffset = 0.12f;
 
     // Camera Reference
     Camera _cam;
@@ -131,35 +117,26 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // Buffers
     private SurfaceBuffer _buffer = new SurfaceBuffer();
-    private MeshBuffer _meshBuffer;
+    private MeshBuffer _meshBuffer = new MeshBuffer();
     readonly List<int> _boundaryChain = new List<int>(512);
     readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
 
     // Frame state computed in LateUpdate, consumed by UV() and public API
-    Transform _wrist, _elbow; 
+    static readonly int wristBoneIndex = 19; // Index of the wrist bone in OVRSkeleton.Bones
+    static readonly int elbowBoneIndex = 11; // Index of the elbow bone in OVRSkeleton.Bones
+    Transform _wrist, _elbow;
     Vector3 _wristPos, _elbowPos;   // Cached bone world positions
     Vector3 _axis;                  // Wrist->elbow direction (normalized)
     Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
     float _projCenter;              // Linear projection center for UV mapping.
-
-    // Pronation tracking: measures how much the forearm has rotated relative
-    // to the camera view. Used to offset U so rotating the wrist scrolls
-    // through different regions of a wider virtual canvas.
-    // _axisRight (camera-derived) handles projection quality.
-    // _pronationAngle (bone-derived vs camera-derived) handles content selection.
-    static readonly Vector3 _wristUpLocal = Vector3.up;
+    static readonly Vector3 _wristUpLocal = Vector3.up; // Local up
     float _pronationAngle;          // Signed angle (rad) of forearm rotation
     float _smoothedPronation;       // Temporally smoothed to reduce bone jitter
-
-    // Orientation tracking: detects whether the arm is held vertically (portrait)
-    // or horizontally (landscape) in the camera view, and rotates UVs to keep
-    // the UI content upright.
     float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
 
     void Awake()
     {
         _meshGenerator = new MeshGenerator();
-        _meshBuffer = new MeshBuffer();
         _readbackManager = new DepthReadback();
     }
 
@@ -360,12 +337,6 @@ public class ForearmDepthSurface : MonoBehaviour
             _meshGenerator.DisplayWidth = displayWidth;
             _meshGenerator.DisplayHeight = displayHeight;
 
-            // --- ZERO THE TRANSFORM ---
-            // Vital: Vertices are world-space, so GameObject must stay at origin
-            transform.position = Vector3.zero;
-            transform.rotation = Quaternion.identity;
-            transform.localScale = Vector3.one;
-
             // Execute the multi-pass Burst pipeline.
             _meshGenerator.Generate(
                 _meshBuffer,
@@ -373,7 +344,7 @@ public class ForearmDepthSurface : MonoBehaviour
                 _rows, _cols,
                 _wristPos, _axis, _axisRight,
                 _smoothedPronation, _orientationAngle,
-                transform.worldToLocalMatrix, // Usually Identity since we just zeroed it
+                transform.worldToLocalMatrix,
                 out float frameCenter
             );
 
@@ -489,7 +460,6 @@ public class ForearmDepthSurface : MonoBehaviour
     private void UpdateUnityMesh()
     {
         if (_meshBuffer.VertexCount == 0) return;
-        Debug.Log(_meshBuffer.VertexCount);
 
         _mesh.Clear();
 

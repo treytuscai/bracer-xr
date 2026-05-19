@@ -1202,56 +1202,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1715298000}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1555509992
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1555509993}
-  - component: {fileID: 1555509994}
-  m_Layer: 0
-  m_Name: DepthRaycastTest
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 0
---- !u!4 &1555509993
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1555509992}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1555509994
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1555509992}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: fcfeef268d04f427ca1c0ca8bc66563a, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  bodySkeleton: {fileID: 745195948}
-  raycastManager: {fileID: 2129304608}
-  centerEyeAnchor: {fileID: 2129304609}
-  pixelStride: 11
-  screenPadding: 30
-  maxRadialDist: 0.08
 --- !u!1 &1712984847
 GameObject:
   m_ObjectHideFlags: 0
@@ -2009,5 +1959,4 @@ SceneRoots:
   - {fileID: 2129304601}
   - {fileID: 203844589}
   - {fileID: 565971089}
-  - {fileID: 1555509993}
   - {fileID: 995909439}

@@ -16,11 +16,6 @@ namespace Surface.Core
     /// </summary>
     public class DepthReadback : IDisposable
     {
-        // World position is reconstructed in the shader, so the readback is a
-        // float4 per pixel (xyz = world pos, w = valid flag). RGBAFloat is the
-        // matching texture format.
-        private const RenderTextureFormat WorldPosFormat = RenderTextureFormat.ARGBFloat;
-
         private Material _blitMaterial;
         private RenderTexture _worldPosRT;
         private bool _isReadbackPending = false;
@@ -36,12 +31,6 @@ namespace Surface.Core
             _blitMaterial = new Material(shader);
             Debug.Log("[Depth] MetaDepthCopy shader loaded.");
         }
-
-        // ID for Meta's depth-frame world->clip matrices, one per eye.
-        // [0] is left eye, [1] is right eye. Set as a shader global by
-        // EnvironmentDepthManager once per frame.
-        private static readonly int s_ReprojectionMatricesId =
-            Shader.PropertyToID("_EnvironmentDepthReprojectionMatrices");
 
         public void RequestDepth(
             int screenWidth, int screenHeight, 
