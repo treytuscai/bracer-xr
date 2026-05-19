@@ -1,7 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
-using Meta.XR;
 using Unity.Jobs;
+using Unity.Collections;
 using Surface.Helpers;
 
 /// <summary>
@@ -41,9 +41,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
-
-    [Tooltip("MRUK depth sampler. Casts rays against the depth buffer")]
-    public EnvironmentRaycastManager raycastManager;
 
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
@@ -128,6 +125,9 @@ public class ForearmDepthSurface : MonoBehaviour
     Mesh _mesh; 
     LineRenderer _line;
 
+    private DepthReadback _readbackManager;
+    private bool _isProcessingMesh = false;
+
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
 
@@ -165,6 +165,12 @@ public class ForearmDepthSurface : MonoBehaviour
     // the UI content upright.
     float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
 
+    private int _cropX, _cropY, _cropW, _cropH;
+    private Matrix4x4 _captureViewInv;
+    private Matrix4x4 _captureProj;
+    private int _captureWidth;
+    private int _captureHeight;
+
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
     /// sets up the debug axis line, and caches the camera reference.
@@ -192,9 +198,6 @@ public class ForearmDepthSurface : MonoBehaviour
         _line.material = new Material(Shader.Find("Sprites/Default"));
         _line.startColor = _line.endColor = Color.green;
         _line.enabled = false;
-
-        // Cache camera reference. Doesn't change at runtime
-        _cam = centerEyeAnchor.GetComponent<Camera>();
     }
 
     /// <summary>
@@ -227,10 +230,10 @@ public class ForearmDepthSurface : MonoBehaviour
         _hasFrame = false;
         if (_line) _line.enabled = false;
 
-        // Bail if required references are missing
-        if (raycastManager == null || bodySkeleton == null || _cam == null) return;
-
-        // Wait for skeleton to populate. Bones may not exist on first frames
+        // Wait for everything to populate.
+        if (_readbackManager == null) _readbackManager = new DepthReadback();
+        if (_cam == null)  _cam = centerEyeAnchor.GetComponent<Camera>();
+        if (bodySkeleton == null || _cam == null) return;
         if (bodySkeleton.Bones == null || bodySkeleton.Bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return;
 
         // Resolve bone transforms. Can be null if skeleton is still initializing
@@ -243,11 +246,36 @@ public class ForearmDepthSurface : MonoBehaviour
         _elbowPos = _elbow.position;
         _axis = (_elbowPos - _wristPos).normalized;
 
-        // 1. Raycast Depth Buffer
-        if (!Sample(_wristPos, _elbowPos)) return;
+        // 1. Calculate Bounds
+        if (!CalculateScreenBounds(out _cropX, out _cropY, out _cropW, out _cropH)) return;
 
-        // 2. Surface Extraction (Seed & Flood Jobs)
-        RunExtractionJobs();
+        // 2. Request GPU Data (Only if we aren't already waiting for the previous frame to finish)
+        if (!_isProcessingMesh)
+        {
+            _isProcessingMesh = true;
+
+            // CAPTURE THE TRUE LEFT EYE MATRICES
+            // The depth texture slice 0 is the physical Left Eye lens. 
+            // Using the Center Eye causes massive parallax swimming.
+            
+            _captureProj = _cam.stereoEnabled 
+                ? _cam.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left) 
+                : _cam.projectionMatrix;
+                
+            // We use .inverse to get the physical location of the lens in the real world
+            _captureViewInv = _cam.stereoEnabled 
+                ? _cam.GetStereoViewMatrix(Camera.StereoscopicEye.Left).inverse 
+                : _cam.worldToCameraMatrix.inverse;
+
+            _captureWidth = _cam.pixelWidth;
+            _captureHeight = _cam.pixelHeight;
+
+            _readbackManager.RequestDepth(
+                _captureWidth, _captureHeight, 
+                _cropX, _cropY, _cropW, _cropH, 
+                OnDepthDataReceived
+            );
+        }
 
         // Build orthogonal frame for UV projection.
         // Derives _axisRight from the camera-to-arm direction so it always
@@ -279,101 +307,91 @@ public class ForearmDepthSurface : MonoBehaviour
         float absX = Mathf.Abs(screenX);
         float absY = Mathf.Abs(screenY);
         _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
-
-        // 3. Post-Processing & Mesh Gen
-        RunSmoothing();
-        RunBoundarySmoothing();
-        ComputeProjectedExtent();
-        BuildMesh();
-
-        // Mark frame as valid for external consumers
-        _hasFrame = true;
-
-        // Debug: draw wrist->elbow line on device
-        if (_line && drawAxis)
-        {
-            _line.enabled = true;
-            _line.SetPosition(0, _wristPos);
-            _line.SetPosition(1, _elbowPos);
-        }
     }
 
-    /// <summary>
-    /// Projects wrist and elbow into screen space, builds a padded bounding box,
-    /// then casts a grid of depth rays through that region. Populates _hits,
-    /// _hasDepth, and _kept arrays for downstream seed and flood passes.
-    /// Returns false if either bone is behind the camera or the bbox is too small.
-    /// </summary>
-    bool Sample(Vector3 wristPos, Vector3 elbowPos)
+    bool CalculateScreenBounds(out int xMin, out int yMin, out int width, out int height)
     {
-        // Project bone positions into screen space for sampling bounds
-        Vector3 wristScreen = _cam.WorldToScreenPoint(wristPos);
-        if (wristScreen.z <= 0f) return false;
-        Vector3 elbowScreen = _cam.WorldToScreenPoint(elbowPos);
-        if (elbowScreen.z <= 0f) return false;
+        xMin = yMin = width = height = 0;
 
-        Vector2 wristPx = new Vector2(wristScreen.x, wristScreen.y);
-        Vector2 elbowPx = new Vector2(elbowScreen.x, elbowScreen.y);
+        Vector3 wristScreen = _cam.WorldToScreenPoint(_wristPos);
+        Vector3 elbowScreen = _cam.WorldToScreenPoint(_elbowPos);
 
-        // Convert the arm's physical radius to screen pixels based on distance.
-        // focalPx = vertical focal length in pixels (how many pixels per radian).
-        // armRadiusPx = how many pixels the arm extends beyond the bone line.
-        // 1.5x multiplier gives margin for curvature and depth noise at edges.
+        if (wristScreen.z <= 0f || elbowScreen.z <= 0f) return false;
+
         float armMidDist = Vector3.Distance(_cam.transform.position, (_wristPos + _elbowPos) * 0.5f);
         float focalPx = _cam.pixelHeight / (2f * Mathf.Tan(_cam.fieldOfView * 0.5f * Mathf.Deg2Rad));
         float armRadiusPx = maxRadialDist / armMidDist * focalPx;
         float dynamicPadding = armRadiusPx * 1.5f;
 
-        // Build a padded bounding box around both bone projections, clamped to screen.
-        // This is the region we'll sample depth rays from. Padding catches the arm
-        // width that extends beyond the bone line.
-        float xMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - dynamicPadding);
-        float xMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + dynamicPadding);
-        float yMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - dynamicPadding);
-        float yMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + dynamicPadding);
-        if (xMax - xMin < pixelStride || yMax - yMin < pixelStride) return false;
+        float fXMin = Mathf.Max(0, Mathf.Min(wristScreen.x, elbowScreen.x) - dynamicPadding);
+        float fXMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristScreen.x, elbowScreen.x) + dynamicPadding);
+        float fYMin = Mathf.Max(0, Mathf.Min(wristScreen.y, elbowScreen.y) - dynamicPadding);
+        float fYMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristScreen.y, elbowScreen.y) + dynamicPadding);
 
-        // Grid dimensions from the screen-space bbox. Min 2 so we can form quads.
-        _cols = Mathf.Max(2, Mathf.CeilToInt((xMax - xMin) / pixelStride));
-        _rows = Mathf.Max(2, Mathf.CeilToInt((yMax - yMin) / pixelStride));
+        if (fXMax - fXMin < pixelStride || fYMax - fYMin < pixelStride) return false;
 
-        // Resize native buffer
-        _buffer.ResizeIfNeeded(_rows, _cols);
+        xMin = (int)fXMin;
+        yMin = (int)fYMin;
+        width = (int)(fXMax - fXMin);
+        height = (int)(fYMax - fYMin);
 
-        // Cast depth rays through each grid cell and store 3D hit positions.
-        // Cells without valid depth are flagged so downstream stages skip them.
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-            {
-                // Reset state — no cell carries data from previous frames
-                int idx = r * _cols + c;
-                _buffer.HasDepth[idx] = false;
-                _buffer.IsSurface[idx] = false;
-                _buffer.Hits[idx] = Vector3.zero;
-
-                // Map grid cell back to screen pixel coordinates.
-                // xMin/yMin are already clamped to screen bounds, so every
-                // ray goes through a valid depth buffer pixel.
-                Vector3 screenPx = new Vector3(xMin + c * pixelStride, yMin + r * pixelStride, 0);
-                Ray ray = _cam.ScreenPointToRay(screenPx);
-
-                // Sample the depth buffer at this pixel via EnvironmentRaycastManager
-                if (raycastManager.Raycast(ray, out var hit))
-                {
-                    _buffer.Hits[idx] = hit.point;
-                    _buffer.HasDepth[idx] = true;
-                }
-            }
         return true;
     }
 
+    // THIS RUNS WHEN THE GPU IS DONE COPYING
+    void OnDepthDataReceived(NativeArray<float> rawCroppedDepth, int safeX, int safeY, int safeW, int safeH)
+    {
+        // 1. DEADLOCK FIX: If the GPU errored out, unlock and abort
+        if (!rawCroppedDepth.IsCreated || rawCroppedDepth.Length == 0)
+        {
+            _isProcessingMesh = false;
+            return;
+        }
+
+        // Pass the Frozen Left Eye Matrices!
+        JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
+            _captureViewInv, _captureProj, _captureWidth, _captureHeight, 
+            rawCroppedDepth, safeX, safeY, safeW, safeH, _buffer, 
+            pixelStride, out _rows, out _cols);
+
+        if (_rows > 0 && _cols > 0)
+        {
+            RunExtractionJobs(sampleHandle);
+
+            // Wait for Burst jobs to finish before we check the buffer
+            RunSmoothing();
+            RunBoundarySmoothing();
+
+            ComputeProjectedExtent();
+
+            // --- ZERO THE TRANSFORM ---
+            // Our vertices are already in perfect World Space. 
+            // We must force this GameObject to world origin so Unity doesn't move them twice!
+            transform.position = Vector3.zero;
+            transform.rotation = Quaternion.identity;
+            transform.localScale = Vector3.one;
+            // --------------------------
+
+            BuildMesh();
+            
+            _hasFrame = true;
+            if (_line && drawAxis)
+            {
+                _line.enabled = true;
+                _line.SetPosition(0, _wristPos);
+                _line.SetPosition(1, _elbowPos);
+            }
+        }
+
+        // Unlock so LateUpdate can request the next frame!
+        _isProcessingMesh = false;
+    }
+
     /// <summary>
-    /// Executes the Burst-compiled Jobs to extract the forearm surface from the raw depth data.
-    /// Stage 1 (Seed): A parallel job that marks depth cells inside a cylinder around the wrist->elbow axis.
-    /// Stage 2 (Flood): A background job that expands from the seeds using a BFS to find all 3D-connected forearm cells.
-    /// Blocks the main thread until the flood fill is complete.
+    /// Executes the Burst-compiled Jobs to extract the forearm surface.
+    /// Waits for the unprojection job to finish before starting the Seed and Flood passes.
     /// </summary>
-    void RunExtractionJobs()
+    void RunExtractionJobs(JobHandle dependency)
     {
         // Clear the queue from the previous frame
         _buffer.BFSQueue.Clear();
@@ -389,7 +407,7 @@ public class ForearmDepthSurface : MonoBehaviour
             MaxRSq = maxRadialDist * maxRadialDist, 
             MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
         };
-        JobHandle seedHandle = seedJob.Schedule(_rows * _cols, 64);
+        JobHandle seedHandle = seedJob.Schedule(_rows * _cols, 64, dependency);
 
         // Stage 2: flood from seeds via depth connectivity.
         // Expands onto forearm cells the seed cylinder missed.
@@ -458,7 +476,11 @@ public class ForearmDepthSurface : MonoBehaviour
         );
     }
 
-    void OnDestroy() => _buffer.Dispose();
+    void OnDestroy()
+    {
+        _readbackManager?.Dispose();
+        _buffer.Dispose();
+    }
 
     /// <summary>
     /// Computes the center of the visible forearm surface by projecting
