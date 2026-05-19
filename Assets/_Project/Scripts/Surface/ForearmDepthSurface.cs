@@ -260,18 +260,23 @@ public class ForearmDepthSurface : MonoBehaviour
         _axis = (_elbowPos - _wristPos).normalized;
 
         // 1. Calculate Bounds
-        if (!CalculateScreenBounds(out _cropX, out _cropY, out _cropW, out _cropH)) return;
+        Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
+        if (depthMatrices == null || depthMatrices.Length == 0) return;
+        
+        Vector3 camPos = _cam.transform.position;
+        if (!BoundingBox.CalculateArmBounds(
+            ref depthMatrices[0], ref _wristPos, ref _elbowPos, ref camPos, 
+            _cam.fieldOfView, _cam.pixelWidth, _cam.pixelHeight, 
+            maxRadialDist, pixelStride, 
+            out _cropX, out _cropY, out _cropW, out _cropH)) 
+        {
+            return; // Arm is off-screen
+        }
 
         // 2. Request GPU Data (Only if we aren't already waiting for the previous frame to finish)
         if (!_isProcessingMesh)
         {
             _isProcessingMesh = true;
-
-            // DepthReadback reads Meta's _EnvironmentDepthReprojectionMatrices
-            // directly and uses the left-eye matrix's inverse internally. No
-            // camera math needs to travel down to the readback layer — that
-            // was the source of the swim, since the rendering camera's pose
-            // doesn't match the depth frame's pose.
             _readbackManager.RequestDepth(
                 _cam.pixelWidth, _cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
@@ -309,60 +314,6 @@ public class ForearmDepthSurface : MonoBehaviour
         float absX = Mathf.Abs(screenX);
         float absY = Mathf.Abs(screenY);
         _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
-    }
-
-    bool CalculateScreenBounds(out int xMin, out int yMin, out int width, out int height)
-    {
-        xMin = yMin = width = height = 0;
-
-        // 1. Grab Meta's hardware depth matrix (NOT the rendering camera!)
-        Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
-        if (depthMatrices == null || depthMatrices.Length == 0) return false;
-        
-        Matrix4x4 depthVP = depthMatrices[0]; // Left Eye Depth Sensor
-
-        // 2. Project using the physical Depth Sensor's specific matrix
-        Vector2 wristPx = WorldToDepthTexturePixels(depthVP, _wristPos, out float wristZ);
-        Vector2 elbowPx = WorldToDepthTexturePixels(depthVP, _elbowPos, out float elbowZ);
-
-        if (wristZ <= 0f || elbowZ <= 0f) return false;
-
-        float armMidDist = Vector3.Distance(_cam.transform.position, (_wristPos + _elbowPos) * 0.5f);
-        float focalPx = _cam.pixelHeight / (2f * Mathf.Tan(_cam.fieldOfView * 0.5f * Mathf.Deg2Rad));
-        float armRadiusPx = maxRadialDist / armMidDist * focalPx;
-        float dynamicPadding = armRadiusPx * 1.5f;
-
-        float fXMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - dynamicPadding);
-        float fXMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + dynamicPadding);
-        float fYMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - dynamicPadding);
-        float fYMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + dynamicPadding);
-
-        if (fXMax - fXMin < pixelStride || fYMax - fYMin < pixelStride) return false;
-
-        xMin = (int)fXMin;
-        yMin = (int)fYMin;
-        width = (int)(fXMax - fXMin);
-        height = (int)(fYMax - fYMin);
-
-        return true;
-    }
-
-    // --- NEW HELPER ---
-    private Vector2 WorldToDepthTexturePixels(Matrix4x4 depthVP, Vector3 worldPos, out float z)
-    {
-        // 1. Meta's matrix transforms directly to Clip Space
-        Vector4 clip = depthVP * new Vector4(worldPos.x, worldPos.y, worldPos.z, 1.0f);
-        z = clip.w;
-
-        // 2. Perspective divide -> NDC [-1, 1]
-        Vector2 ndc = new Vector2(clip.x / clip.w, clip.y / clip.w);
-
-        // 3. Convert to UV [0, 1]
-        float u = (ndc.x + 1f) * 0.5f;
-        float v = (ndc.y + 1f) * 0.5f;
-
-        // 5. Scale to our RenderTexture dimensions
-        return new Vector2(u * _cam.pixelWidth, v * _cam.pixelHeight);
     }
 
     // THIS RUNS WHEN THE GPU IS DONE COPYING
