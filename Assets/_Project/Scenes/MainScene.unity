@@ -895,15 +895,14 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   bodySkeleton: {fileID: 745195948}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 0}
+  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
   wristBoneIndex: 19
   elbowBoneIndex: 11
-  pixelStride: 6
+  pixelStride: 4
   maxRadialDist: 0.15
   minFromWrist: -0.02
   maxFromElbow: 0.05
   connectivityThreshold: 0.005
-  floodRadialMultiplier: 1
   smoothPasses: 3
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
