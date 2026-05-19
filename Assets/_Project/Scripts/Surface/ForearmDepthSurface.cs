@@ -100,6 +100,14 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Show a green line from wrist to elbow on device")]
     public bool drawAxis = true;
 
+    [Tooltip("Log per-stage pipeline counts every N frames. Set to 0 to disable.")]
+    [Range(0, 120)] public int verboseLogEveryNFrames = 30;
+
+    [Tooltip("Skip seed/flood. Treat every valid depth pixel as surface and mesh it. " +
+             "Use to visualize the raw unprojection independent of arm-finding logic. " +
+             "When on, bump maxQuadEdge to ~0.5 so the mesh doesn't get pruned by edge length.")]
+    public bool bypassSeedFlood = false;
+
     [Header("Display")]
     [Tooltip("Physical width of the display region on the arm (m)")]
     public float displayWidth = 0.05f;
@@ -127,6 +135,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
     private DepthReadback _readbackManager;
     private bool _isProcessingMesh = false;
+    private int _logFrameCounter = 0;
 
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
@@ -166,10 +175,6 @@ public class ForearmDepthSurface : MonoBehaviour
     float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
 
     private int _cropX, _cropY, _cropW, _cropH;
-    private Matrix4x4 _captureViewInv;
-    private Matrix4x4 _captureProj;
-    private int _captureWidth;
-    private int _captureHeight;
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -254,25 +259,14 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _isProcessingMesh = true;
 
-            // CAPTURE THE TRUE LEFT EYE MATRICES
-            // The depth texture slice 0 is the physical Left Eye lens. 
-            // Using the Center Eye causes massive parallax swimming.
-            
-            _captureProj = _cam.stereoEnabled 
-                ? _cam.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left) 
-                : _cam.projectionMatrix;
-                
-            // We use .inverse to get the physical location of the lens in the real world
-            _captureViewInv = _cam.stereoEnabled 
-                ? _cam.GetStereoViewMatrix(Camera.StereoscopicEye.Left).inverse 
-                : _cam.worldToCameraMatrix.inverse;
-
-            _captureWidth = _cam.pixelWidth;
-            _captureHeight = _cam.pixelHeight;
-
+            // DepthReadback reads Meta's _EnvironmentDepthReprojectionMatrices
+            // directly and uses the left-eye matrix's inverse internally. No
+            // camera math needs to travel down to the readback layer — that
+            // was the source of the swim, since the rendering camera's pose
+            // doesn't match the depth frame's pose.
             _readbackManager.RequestDepth(
-                _captureWidth, _captureHeight, 
-                _cropX, _cropY, _cropW, _cropH, 
+                _cam.pixelWidth, _cam.pixelHeight,
+                _cropX, _cropY, _cropW, _cropH,
                 OnDepthDataReceived
             );
         }
@@ -339,24 +333,73 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     // THIS RUNS WHEN THE GPU IS DONE COPYING
-    void OnDepthDataReceived(NativeArray<float> rawCroppedDepth, int safeX, int safeY, int safeW, int safeH)
+    void OnDepthDataReceived(NativeArray<Vector4> worldPositions, int safeX, int safeY, int safeW, int safeH)
     {
         // 1. DEADLOCK FIX: If the GPU errored out, unlock and abort
-        if (!rawCroppedDepth.IsCreated || rawCroppedDepth.Length == 0)
+        if (!worldPositions.IsCreated || worldPositions.Length == 0)
         {
+            if (verboseLogEveryNFrames > 0)
+                Debug.LogWarning("[Forearm] Readback returned empty buffer.");
             _isProcessingMesh = false;
             return;
         }
 
-        // Pass the Frozen Left Eye Matrices!
+        // Diagnostic: count valid world-position pixels in the raw readback BEFORE
+        // the job runs. Tells us whether the shader produced data at all.
+        // Also scan rawDepth (carried in w) so we can see the distribution.
+        bool shouldLog = verboseLogEveryNFrames > 0
+                      && (_logFrameCounter++ % verboseLogEveryNFrames == 0);
+        int validPixels = 0;
+        Vector3 sampleWorldPos = Vector3.zero;
+        float rawDepthMin = 1f, rawDepthMax = 0f, rawDepthSum = 0f;
+        float sampleRawDepth = -1f;
+        if (shouldLog)
+        {
+            for (int i = 0; i < worldPositions.Length; i++)
+            {
+                float w = worldPositions[i].w;
+                if (w >= 0f)
+                {
+                    validPixels++;
+                    if (w < rawDepthMin) rawDepthMin = w;
+                    if (w > rawDepthMax) rawDepthMax = w;
+                    rawDepthSum += w;
+                }
+            }
+
+            // Sample the center pixel so we can see whether positions are plausible
+            int centerIdx = (safeH / 2) * safeW + (safeW / 2);
+            if (centerIdx < worldPositions.Length)
+            {
+                Vector4 s = worldPositions[centerIdx];
+                sampleWorldPos = new Vector3(s.x, s.y, s.z);
+                sampleRawDepth = s.w;
+            }
+        }
+
+        // Shader has already unprojected to world space using the depth-frame's
+        // own reprojection matrix, so the job just samples this buffer.
         JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
-            _captureViewInv, _captureProj, _captureWidth, _captureHeight, 
-            rawCroppedDepth, safeX, safeY, safeW, safeH, _buffer, 
-            pixelStride, out _rows, out _cols);
+            worldPositions, safeW, safeH, _buffer, pixelStride,
+            out _rows, out _cols);
 
         if (_rows > 0 && _cols > 0)
         {
-            RunExtractionJobs(sampleHandle);
+            if (bypassSeedFlood)
+            {
+                // Wait for unprojection to finish, then mark every valid depth
+                // cell as surface so BuildMesh emits geometry from the entire
+                // depth buffer. Skips seed/flood entirely — useful for seeing
+                // what the raw unprojection actually produces.
+                sampleHandle.Complete();
+                int total = _rows * _cols;
+                for (int i = 0; i < total; i++)
+                    _buffer.IsSurface[i] = _buffer.HasDepth[i];
+            }
+            else
+            {
+                RunExtractionJobs(sampleHandle);
+            }
 
             // Wait for Burst jobs to finish before we check the buffer
             RunSmoothing();
@@ -373,7 +416,7 @@ public class ForearmDepthSurface : MonoBehaviour
             // --------------------------
 
             BuildMesh();
-            
+
             _hasFrame = true;
             if (_line && drawAxis)
             {
@@ -381,6 +424,51 @@ public class ForearmDepthSurface : MonoBehaviour
                 _line.SetPosition(0, _wristPos);
                 _line.SetPosition(1, _elbowPos);
             }
+
+            if (shouldLog)
+            {
+                // Count cells that survived each stage. HasDepth = job copied a
+                // valid world position; IsSurface = passed seed+flood filter.
+                // Also track the world-space spread of all valid hits — if the
+                // unprojection is sane, this should span 1-2 meters; if it's
+                // collapsing to one point, the math is wrong.
+                int hits = 0, surface = 0;
+                Vector3 boundsMin = new Vector3( float.MaxValue,  float.MaxValue,  float.MaxValue);
+                Vector3 boundsMax = new Vector3( float.MinValue,  float.MinValue,  float.MinValue);
+                Vector3 sum = Vector3.zero;
+                int total = _rows * _cols;
+                for (int i = 0; i < total; i++)
+                {
+                    if (_buffer.HasDepth[i])
+                    {
+                        hits++;
+                        Vector3 p = _buffer.Hits[i];
+                        boundsMin = Vector3.Min(boundsMin, p);
+                        boundsMax = Vector3.Max(boundsMax, p);
+                        sum += p;
+                    }
+                    if (_buffer.IsSurface[i]) surface++;
+                }
+
+                Vector3 extent = hits > 0 ? boundsMax - boundsMin : Vector3.zero;
+                Vector3 mean = hits > 0 ? sum / hits : Vector3.zero;
+                float rawDepthMean = validPixels > 0 ? rawDepthSum / validPixels : 0f;
+
+                float wristToSample = Vector3.Distance(_wristPos, sampleWorldPos);
+                Vector3 camPos = _cam.transform.position;
+                Debug.Log(
+                    $"[Forearm] crop={safeW}x{safeH} gridValid={validPixels}/{worldPositions.Length} " +
+                    $"grid={_cols}x{_rows} hits={hits} surface={surface} " +
+                    $"verts={_verts.Count} tris={_tris.Count / 3} " +
+                    $"cam={camPos} wrist={_wristPos} centerPx={sampleWorldPos} dist={wristToSample:F2}m " +
+                    $"hitsMean=({mean.x:F2},{mean.y:F2},{mean.z:F2}) " +
+                    $"hitsExtent=({extent.x:F2},{extent.y:F2},{extent.z:F2}) " +
+                    $"rawDepth[min={rawDepthMin:F4} max={rawDepthMax:F4} mean={rawDepthMean:F4} centerPx={sampleRawDepth:F4}]");
+            }
+        }
+        else if (shouldLog)
+        {
+            Debug.LogWarning($"[Forearm] grid resolved to {_cols}x{_rows} — pipeline aborted before jobs.");
         }
 
         // Unlock so LateUpdate can request the next frame!

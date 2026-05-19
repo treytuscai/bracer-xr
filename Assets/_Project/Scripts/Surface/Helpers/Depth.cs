@@ -7,104 +7,135 @@ using System;
 
 namespace Surface.Helpers
 {
+    /// <summary>
+    /// Manages the GPU side of the depth pipeline: blits Meta's environment
+    /// depth texture through MetaDepthCopy.shader (which reconstructs world
+    /// position per pixel) and AsyncGPUReadback's the cropped region back to
+    /// the CPU as a NativeArray of world-space positions.
+    /// </summary>
     public class DepthReadback : IDisposable
     {
+        // World position is reconstructed in the shader, so the readback is a
+        // float4 per pixel (xyz = world pos, w = valid flag). RGBAFloat is the
+        // matching texture format.
+        private const RenderTextureFormat WorldPosFormat = RenderTextureFormat.ARGBFloat;
+
         private Material _blitMaterial;
-        private RenderTexture _depthRT;
+        private RenderTexture _worldPosRT;
         private bool _isReadbackPending = false;
 
         public DepthReadback()
         {
-            // Load the shader we just created
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
+            if (shader == null)
+            {
+                Debug.LogError("[Depth] MetaDepthCopy shader not found. Check shader is in project and not stripped from build.");
+                return;
+            }
             _blitMaterial = new Material(shader);
+            Debug.Log("[Depth] MetaDepthCopy shader loaded.");
         }
 
+        // ID for Meta's depth-frame world->clip matrices, one per eye.
+        // [0] is left eye, [1] is right eye. Set as a shader global by
+        // EnvironmentDepthManager once per frame.
+        private static readonly int s_ReprojectionMatricesId =
+            Shader.PropertyToID("_EnvironmentDepthReprojectionMatrices");
+
         public void RequestDepth(
-            int screenWidth, int screenHeight, 
-            int xMin, int yMin, int width, int height, 
-            Action<NativeArray<float>, int, int, int, int> onComplete)
+            int screenWidth, int screenHeight,
+            int xMin, int yMin, int width, int height,
+            Action<NativeArray<Vector4>, int, int, int, int> onComplete)
         {
             if (_isReadbackPending) return;
+            if (_blitMaterial == null) return;
 
-            if (_depthRT == null || _depthRT.width != screenWidth || _depthRT.height != screenHeight)
+            if (_worldPosRT == null || _worldPosRT.width != screenWidth || _worldPosRT.height != screenHeight)
             {
-                if (_depthRT != null) _depthRT.Release();
-                _depthRT = new RenderTexture(screenWidth, screenHeight, 0, RenderTextureFormat.RFloat);
-                _depthRT.Create();
+                if (_worldPosRT != null) _worldPosRT.Release();
+                _worldPosRT = new RenderTexture(screenWidth, screenHeight, 0, WorldPosFormat);
+                _worldPosRT.Create();
             }
 
-            Graphics.Blit(null, _depthRT, _blitMaterial);
+            // Read Meta's depth-frame reprojection matrices, invert the left-eye
+            // one, and hand it to the shader. The matrix is world->clip captured
+            // at the moment Meta sampled the depth frame, so inverting it gives
+            // a clip->world transform that already accounts for pose desync.
+            Matrix4x4[] reprojMatrices = Shader.GetGlobalMatrixArray(s_ReprojectionMatricesId);
+            if (reprojMatrices == null || reprojMatrices.Length == 0)
+            {
+                // Most common cause: no EnvironmentDepthManager in the scene,
+                // or its OcclusionType is "No Occlusion" — Meta only populates
+                // the global when occlusion is active.
+                Debug.LogWarning("[Depth] _EnvironmentDepthReprojectionMatrices not set. " +
+                                 "Verify EnvironmentDepthManager is in the scene and active.");
+                return;
+            }
+            _blitMaterial.SetMatrix("_DepthInverseVP", reprojMatrices[0].inverse);
+
+            // Blit triggers the shader, which writes world-space positions into the RT.
+            Graphics.Blit(null, _worldPosRT, _blitMaterial);
 
             _isReadbackPending = true;
+
+            // Vulkan/Quest renders flipped relative to screen-space Y; the readback
+            // region is specified in texture coordinates, so flip Y once here.
             int gpuY = screenHeight - yMin - height;
-            AsyncGPUReadback.Request(_depthRT, 0, xMin, width, gpuY, height, 0, 1, request =>
+
+            AsyncGPUReadback.Request(_worldPosRT, 0, xMin, width, gpuY, height, 0, 1, request =>
             {
                 _isReadbackPending = false;
 
-                if (request.hasError) 
+                if (request.hasError)
                 {
                     Debug.LogError("[Depth] GPU Readback Error!");
-                    // Pass the bounds back even on failure
                     onComplete?.Invoke(default, xMin, yMin, width, height);
                     return;
                 }
 
-                NativeArray<float> rawDepth = request.GetData<float>();
-                // Pass the bounds back along with the data!
-                onComplete?.Invoke(rawDepth, xMin, yMin, width, height);
+                NativeArray<Vector4> worldPositions = request.GetData<Vector4>();
+                onComplete?.Invoke(worldPositions, xMin, yMin, width, height);
             });
         }
 
         public void Dispose()
         {
-            if (_depthRT != null) _depthRT.Release();
+            if (_worldPosRT != null) _worldPosRT.Release();
             if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
         }
     }
 
     // --------------------------------------------------------
-    // THE SCHEDULER (Runs on the Main Thread)
+    // SCHEDULER (Main Thread)
     // --------------------------------------------------------
     public static class DepthSampler
     {
+        /// <summary>
+        /// Schedules a Burst job that samples the readback buffer at fixed pixel
+        /// strides and copies world positions into the surface buffer. No camera
+        /// math involved — the shader already produced world-space coordinates.
+        /// </summary>
         public static JobHandle ScheduleUnprojection(
-            Matrix4x4 cameraLocalToWorld, 
-            Matrix4x4 cameraProjection, 
-            int screenWidth, 
-            int screenHeight,
-            NativeArray<float> rawDepthArray, 
-            int startX, 
-            int startY, 
-            int width, 
-            int height,
-            SurfaceBuffer buffer, 
-            float pixelStride,
-            out int rows, 
+            NativeArray<Vector4> worldPositions,
+            int croppedWidth,
+            int croppedHeight,
+            SurfaceBuffer buffer,
+            int pixelStride,
+            out int rows,
             out int cols)
         {
-            // Grid size based on the cropped region
-            cols = Mathf.Max(2, Mathf.CeilToInt(width / pixelStride));
-            rows = Mathf.Max(2, Mathf.CeilToInt(height / pixelStride));
+            cols = Mathf.Max(2, Mathf.CeilToInt((float)croppedWidth / pixelStride));
+            rows = Mathf.Max(2, Mathf.CeilToInt((float)croppedHeight / pixelStride));
 
             buffer.ResizeIfNeeded(rows, cols);
 
             var job = new DepthUnprojectionJob
             {
-                DepthArray = rawDepthArray,
-                DepthWidth = width,   
-                DepthHeight = height, 
-                ScreenWidth = screenWidth,
-                ScreenHeight = screenHeight,
-                StartX = startX,
-                StartY = startY,
-                PixelStride = (int)pixelStride,
+                WorldPositions = worldPositions,
+                DepthWidth = croppedWidth,
+                DepthHeight = croppedHeight,
+                PixelStride = pixelStride,
                 Cols = cols,
-                LocalToWorld = cameraLocalToWorld,
-                ProjM00 = cameraProjection.m00,
-                ProjM11 = cameraProjection.m11,
-                ProjM02 = cameraProjection.m02,
-                ProjM12 = cameraProjection.m12,
                 Hits = buffer.Hits,
                 HasDepth = buffer.HasDepth,
                 IsSurface = buffer.IsSurface
@@ -115,32 +146,23 @@ namespace Surface.Helpers
     }
 
     // --------------------------------------------------------
-    // THE BURST JOB (Runs in parallel across background cores)
+    // BURST JOB (parallel background threads)
     // --------------------------------------------------------
+    /// <summary>
+    /// Reads world-space positions from the readback buffer at fixed strides.
+    /// The shader has already done all unprojection work via Meta's depth-frame
+    /// reprojection matrix, so this job is pure indexed copy + validity check.
+    /// </summary>
     [BurstCompile]
     public struct DepthUnprojectionJob : IJobParallelFor
     {
-        // Raw depth array from Meta XR EnvironmentDepthManager
-        [ReadOnly] public NativeArray<float> DepthArray; 
-        
+        [ReadOnly] public NativeArray<Vector4> WorldPositions;
+
         public int DepthWidth;
         public int DepthHeight;
-        public int ScreenWidth;
-        public int ScreenHeight;
-
-        public int StartX;
-        public int StartY;
         public int PixelStride;
         public int Cols;
 
-        // Camera Math for Unprojection
-        public Matrix4x4 LocalToWorld;
-        public float ProjM00; // camera.projectionMatrix[0, 0]
-        public float ProjM11; // camera.projectionMatrix[1, 1]
-       public float ProjM02;
-       public float ProjM12;
-
-        // Output Buffers
         [WriteOnly] public NativeArray<Vector3> Hits;
         [WriteOnly] public NativeArray<bool> HasDepth;
         [WriteOnly] public NativeArray<bool> IsSurface;
@@ -150,27 +172,19 @@ namespace Surface.Helpers
             int r = index / Cols;
             int c = index % Cols;
 
-            // Screen pixel coordinate for the FULL screen
-            int px = StartX + c * PixelStride;
-            int py = StartY + r * PixelStride;
-
-            // 1. Camera Math needs the FULL screen UVs (0.0 to 1.0)
-            float u = (float)px / ScreenWidth;
-            float v = (float)py / ScreenHeight;
-
-            // 2. Array is CROPPED! We index it locally, relative to the bounding box
             int dx = c * PixelStride;
-            int dy = r * PixelStride; 
+            int dy = r * PixelStride;
 
-            // Clamp to prevent out-of-bounds crashes
-            dx = dx >= DepthWidth ? DepthWidth - 1 : (dx < 0 ? 0 : dx);
-            dy = dy >= DepthHeight ? DepthHeight - 1 : (dy < 0 ? 0 : dy);
+            // Clamp to prevent out-of-bounds at the bottom/right edges of
+            // the cropped readback when (cols * stride) overshoots width.
+            if (dx >= DepthWidth) dx = DepthWidth - 1;
+            if (dy >= DepthHeight) dy = DepthHeight - 1;
 
-            int depthIndex = dy * DepthWidth + dx;
-            float depthMeters = DepthArray[depthIndex];
+            Vector4 sample = WorldPositions[dy * DepthWidth + dx];
 
-            // 3. Reject invalid depth
-            if (depthMeters <= 0.001f)
+            // The shader uses w < 0 as the invalid sentinel; valid pixels carry
+            // their raw depth in w (which is in [0, 1]) for diagnostic logging.
+            if (sample.w < 0f)
             {
                 HasDepth[index] = false;
                 IsSurface[index] = false;
@@ -178,20 +192,9 @@ namespace Surface.Helpers
                 return;
             }
 
-            // 4. Unproject 2D -> 3D Local Camera Space
-            float ndcX = u * 2f - 1f;
-            float ndcY = v * 2f - 1f;
-
-            // FIX 1: Algebraic sign for lens distortion offset is ADD (+)
-            // FIX 2: Unity View Space looks down NEGATIVE Z!
-            float localX = ((ndcX + ProjM02) / ProjM00) * depthMeters;
-            float localY = ((ndcY + ProjM12) / ProjM11) * depthMeters;
-            Vector3 localPos = new Vector3(localX, localY, -depthMeters);
-
-            // FIX 3: Multiply by the true Left Eye Inverse View Matrix
-            Hits[index] = LocalToWorld.MultiplyPoint3x4(localPos);
+            Hits[index] = new Vector3(sample.x, sample.y, sample.z);
             HasDepth[index] = true;
-            IsSurface[index] = false; 
+            IsSurface[index] = false;
         }
     }
 }

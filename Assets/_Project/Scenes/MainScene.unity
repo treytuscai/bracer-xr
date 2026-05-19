@@ -894,7 +894,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   bodySkeleton: {fileID: 745195948}
-  raycastManager: {fileID: 2129304608}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 0}
   wristBoneIndex: 19
@@ -910,6 +909,8 @@ MonoBehaviour:
   edgeWindowRadius: 3
   maxQuadEdge: 0.03
   drawAxis: 0
+  verboseLogEveryNFrames: 30
+  bypassSeedFlood: 0
   displayWidth: 0.24
   displayHeight: 0.12
   displayOffset: 0.13
