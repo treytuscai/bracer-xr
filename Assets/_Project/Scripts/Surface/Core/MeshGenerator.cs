@@ -40,10 +40,6 @@ namespace Surface.Core
         {
             // 1. Ensure output memory is properly sized
             meshBuf.ResizeIfNeeded(rows, cols);
-
-            // Clear the lookup from the previous frame so we don't use stale triangles
-            var clearLookupJob = new ClearLookupJob { Lookup = meshBuf.CellToVert };
-            JobHandle handle = clearLookupJob.Schedule(rows * cols, 64);
             
             // 2. Setup Atomic Counters for Vertices and Triangles
             // Index 0: Vertex Count | Index 1: Triangle Count
@@ -73,7 +69,7 @@ namespace Surface.Core
                 BatchSize = batchSize
             };
             // Schedule and instantly wait for it, because we need finalProjCenter right now
-            handle = centerJob.ScheduleBatch(totalCells, batchSize, handle);
+            JobHandle handle = centerJob.ScheduleBatch(totalCells, batchSize);
             handle.Complete();  
 
             // Aggregate the batch sums on the main thread
@@ -137,13 +133,6 @@ namespace Surface.Core
         // =======================================================================================
         // BURST COMPILED JOBS
         // =======================================================================================
-
-        [BurstCompile]
-        public struct ClearLookupJob : IJobParallelFor
-        {
-            public NativeArray<int> Lookup;
-            public void Execute(int i) => Lookup[i] = -1;
-        }
 
         /// <summary>
         /// Computes partial sums of the physical projections to find the optical center of the UI.

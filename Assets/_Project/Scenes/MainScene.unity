@@ -896,9 +896,7 @@ MonoBehaviour:
   bodySkeleton: {fileID: 745195948}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
-  wristBoneIndex: 19
-  elbowBoneIndex: 11
-  pixelStride: 4
+  pixelStride: 6
   maxRadialDist: 0.15
   minFromWrist: -0.02
   maxFromElbow: 0.05
@@ -907,10 +905,10 @@ MonoBehaviour:
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
   maxQuadEdge: 0.03
-  bypassSeedFlood: 0
   displayWidth: 0.24
   displayHeight: 0.12
   displayOffset: 0.13
+  bypassSeedFlood: 0
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
