@@ -14,7 +14,7 @@ namespace Surface.Processing
     public struct SmoothSurfaceJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Vector3> Hits;
-        [WriteOnly] public NativeArray<Vector3> Smoothed;
+        public NativeArray<Vector3> Smoothed;
         [ReadOnly] public NativeArray<bool> IsSurface;
 
         public int GridHeight; // Rows
@@ -26,7 +26,7 @@ namespace Surface.Processing
             // If not, we don't smooth it, just pass the raw data through.
             if (!IsSurface[flatIndex])
             {
-                Smoothed[flatIndex] = Smoothed[flatIndex];
+                Smoothed[flatIndex] = Hits[flatIndex];
                 return;
             }
 
