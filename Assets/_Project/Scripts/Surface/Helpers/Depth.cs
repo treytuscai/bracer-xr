@@ -43,58 +43,50 @@ namespace Surface.Helpers
             Shader.PropertyToID("_EnvironmentDepthReprojectionMatrices");
 
         public void RequestDepth(
-            int screenWidth, int screenHeight,
-            int xMin, int yMin, int width, int height,
-            Action<NativeArray<Vector4>, int, int, int, int> onComplete)
+            int screenWidth, int screenHeight, 
+            int xMin, int yMin, int width, int height, 
+            Action<NativeArray<Vector4>, int, int, int, int> onComplete) // Note: Vector4!
         {
             if (_isReadbackPending) return;
-            if (_blitMaterial == null) return;
 
             if (_worldPosRT == null || _worldPosRT.width != screenWidth || _worldPosRT.height != screenHeight)
             {
                 if (_worldPosRT != null) _worldPosRT.Release();
-                _worldPosRT = new RenderTexture(screenWidth, screenHeight, 0, WorldPosFormat);
+                
+                // CRITICAL FIX: Must be ARGBFloat to hold the X,Y,Z,W data from the shader!
+                _worldPosRT = new RenderTexture(screenWidth, screenHeight, 0, RenderTextureFormat.ARGBFloat);
                 _worldPosRT.Create();
             }
 
-            // Read Meta's depth-frame reprojection matrices, invert the left-eye
-            // one, and hand it to the shader. The matrix is world->clip captured
-            // at the moment Meta sampled the depth frame, so inverting it gives
-            // a clip->world transform that already accounts for pose desync.
-            Matrix4x4[] reprojMatrices = Shader.GetGlobalMatrixArray(s_ReprojectionMatricesId);
-            if (reprojMatrices == null || reprojMatrices.Length == 0)
+            // CRITICAL FIX: Pass the physical depth camera matrix to the shader!
+            Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
+            if (depthMatrices != null && depthMatrices.Length > 0)
             {
-                // Most common cause: no EnvironmentDepthManager in the scene,
-                // or its OcclusionType is "No Occlusion" — Meta only populates
-                // the global when occlusion is active.
-                Debug.LogWarning("[Depth] _EnvironmentDepthReprojectionMatrices not set. " +
-                                 "Verify EnvironmentDepthManager is in the scene and active.");
+                _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
+            }
+            else
+            {
+                Debug.LogWarning("[Depth] Waiting for Meta's Depth API to provide matrices...");
                 return;
             }
-            _blitMaterial.SetMatrix("_DepthInverseVP", reprojMatrices[0].inverse);
 
-            // Blit triggers the shader, which writes world-space positions into the RT.
             Graphics.Blit(null, _worldPosRT, _blitMaterial);
 
             _isReadbackPending = true;
-
-            // Vulkan/Quest renders flipped relative to screen-space Y; the readback
-            // region is specified in texture coordinates, so flip Y once here.
-            int gpuY = screenHeight - yMin - height;
-
-            AsyncGPUReadback.Request(_worldPosRT, 0, xMin, width, gpuY, height, 0, 1, request =>
+            AsyncGPUReadback.Request(_worldPosRT, 0, xMin, width, yMin, height, 0, 1, request =>
             {
                 _isReadbackPending = false;
 
-                if (request.hasError)
+                if (request.hasError) 
                 {
                     Debug.LogError("[Depth] GPU Readback Error!");
-                    onComplete?.Invoke(default, xMin, yMin, width, height);
+                    onComplete?.Invoke(default, xMin, yMin, width, height); 
                     return;
                 }
 
-                NativeArray<Vector4> worldPositions = request.GetData<Vector4>();
-                onComplete?.Invoke(worldPositions, xMin, yMin, width, height);
+                // Get the Vector4 array!
+                NativeArray<Vector4> rawDepth = request.GetData<Vector4>();
+                onComplete?.Invoke(rawDepth, xMin, yMin, width, height);
             });
         }
 

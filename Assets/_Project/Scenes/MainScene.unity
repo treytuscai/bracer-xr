@@ -898,7 +898,7 @@ MonoBehaviour:
   surfaceMaterial: {fileID: 0}
   wristBoneIndex: 19
   elbowBoneIndex: 11
-  pixelStride: 8
+  pixelStride: 6
   maxRadialDist: 0.08
   minFromWrist: -0.02
   maxFromElbow: 0.05

@@ -136,6 +136,10 @@ public class ForearmDepthSurface : MonoBehaviour
     private DepthReadback _readbackManager;
     private bool _isProcessingMesh = false;
     private int _logFrameCounter = 0;
+    // Stashed for diagnostic log: results of the most recent screen-space
+    // projection of the wrist/elbow bones in CalculateScreenBounds. Lets us
+    // see whether bones project to where the arm actually is on screen.
+    private Vector3 _wristScreen, _elbowScreen;
 
     int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
     int _rows, _cols;   // Current grid dimensions
@@ -185,7 +189,11 @@ public class ForearmDepthSurface : MonoBehaviour
         // Set up the mesh that gets rebuilt every frame
         _meshFilter = GetComponent<MeshFilter>();
         _meshRenderer = GetComponent<MeshRenderer>();
-        _mesh = new Mesh { name = "ForearmDepth" };
+        _mesh = new Mesh
+        {
+            name = "ForearmDepth",
+            indexFormat = UnityEngine.Rendering.IndexFormat.UInt32
+        };
         _mesh.MarkDynamic(); // Tell Unity this mesh changes every frame
         _meshFilter.mesh = _mesh;
 
@@ -307,20 +315,27 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         xMin = yMin = width = height = 0;
 
-        Vector3 wristScreen = _cam.WorldToScreenPoint(_wristPos);
-        Vector3 elbowScreen = _cam.WorldToScreenPoint(_elbowPos);
+        // 1. Grab Meta's hardware depth matrix (NOT the rendering camera!)
+        Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
+        if (depthMatrices == null || depthMatrices.Length == 0) return false;
+        
+        Matrix4x4 depthVP = depthMatrices[0]; // Left Eye Depth Sensor
 
-        if (wristScreen.z <= 0f || elbowScreen.z <= 0f) return false;
+        // 2. Project using the physical Depth Sensor's specific matrix
+        Vector2 wristPx = WorldToDepthTexturePixels(depthVP, _wristPos, out float wristZ);
+        Vector2 elbowPx = WorldToDepthTexturePixels(depthVP, _elbowPos, out float elbowZ);
+
+        if (wristZ <= 0f || elbowZ <= 0f) return false;
 
         float armMidDist = Vector3.Distance(_cam.transform.position, (_wristPos + _elbowPos) * 0.5f);
         float focalPx = _cam.pixelHeight / (2f * Mathf.Tan(_cam.fieldOfView * 0.5f * Mathf.Deg2Rad));
         float armRadiusPx = maxRadialDist / armMidDist * focalPx;
         float dynamicPadding = armRadiusPx * 1.5f;
 
-        float fXMin = Mathf.Max(0, Mathf.Min(wristScreen.x, elbowScreen.x) - dynamicPadding);
-        float fXMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristScreen.x, elbowScreen.x) + dynamicPadding);
-        float fYMin = Mathf.Max(0, Mathf.Min(wristScreen.y, elbowScreen.y) - dynamicPadding);
-        float fYMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristScreen.y, elbowScreen.y) + dynamicPadding);
+        float fXMin = Mathf.Max(0, Mathf.Min(wristPx.x, elbowPx.x) - dynamicPadding);
+        float fXMax = Mathf.Min(_cam.pixelWidth, Mathf.Max(wristPx.x, elbowPx.x) + dynamicPadding);
+        float fYMin = Mathf.Max(0, Mathf.Min(wristPx.y, elbowPx.y) - dynamicPadding);
+        float fYMax = Mathf.Min(_cam.pixelHeight, Mathf.Max(wristPx.y, elbowPx.y) + dynamicPadding);
 
         if (fXMax - fXMin < pixelStride || fYMax - fYMin < pixelStride) return false;
 
@@ -332,11 +347,29 @@ public class ForearmDepthSurface : MonoBehaviour
         return true;
     }
 
+    // --- NEW HELPER ---
+    private Vector2 WorldToDepthTexturePixels(Matrix4x4 depthVP, Vector3 worldPos, out float z)
+    {
+        // 1. Meta's matrix transforms directly to Clip Space
+        Vector4 clip = depthVP * new Vector4(worldPos.x, worldPos.y, worldPos.z, 1.0f);
+        z = clip.w;
+
+        // 2. Perspective divide -> NDC [-1, 1]
+        Vector2 ndc = new Vector2(clip.x / clip.w, clip.y / clip.w);
+
+        // 3. Convert to UV [0, 1]
+        float u = (ndc.x + 1f) * 0.5f;
+        float v = (ndc.y + 1f) * 0.5f;
+
+        // 5. Scale to our RenderTexture dimensions
+        return new Vector2(u * _cam.pixelWidth, v * _cam.pixelHeight);
+    }
+
     // THIS RUNS WHEN THE GPU IS DONE COPYING
-    void OnDepthDataReceived(NativeArray<Vector4> worldPositions, int safeX, int safeY, int safeW, int safeH)
+    void OnDepthDataReceived(NativeArray<Vector4> rawCroppedDepth, int safeX, int safeY, int safeW, int safeH)
     {
         // 1. DEADLOCK FIX: If the GPU errored out, unlock and abort
-        if (!worldPositions.IsCreated || worldPositions.Length == 0)
+        if (!rawCroppedDepth.IsCreated || rawCroppedDepth.Length == 0)
         {
             if (verboseLogEveryNFrames > 0)
                 Debug.LogWarning("[Forearm] Readback returned empty buffer.");
@@ -355,9 +388,9 @@ public class ForearmDepthSurface : MonoBehaviour
         float sampleRawDepth = -1f;
         if (shouldLog)
         {
-            for (int i = 0; i < worldPositions.Length; i++)
+            for (int i = 0; i < rawCroppedDepth.Length; i++)
             {
-                float w = worldPositions[i].w;
+                float w = rawCroppedDepth[i].w;
                 if (w >= 0f)
                 {
                     validPixels++;
@@ -369,9 +402,9 @@ public class ForearmDepthSurface : MonoBehaviour
 
             // Sample the center pixel so we can see whether positions are plausible
             int centerIdx = (safeH / 2) * safeW + (safeW / 2);
-            if (centerIdx < worldPositions.Length)
+            if (centerIdx < rawCroppedDepth.Length)
             {
-                Vector4 s = worldPositions[centerIdx];
+                Vector4 s = rawCroppedDepth[centerIdx];
                 sampleWorldPos = new Vector3(s.x, s.y, s.z);
                 sampleRawDepth = s.w;
             }
@@ -380,7 +413,7 @@ public class ForearmDepthSurface : MonoBehaviour
         // Shader has already unprojected to world space using the depth-frame's
         // own reprojection matrix, so the job just samples this buffer.
         JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
-            worldPositions, safeW, safeH, _buffer, pixelStride,
+            rawCroppedDepth, safeW, safeH, _buffer, pixelStride,
             out _rows, out _cols);
 
         if (_rows > 0 && _cols > 0)
@@ -457,7 +490,11 @@ public class ForearmDepthSurface : MonoBehaviour
                 float wristToSample = Vector3.Distance(_wristPos, sampleWorldPos);
                 Vector3 camPos = _cam.transform.position;
                 Debug.Log(
-                    $"[Forearm] crop={safeW}x{safeH} gridValid={validPixels}/{worldPositions.Length} " +
+                    $"[Forearm] cropAt=({safeX},{safeY}) crop={safeW}x{safeH} " +
+                    $"screen={_cam.pixelWidth}x{_cam.pixelHeight} fov={_cam.fieldOfView:F1} " +
+                    $"wristScreen=({_wristScreen.x:F0},{_wristScreen.y:F0},{_wristScreen.z:F2}) " +
+                    $"elbowScreen=({_elbowScreen.x:F0},{_elbowScreen.y:F0},{_elbowScreen.z:F2}) " +
+                    $"gridValid={validPixels}/{rawCroppedDepth.Length} " +
                     $"grid={_cols}x{_rows} hits={hits} surface={surface} " +
                     $"verts={_verts.Count} tris={_tris.Count / 3} " +
                     $"cam={camPos} wrist={_wristPos} centerPx={sampleWorldPos} dist={wristToSample:F2}m " +
