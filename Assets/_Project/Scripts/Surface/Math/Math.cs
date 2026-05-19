@@ -30,7 +30,7 @@ namespace Surface.Math
 
             // Hardcode Deg2Rad (0.01745329f) to avoid Unity constant lookup
             float focalPx = pixelHeight / (2f * Mathf.Tan(fov * 0.5f * 0.0174532924f));
-            float dynamicPadding = (maxRadialDist / armMidDist) * focalPx * 1.5f;
+            float dynamicPadding = (maxRadialDist / armMidDist) * focalPx;
 
             // Fast inline Min/Max using ternary operators
             float minX = wristX < elbowX ? wristX : elbowX;

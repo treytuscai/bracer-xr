@@ -67,7 +67,7 @@ namespace Surface.Core
         public Vector3 Axis;
 
         public float ConnSq;
-        public float MaxFloodRadialSq;
+        public float MaxRSq;
         public float MinFromWrist;
         public float MaxFromElbow;
 
@@ -99,7 +99,7 @@ namespace Surface.Core
                     if ((neighborHit - currentHit).sqrMagnitude > ConnSq) continue;
 
                     float radialSq = Vector3.Cross(neighborHit - ElbowPos, Axis).sqrMagnitude;
-                    if (radialSq > MaxFloodRadialSq) continue;
+                    if (radialSq > MaxRSq) continue;
 
                     float fromWrist = Vector3.Dot(neighborHit - WristPos, Axis);
                     if (fromWrist < MinFromWrist) continue;

@@ -64,8 +64,8 @@ public class ForearmDepthSurface : MonoBehaviour
     [Range(2, 20)] public int pixelStride = 8;
 
     [Header("Seed (wrist->elbow cylinder filter)")]
-    [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
-    [Range(0.02f, 0.12f)] public float maxRadialDist = 0.07f;
+    [Tooltip("(Also used in Flood) Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
+    [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
 
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
@@ -78,11 +78,6 @@ public class ForearmDepthSurface : MonoBehaviour
              "This is what lets the flood expand off the wrong-angle seed line " +
              "onto the actual forearm surface.")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
-    
-    [Tooltip("Multiplier on maxRadialDist for the flood's radial bound. " +
-             "Looser than the seed to allow expansion past where the axis misses, " +
-             "tight enough to reject nearby surfaces like tables")]
-    [Range(1f, 3f)] public float floodRadialMultiplier = 1.5f;
 
     [Header("Smoothing")]
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
@@ -99,13 +94,6 @@ public class ForearmDepthSurface : MonoBehaviour
              "to allow for surface curvature between cells that connected through different flood paths")]
     [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.030f;
 
-    [Header("Debug")]
-    [Tooltip("Show a green line from wrist to elbow on device")]
-    public bool drawAxis = true;
-
-    [Tooltip("Log per-stage pipeline counts every N frames. Set to 0 to disable.")]
-    [Range(0, 120)] public int verboseLogEveryNFrames = 30;
-
     [Tooltip("Skip seed/flood. Treat every valid depth pixel as surface and mesh it. " +
              "Use to visualize the raw unprojection independent of arm-finding logic. " +
              "When on, bump maxQuadEdge to ~0.5 so the mesh doesn't get pruned by edge length.")]
@@ -121,10 +109,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
     public float displayOffset = 0.12f;
 
-    // Cached bone transforms, resolved once from OVRSkeleton
-    Transform _wrist, _elbow; 
-
-    // Camera reference, cached in Start
+    // Camera Reference
     Camera _cam;
 
     // True if this frame produced a valid mesh
@@ -133,35 +118,25 @@ public class ForearmDepthSurface : MonoBehaviour
     // Mesh components
     MeshFilter _meshFilter; 
     MeshRenderer _meshRenderer; 
-    Mesh _mesh; 
-    LineRenderer _line;
+    private MeshGenerator _meshGenerator;
+    Mesh _mesh;
 
+    // Depth readback
     private DepthReadback _readbackManager;
+    private int _cropX, _cropY, _cropW, _cropH;
     private bool _isProcessingMesh = false;
-    private int _logFrameCounter = 0;
-    // Stashed for diagnostic log: results of the most recent screen-space
-    // projection of the wrist/elbow bones in CalculateScreenBounds. Lets us
-    // see whether bones project to where the arm actually is on screen.
-    private Vector3 _wristScreen, _elbowScreen;
 
-    int[,] _cellToVert; // Maps grid cell -> vertex index in _verts (-1 if rejected)
-    int _rows, _cols;   // Current grid dimensions
+    // Current grid dimensions
+    int _rows, _cols;
 
-    // Surface Buffer for the Job System
+    // Buffers
     private SurfaceBuffer _buffer = new SurfaceBuffer();
-
-    // Reusable buffers for boundary chain extraction
+    private MeshBuffer _meshBuffer;
     readonly List<int> _boundaryChain = new List<int>(512);
     readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
 
-    // Mesh construction buffers (pre-allocated, cleared each frame)
-    readonly List<Vector3> _verts = new List<Vector3>(2048);
-    readonly List<int> _tris = new List<int>(4096);
-    readonly List<Vector2> _uvs = new List<Vector2>(2048);
-    readonly List<Vector2> _edgeDists = new List<Vector2>(2048);
-
-
     // Frame state computed in LateUpdate, consumed by UV() and public API
+    Transform _wrist, _elbow; 
     Vector3 _wristPos, _elbowPos;   // Cached bone world positions
     Vector3 _axis;                  // Wrist->elbow direction (normalized)
     Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
@@ -181,7 +156,12 @@ public class ForearmDepthSurface : MonoBehaviour
     // the UI content upright.
     float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
 
-    private int _cropX, _cropY, _cropW, _cropH;
+    void Awake()
+    {
+        _meshGenerator = new MeshGenerator();
+        _meshBuffer = new MeshBuffer();
+        _readbackManager = new DepthReadback();
+    }
 
     /// <summary>
     /// Initializes the dynamic mesh, assigns or creates a surface material,
@@ -200,20 +180,8 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.MarkDynamic(); // Tell Unity this mesh changes every frame
         _meshFilter.mesh = _mesh;
 
-        // Use assigned material if provided, otherwise a transparent cyan fallback
-        // for debugging mesh coverage without needing a shader in the Inspector
+        // Use assigned material if provided, otherwise a transparent cyan fallback for debug
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
-
-        // Debug line for visualizing the wrist->elbow axis on device
-        var debugLine = new GameObject("DebugAxis");
-        debugLine.transform.SetParent(transform, false);
-        _line = debugLine.AddComponent<LineRenderer>();
-        _line.useWorldSpace = true;
-        _line.widthMultiplier = 0.004f;
-        _line.positionCount = 2;
-        _line.material = new Material(Shader.Find("Sprites/Default"));
-        _line.startColor = _line.endColor = Color.green;
-        _line.enabled = false;
     }
 
     /// <summary>
@@ -242,30 +210,18 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void LateUpdate()
     {
-        // Reset frame validity. Downstream consumers check IsValid
-        _hasFrame = false;
-        if (_line) _line.enabled = false;
+        if (!SetupBasis()) {
+            _hasFrame = false;
+            return;
+        }
 
-        // Wait for everything to populate.
-        if (_readbackManager == null) _readbackManager = new DepthReadback();
-        if (_cam == null)  _cam = centerEyeAnchor.GetComponent<Camera>();
-        if (bodySkeleton == null || _cam == null) return;
-        if (bodySkeleton.Bones == null || bodySkeleton.Bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return;
-
-        // Resolve bone transforms. Can be null if skeleton is still initializing
-        _wrist = bodySkeleton.Bones[wristBoneIndex].Transform;
-        _elbow = bodySkeleton.Bones[elbowBoneIndex].Transform;
-        if (_wrist == null || _elbow == null) return;
-
-        // Cache positions and compute arm direction
-        _wristPos = _wrist.position;
-        _elbowPos = _elbow.position;
-        _axis = (_elbowPos - _wristPos).normalized;
-
-        // 1. Calculate Bounds
+        // 1. DEPTH MATRIX VALIDATION (Quest 3 Specific)
+        // We must fetch these every frame as Meta updates them for the current head pose
         Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
         if (depthMatrices == null || depthMatrices.Length == 0) return;
 
+        // 2. CALCULATE SCREEN-SPACE CROP
+        // Project the 3D arm into the depth buffer's 2D space to find the active region
         Vector3 camPos = _cam.transform.position;
         if (!BoundingBox.CalculateArmBounds(
             ref depthMatrices[0], ref _wristPos, ref _elbowPos, ref camPos, 
@@ -273,50 +229,90 @@ public class ForearmDepthSurface : MonoBehaviour
             maxRadialDist, pixelStride, 
             out _cropX, out _cropY, out _cropW, out _cropH)) 
         {
-            return; // Arm is off-screen
+            return; // Arm is likely behind the camera or off-screen
         }
 
-        // 2. Request GPU Data (Only if we aren't already waiting for the previous frame to finish)
+        // 3. ASYNC GPU READBACK REQUEST
+        // Only request a new frame if the previous Burst/Readback job has finished
         if (!_isProcessingMesh)
         {
             _isProcessingMesh = true;
             _readbackManager.RequestDepth(
                 _cam.pixelWidth, _cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
-                OnDepthDataReceived
+                OnDepthDataReceived // Callback when GPU data hits CPU memory
             );
         }
+    }
 
-        // Build orthogonal frame for UV projection.
-        // Derives _axisRight from the camera-to-arm direction so it always
-        // points "across" the camera-facing surface strip, regardless of
-        // wrist pronation/supination.
-        //
-        // Camera-derived frame = always perpendicular to view = always
-        // good U spread across the visible mesh.
+    void OnDestroy()
+    {
+        _readbackManager?.Dispose();
+        _meshBuffer?.Dispose();
+        _buffer.Dispose();
+    }
+
+    private bool SetupBasis() 
+    {
+        // 1. BASIC COMPONENT VALIDATION
+        if (bodySkeleton == null || centerEyeAnchor == null) return false;
+        
+        if (_cam == null) _cam = centerEyeAnchor.GetComponent<Camera>();
+        if (_cam == null) return false;
+
+        // 2. BONE RESOLUTION
+        // Check if the skeleton has initialized and indices are within range
+        var bones = bodySkeleton.Bones;
+        if (bones == null || bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return false;
+
+        _wrist = bones[wristBoneIndex].Transform;
+        _elbow = bones[elbowBoneIndex].Transform;
+
+        // Ensure transforms are valid (can be null if tracking is lost)
+        if (_wrist == null || _elbow == null) return false;
+
+        // 3. TRANSFORM & AXIS RESOLUTION
+        _wristPos = _wrist.position;
+        _elbowPos = _elbow.position;
+        
+        // Safety check: avoid NaN if wrist and elbow overlap
+        Vector3 delta = _elbowPos - _wristPos;
+        if (delta.sqrMagnitude < 0.001f) return false; 
+        _axis = delta.normalized;
+
+        // 4. ORTHOGONAL FRAME CONSTRUCTION
+        // Derive a camera-facing coordinate system for the arm
         Vector3 armMid = (_wristPos + _elbowPos) * 0.5f;
         Vector3 toCamera = (_cam.transform.position - armMid).normalized;
+        
+        // axisRight points across the arm from the camera's perspective
         _axisRight = Vector3.Cross(_axis, toCamera).normalized;
         _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
 
-        // Measure pronation: signed angle between bone-derived and camera-derived
-        // reference frames, projected onto the plane perpendicular to the arm axis.
-        // This tells us how much the physical forearm has rotated relative to what
-        // the camera is currently seeing. Palm-up ≈ 0, palm-down ≈ ±π.
-        Vector3 wristUp = (_wrist.rotation * _wristUpLocal).normalized;
-        Vector3 boneRight = Vector3.Cross(_axis, wristUp).normalized;
+        // 5. PRONATION MATH (Physical Rotation)
+        // Project the wrist's local "up" into our camera-derived frame to track twist
+        Vector3 wristUpWorld = (_wrist.rotation * _wristUpLocal).normalized;
+        Vector3 boneRight = Vector3.Cross(_axis, wristUpWorld).normalized;
+        
         float cos = Vector3.Dot(boneRight, _axisRight);
         float sin = Vector3.Dot(Vector3.Cross(boneRight, _axisRight), _axis);
         _pronationAngle = Mathf.Atan2(sin, cos);
+        
+        // Smooth the pronation to ignore micro-jitters in IK/Hand-Tracking
         _smoothedPronation = Mathf.Lerp(_smoothedPronation, _pronationAngle, 0.15f);
 
-        // Measure orientation: snap to nearest 90°
-        // Detect arm orientation on screen
+        // 6. SCREEN ORIENTATION SNAPPING
+        // Determine if the arm is predominantly horizontal or vertical on screen
         float screenX = Vector3.Dot(_axis, _cam.transform.right);
         float screenY = Vector3.Dot(_axis, _cam.transform.up);
-        float absX = Mathf.Abs(screenX);
-        float absY = Mathf.Abs(screenY);
-        _orientationAngle = absX > absY ? -Mathf.PI * 0.5f: 0f; // Landscape: rotate 90°, Portrait: no rotation,
+        
+        // Snaps to 90-degree increments to keep the UI content aligned to the arm's long axis
+        float targetOrientation = Mathf.Abs(screenX) > Mathf.Abs(screenY) ? -Mathf.PI * 0.5f : 0f;
+        
+        // We use a low Lerp value here so the UI "spins" smoothly when you rotate your arm
+        _orientationAngle = Mathf.LerpAngle(_orientationAngle, targetOrientation, 0.1f);
+
+        return true;
     }
 
     // THIS RUNS WHEN THE GPU IS DONE COPYING
@@ -325,58 +321,22 @@ public class ForearmDepthSurface : MonoBehaviour
         // 1. DEADLOCK FIX: If the GPU errored out, unlock and abort
         if (!rawCroppedDepth.IsCreated || rawCroppedDepth.Length == 0)
         {
-            if (verboseLogEveryNFrames > 0)
-                Debug.LogWarning("[Forearm] Readback returned empty buffer.");
             _isProcessingMesh = false;
             return;
         }
 
-        // Diagnostic: count valid world-position pixels in the raw readback BEFORE
-        // the job runs. Tells us whether the shader produced data at all.
-        // Also scan rawDepth (carried in w) so we can see the distribution.
-        bool shouldLog = verboseLogEveryNFrames > 0
-                      && (_logFrameCounter++ % verboseLogEveryNFrames == 0);
-        int validPixels = 0;
-        Vector3 sampleWorldPos = Vector3.zero;
-        float rawDepthMin = 1f, rawDepthMax = 0f, rawDepthSum = 0f;
-        float sampleRawDepth = -1f;
-        if (shouldLog)
-        {
-            for (int i = 0; i < rawCroppedDepth.Length; i++)
-            {
-                float w = rawCroppedDepth[i].w;
-                if (w >= 0f)
-                {
-                    validPixels++;
-                    if (w < rawDepthMin) rawDepthMin = w;
-                    if (w > rawDepthMax) rawDepthMax = w;
-                    rawDepthSum += w;
-                }
-            }
-
-            // Sample the center pixel so we can see whether positions are plausible
-            int centerIdx = (safeH / 2) * safeW + (safeW / 2);
-            if (centerIdx < rawCroppedDepth.Length)
-            {
-                Vector4 s = rawCroppedDepth[centerIdx];
-                sampleWorldPos = new Vector3(s.x, s.y, s.z);
-                sampleRawDepth = s.w;
-            }
-        }
-
-        // Shader has already unprojected to world space using the depth-frame's
-        // own reprojection matrix, so the job just samples this buffer.
+        // 2. UNPROJECTION: Schedule the job that fills _buffer.Hits
         JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
             rawCroppedDepth, safeW, safeH, _buffer, pixelStride,
             out _rows, out _cols);
 
         if (_rows > 0 && _cols > 0)
         {
+            // 3. EXTRACTION: Seed and Flood to isolate the forearm
+            JobHandle extractionHandle = default;
             if (bypassSeedFlood)
             {
-                // Wait for unprojection to finish, then mark every valid depth
-                // cell as surface so BuildMesh emits geometry from the entire
-                // depth buffer. Skips seed/flood entirely — useful for seeing
+                // Skips seed/flood entirely, useful for seeing
                 // what the raw unprojection actually produces.
                 sampleHandle.Complete();
                 int total = _rows * _cols;
@@ -385,84 +345,47 @@ public class ForearmDepthSurface : MonoBehaviour
             }
             else
             {
-                RunExtractionJobs(sampleHandle);
+                // This schedules the BFS/Flood jobs
+                extractionHandle = RunExtractionJobs(sampleHandle);
             }
 
-            // Wait for Burst jobs to finish before we check the buffer
-            RunSmoothing();
-            RunBoundarySmoothing();
+            // 4. SMOOTHING: Laplacian and Boundary passes
+            JobHandle smoothHandle = RunSmoothing(extractionHandle);
+            RunBoundarySmoothing(smoothHandle);
 
-            ComputeProjectedExtent();
+            // 5. MESH GENERATION
+            // Configure generator settings from Inspector
+            _meshGenerator.MaxQuadEdgeSq = maxQuadEdge * maxQuadEdge;
+            _meshGenerator.DisplayOffset = displayOffset;
+            _meshGenerator.DisplayWidth = displayWidth;
+            _meshGenerator.DisplayHeight = displayHeight;
 
             // --- ZERO THE TRANSFORM ---
-            // Our vertices are already in perfect World Space. 
-            // We must force this GameObject to world origin so Unity doesn't move them twice!
+            // Vital: Vertices are world-space, so GameObject must stay at origin
             transform.position = Vector3.zero;
             transform.rotation = Quaternion.identity;
             transform.localScale = Vector3.one;
-            // --------------------------
 
-            BuildMesh();
+            // Execute the multi-pass Burst pipeline.
+            _meshGenerator.Generate(
+                _meshBuffer,
+                _buffer, 
+                _rows, _cols,
+                _wristPos, _axis, _axisRight,
+                _smoothedPronation, _orientationAngle,
+                transform.worldToLocalMatrix, // Usually Identity since we just zeroed it
+                out float frameCenter
+            );
+
+            _projCenter = Mathf.Lerp(_projCenter, frameCenter, 0.1f);
+
+            // 6. GPU UPLOAD: Push NativeArrays to the Mesh object
+            UpdateUnityMesh();
 
             _hasFrame = true;
-            if (_line && drawAxis)
-            {
-                _line.enabled = true;
-                _line.SetPosition(0, _wristPos);
-                _line.SetPosition(1, _elbowPos);
-            }
-
-            if (shouldLog)
-            {
-                // Count cells that survived each stage. HasDepth = job copied a
-                // valid world position; IsSurface = passed seed+flood filter.
-                // Also track the world-space spread of all valid hits — if the
-                // unprojection is sane, this should span 1-2 meters; if it's
-                // collapsing to one point, the math is wrong.
-                int hits = 0, surface = 0;
-                Vector3 boundsMin = new Vector3( float.MaxValue,  float.MaxValue,  float.MaxValue);
-                Vector3 boundsMax = new Vector3( float.MinValue,  float.MinValue,  float.MinValue);
-                Vector3 sum = Vector3.zero;
-                int total = _rows * _cols;
-                for (int i = 0; i < total; i++)
-                {
-                    if (_buffer.HasDepth[i])
-                    {
-                        hits++;
-                        Vector3 p = _buffer.Hits[i];
-                        boundsMin = Vector3.Min(boundsMin, p);
-                        boundsMax = Vector3.Max(boundsMax, p);
-                        sum += p;
-                    }
-                    if (_buffer.IsSurface[i]) surface++;
-                }
-
-                Vector3 extent = hits > 0 ? boundsMax - boundsMin : Vector3.zero;
-                Vector3 mean = hits > 0 ? sum / hits : Vector3.zero;
-                float rawDepthMean = validPixels > 0 ? rawDepthSum / validPixels : 0f;
-
-                float wristToSample = Vector3.Distance(_wristPos, sampleWorldPos);
-                Vector3 camPos = _cam.transform.position;
-                Debug.Log(
-                    $"[Forearm] cropAt=({safeX},{safeY}) crop={safeW}x{safeH} " +
-                    $"screen={_cam.pixelWidth}x{_cam.pixelHeight} fov={_cam.fieldOfView:F1} " +
-                    $"wristScreen=({_wristScreen.x:F0},{_wristScreen.y:F0},{_wristScreen.z:F2}) " +
-                    $"elbowScreen=({_elbowScreen.x:F0},{_elbowScreen.y:F0},{_elbowScreen.z:F2}) " +
-                    $"gridValid={validPixels}/{rawCroppedDepth.Length} " +
-                    $"grid={_cols}x{_rows} hits={hits} surface={surface} " +
-                    $"verts={_verts.Count} tris={_tris.Count / 3} " +
-                    $"cam={camPos} wrist={_wristPos} centerPx={sampleWorldPos} dist={wristToSample:F2}m " +
-                    $"hitsMean=({mean.x:F2},{mean.y:F2},{mean.z:F2}) " +
-                    $"hitsExtent=({extent.x:F2},{extent.y:F2},{extent.z:F2}) " +
-                    $"rawDepth[min={rawDepthMin:F4} max={rawDepthMax:F4} mean={rawDepthMean:F4} centerPx={sampleRawDepth:F4}]");
-            }
-        }
-        else if (shouldLog)
-        {
-            Debug.LogWarning($"[Forearm] grid resolved to {_cols}x{_rows} — pipeline aborted before jobs.");
         }
 
-        // Unlock so LateUpdate can request the next frame!
+        // Unlock so LateUpdate can request the next frame
         _isProcessingMesh = false;
     }
 
@@ -470,7 +393,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// Executes the Burst-compiled Jobs to extract the forearm surface.
     /// Waits for the unprojection job to finish before starting the Seed and Flood passes.
     /// </summary>
-    void RunExtractionJobs(JobHandle dependency)
+    private JobHandle RunExtractionJobs(JobHandle dependency)
     {
         // Clear the queue from the previous frame
         _buffer.BFSQueue.Clear();
@@ -490,7 +413,6 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Stage 2: flood from seeds via depth connectivity.
         // Expands onto forearm cells the seed cylinder missed.
-        float floodRadius = maxRadialDist * floodRadialMultiplier;
         var floodJob = new FloodFromSeedsJob {
             BFSQueue = _buffer.BFSQueue,
             Hits = _buffer.Hits,
@@ -499,24 +421,25 @@ public class ForearmDepthSurface : MonoBehaviour
             Cols = _cols, Rows = _rows,
             WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
             ConnSq = connectivityThreshold * connectivityThreshold, 
-            MaxFloodRadialSq = floodRadius * floodRadius,
+            MaxRSq = maxRadialDist * maxRadialDist,
             MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
         };
         
         // Schedule flood, wait for seed to finish first, then block until flood is done
         JobHandle floodHandle = floodJob.Schedule(seedHandle);
-        floodHandle.Complete();
+        return floodHandle;
     }
 
     /// <summary>
     /// Applies a Laplacian smoothing pass across the reconstructed surface.
     /// This runs in parallel on the GPU-optimized background threads using Burst.
     /// </summary>
-    void RunSmoothing()
+    private JobHandle RunSmoothing(JobHandle dependency)
     {
-        if (smoothPasses <= 0) return;
+        if (smoothPasses <= 0) return dependency;
 
-        // Execute Jobs
+        JobHandle currentHandle = dependency;
+
         for (int i = 0; i < smoothPasses; i++)
         {
             var job = new SmoothSurfaceJob {
@@ -526,13 +449,18 @@ public class ForearmDepthSurface : MonoBehaviour
                 GridHeight = _rows, GridWidth = _cols
             };
 
-            job.Schedule(_rows * _cols, 64).Complete();
+            // Schedule this pass to start ONLY AFTER the previous pass finishes
+            currentHandle = job.Schedule(_rows * _cols, 64, currentHandle);
 
-            // Swap directly inside the buffer
+            // Swap the array references for the NEXT iteration. 
+            // The job we just scheduled already grabbed the pointers it needs.
             var temp = _buffer.Hits;
             _buffer.Hits = _buffer.Smoothed;
             _buffer.Smoothed = temp;
         }
+
+        // Return the handle representing the very last smoothing pass
+        return currentHandle;
     }
 
     /// <summary>
@@ -540,8 +468,11 @@ public class ForearmDepthSurface : MonoBehaviour
     /// along each chain to smooth jagged mesh edges. Runs on the main thread using flat-indexed 
     /// native buffers to maintain zero garbage collection.
     /// </summary>
-    void RunBoundarySmoothing()
+    void RunBoundarySmoothing(JobHandle dependency)
     {
+        // Ensure all background Burst jobs (Extraction + Laplacian) are done
+        dependency.Complete();
+
         BoundarySmoother.ProcessBoundary(
             edgeSmoothPasses, 
             edgeWindowRadius, 
@@ -555,235 +486,31 @@ public class ForearmDepthSurface : MonoBehaviour
         );
     }
 
-    void OnDestroy()
+    private void UpdateUnityMesh()
     {
-        _readbackManager?.Dispose();
-        _buffer.Dispose();
-    }
+        if (_meshBuffer.VertexCount == 0) return;
+        Debug.Log(_meshBuffer.VertexCount);
 
-    /// <summary>
-    /// Computes the center of the visible forearm surface by projecting
-    /// all kept cells onto the _axisRight direction (perpendicular to the arm axis,
-    /// in the plane of the visible surface).
-    ///
-    /// For the ~40-60° of arc visible on the inner forearm, linear vs cylindrical
-    /// projection differs by at most ~3% — visually identical.
-    /// </summary>
-    void ComputeProjectedExtent()
-    {
-        float sum = 0f;
-        int count = 0;
-
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-            {
-                if (!_buffer.IsSurface[r * _cols + c]) continue;
-
-                // Project onto _axisRight: signed distance from the arm axis
-                // in the direction perpendicular to the arm, within the visible plane.
-                float proj = Vector3.Dot(_buffer.Hits[r * _cols + c] - _wristPos, _axisRight);
-
-                sum += proj;
-                count++;
-            }
-
-        _projCenter = sum / count;
-    }
-
-    /// <summary>
-    /// Builds a triangle mesh from kept depth cells. Each kept cell becomes a vertex
-    /// (converted to local space for Unity's mesh system). Adjacent 2x2 cell blocks
-    /// form quads (split into two triangles) or single triangles if one corner is
-    /// missing. Edges that span depth gaps are rejected via QuadEdgesOK/TriEdgesOK.
-    /// </summary>
-    void BuildMesh()
-    {
-        // Reset mesh data from previous frame
-        _verts.Clear(); _tris.Clear(); _uvs.Clear(); _edgeDists.Clear();
-
-        // Reuse or reallocate the grid->vertex index lookup
-        if (_cellToVert == null || _cellToVert.GetLength(0) != _rows || _cellToVert.GetLength(1) != _cols)
-            _cellToVert = new int[_rows, _cols];
-
-        // Per-row projected bounds along _axisRight (meters).
-        // Each row gets its own edges so the fade strips follow the
-        // actual mesh boundary at every V-slice.
-        float[] rowProjMin = new float[_rows];
-        float[] rowProjMax = new float[_rows];
-        for (int r = 0; r < _rows; r++)
-        {
-            rowProjMin[r] = float.MaxValue;
-            rowProjMax[r] = float.MinValue;
-            for (int c = 0; c < _cols; c++)
-            {
-                if (!_buffer.IsSurface[r * _cols + c]) continue;
-                float proj = Vector3.Dot(_buffer.Hits[r * _cols + c] - _wristPos, _axisRight);
-                if (proj < rowProjMin[r]) rowProjMin[r] = proj;
-                if (proj > rowProjMax[r]) rowProjMax[r] = proj;
-            }
-        }
-
-        // Smooth per-row bounds along V so the fade edge is a smooth curve
-        // instead of a stair-step following the grid boundary.
-        for (int pass = 0; pass < 3; pass++)
-        {
-            float[] sMin = new float[_rows];
-            float[] sMax = new float[_rows];
-            for (int r = 0; r < _rows; r++)
-            {
-                if (rowProjMin[r] == float.MaxValue) { sMin[r] = rowProjMin[r]; sMax[r] = rowProjMax[r]; continue; }
-
-                float sumMin = rowProjMin[r], sumMax = rowProjMax[r];
-                int n = 1;
-                if (r > 0 && rowProjMin[r - 1] < float.MaxValue)
-                    { sumMin += rowProjMin[r - 1]; sumMax += rowProjMax[r - 1]; n++; }
-                if (r < _rows - 1 && rowProjMin[r + 1] < float.MaxValue)
-                    { sumMin += rowProjMin[r + 1]; sumMax += rowProjMax[r + 1]; n++; }
-
-                sMin[r] = sumMin / n;
-                sMax[r] = sumMax / n;
-            }
-            System.Array.Copy(sMin, rowProjMin, _rows);
-            System.Array.Copy(sMax, rowProjMax, _rows);
-        }
-
-        // Build vertex list from kept cells. Each kept cell becomes a vertex.
-        for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-            {
-                // Rejected cells get -1 so the triangle loop knows to skip them.
-                if (!_buffer.IsSurface[r * _cols + c]) { _cellToVert[r, c] = -1; continue; }
-
-                Vector3 hitPos = _buffer.Hits[r * _cols + c];
-
-                // Physical distance from this row's nearest mesh edge (meters).
-                // Stored in UV1.x so the shader can smoothstep per-fragment.
-                float proj = Vector3.Dot(hitPos - _wristPos, _axisRight);
-                float dist = Mathf.Max(0f, Mathf.Min(proj - rowProjMin[r], rowProjMax[r] - proj));
-
-                _cellToVert[r, c] = _verts.Count;
-                _verts.Add(transform.InverseTransformPoint(hitPos));
-                _uvs.Add(UV(hitPos));
-                _edgeDists.Add(new Vector2(dist, 0f));
-            }
-
-        // Quads with edges longer than this get dropped to avoid stretching
-        // across depth gaps
-        float maxSq = maxQuadEdge * maxQuadEdge;
-
-        // Walk every 2x2 cell block and try to form quads (two triangles).
-        // All winding is CCW so normals face the camera consistently.
-        for (int r = 0; r < _rows - 1; r++)
-            for (int c = 0; c < _cols - 1; c++)
-            {
-                // Each block has four corners: top-left, top-right, bottom-left, bottom-right.
-                int topLeft = _cellToVert[r, c];
-                int topRight = _cellToVert[r, c+1];
-                int botLeft = _cellToVert[r+1, c];
-                int botRight = _cellToVert[r+1, c+1];
-
-                // Count how many corners have vertices
-                int vertCount = (topLeft >= 0 ? 1 : 0) + (topRight >= 0 ? 1 : 0) 
-                              + (botLeft >= 0 ? 1 : 0) + (botRight >= 0 ? 1: 0);
-
-                // Need at least 3 corners to form a triangle
-                if (vertCount < 3) continue;
-
-                // Full quad! 
-                if (vertCount == 4)
-                {
-                    // Check that no edge is too long before emitting
-                    if (!QuadEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) 
-                        continue;
-
-                    // Split quad into two triangles
-                    _tris.Add(topLeft); _tris.Add(botLeft); _tris.Add(topRight);
-                    _tris.Add(topRight); _tris.Add(botLeft); _tris.Add(botRight);
-                }
-            
-                // Three corners! Form a single triangle from whichever three exist,
-                // but only if no edge stretches across a depth gap.
-                else if (topLeft  < 0) {
-                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
-                    _tris.Add(topRight); _tris.Add(botLeft);  _tris.Add(botRight);
-                }
-                else if (topRight < 0) {
-                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
-                    _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(botRight);
-                }
-                else if (botLeft  < 0) {
-                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[r*_cols+c+1], _buffer.Hits[(r+1)*_cols+c+1], maxSq)) continue;
-                    _tris.Add(topLeft);  _tris.Add(botRight); _tris.Add(topRight);
-                }
-                else {
-                    if (!TriEdgesOK(_buffer.Hits[r*_cols+c], _buffer.Hits[(r+1)*_cols+c], _buffer.Hits[r*_cols+c+1], maxSq)) continue;
-                    _tris.Add(topLeft);  _tris.Add(botLeft);  _tris.Add(topRight);
-                }
-            }
-
-        // Upload to GPU
         _mesh.Clear();
-        _mesh.SetVertices(_verts);
-        _mesh.SetUVs(0, _uvs);
-        _mesh.SetUVs(1, _edgeDists);
-        _mesh.SetTriangles(_tris, 0);
+
+        // Upload Vertices and UVs directly from NativeArrays
+        // We use the count returned by the generator to only upload valid data
+        _mesh.SetVertices(_meshBuffer.Vertices, 0, _meshBuffer.VertexCount);
+        _mesh.SetUVs(0, _meshBuffer.UVs, 0, _meshBuffer.VertexCount);
+        _mesh.SetUVs(1, _meshBuffer.EdgeDists, 0, _meshBuffer.VertexCount);
+
+        // Upload Triangles
+        // SetIndices is the most efficient way to handle NativeArray<int>
+        _mesh.SetIndices(
+            _meshBuffer.Triangles, 
+            0, 
+            _meshBuffer.TriangleCount, 
+            MeshTopology.Triangles, 
+            0
+        );
+
         _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
-    }
-
-    // Check all four edges of a quad against max length
-    static bool QuadEdgesOK(Vector3 a, Vector3 b, Vector3 c, Vector3 d, float maxSq) =>
-        (a - b).sqrMagnitude < maxSq && (a - c).sqrMagnitude < maxSq
-        && (c - d).sqrMagnitude < maxSq && (b - d).sqrMagnitude < maxSq;
-
-    // Check all three edges of a triangle against max length
-    static bool TriEdgesOK(Vector3 a, Vector3 b, Vector3 c, float maxSq) =>
-        (a - b).sqrMagnitude < maxSq && (b - c).sqrMagnitude < maxSq
-        && (a - c).sqrMagnitude < maxSq;
-
-    /// <summary>
-    /// Converts a 3D world-space point on the forearm into a 2D UV coordinate
-    /// using a linear planar projection with rotation-based content scrolling.
-    ///
-    /// V (0-1) = distance along the arm axis.
-    /// U (0-1) = position across the arm, centered on visible surface,
-    ///           offset by pronation angle to scroll through a wider virtual canvas.
-    ///
-    /// The camera-derived _axisRight keeps lines straight (projection quality).
-    /// The bone-derived _pronationAngle shifts U so rotating the wrist reveals
-    /// different content regions (content selection). These are independent:
-    /// straight lines at every rotation angle.
-    /// </summary>
-    Vector2 UV(Vector3 point)
-    {
-        Vector3 fromWrist = point - _wristPos;
-        bool isLandscape = Mathf.Abs(_orientationAngle) > Mathf.PI * 0.25f;
-
-        // V: along arm
-        float distAlongAxis = Vector3.Dot(fromWrist, _axis);
-        float v = ((distAlongAxis - displayOffset) / 
-                    Mathf.Max(isLandscape ? displayWidth : displayHeight, 1e-4f)) + 0.5f;
-        v = 1f - v;
-
-        // U: across arm
-        float projRight = Vector3.Dot(fromWrist, _axisRight);
-        float u = ((projRight - _projCenter) / 
-                    Mathf.Max(isLandscape ? displayHeight : displayWidth, 1e-4f)) + 0.5f;
-
-        // Pronation offset: binary, matching isLandscape
-        float pronationOffset = isLandscape ? Mathf.PI * 0.75f : 0f;
-        u += (_smoothedPronation + pronationOffset) / Mathf.PI;
-
-        // Rotate UVs around center to counteract arm screen orientation.
-        // Keeps UI content upright whether the arm is vertical or horizontal.
-        // Snaps to 90° increments, smoothly animated via _smoothedOrientation.
-        float a = _orientationAngle;
-        float cu = u - 0.5f, cv = v - 0.5f;
-        float cosA = Mathf.Cos(a), sinA = Mathf.Sin(a);
-        u = cu * cosA - cv * sinA + 0.5f;
-        v = cu * sinA + cv * cosA + 0.5f;
-
-        return new Vector2(u, v);
     }
 
     public bool    IsValid          => _hasFrame;

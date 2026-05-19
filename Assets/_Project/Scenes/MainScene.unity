@@ -899,17 +899,15 @@ MonoBehaviour:
   wristBoneIndex: 19
   elbowBoneIndex: 11
   pixelStride: 6
-  maxRadialDist: 0.08
+  maxRadialDist: 0.15
   minFromWrist: -0.02
   maxFromElbow: 0.05
   connectivityThreshold: 0.005
-  floodRadialMultiplier: 1.5
+  floodRadialMultiplier: 1
   smoothPasses: 3
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
   maxQuadEdge: 0.03
-  drawAxis: 0
-  verboseLogEveryNFrames: 30
   bypassSeedFlood: 0
   displayWidth: 0.24
   displayHeight: 0.12
