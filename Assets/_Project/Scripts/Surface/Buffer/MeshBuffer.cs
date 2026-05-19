@@ -65,7 +65,7 @@ namespace Surface.Buffer
             int maxTris = (rows - 1) * (cols - 1) * 6;
 
             // If arrays are already the correct size, do nothing.
-            if (Vertices.IsCreated && Vertices.Length == totalCells) return;
+            if (Vertices.IsCreated && Vertices.Length == totalCells && Triangles.Length == maxTris) return;
 
             // Free previous allocations to prevent memory leaks
             Dispose();
