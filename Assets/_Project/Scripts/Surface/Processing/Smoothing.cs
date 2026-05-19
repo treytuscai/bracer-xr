@@ -4,7 +4,7 @@ using Unity.Jobs;
 using UnityEngine;
 using System.Collections.Generic;
 
-namespace Surface.Helpers
+namespace Surface.Processing
 {
     /// <summary>
     /// Applies a Laplacian smoothing pass across the reconstructed surface.

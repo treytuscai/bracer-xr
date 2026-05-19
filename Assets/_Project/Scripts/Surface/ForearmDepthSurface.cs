@@ -2,7 +2,10 @@ using UnityEngine;
 using System.Collections.Generic;
 using Unity.Jobs;
 using Unity.Collections;
-using Surface.Helpers;
+using Surface.Buffer;
+using Surface.Core;
+using Surface.Math;
+using Surface.Processing;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the
@@ -262,7 +265,7 @@ public class ForearmDepthSurface : MonoBehaviour
         // 1. Calculate Bounds
         Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
         if (depthMatrices == null || depthMatrices.Length == 0) return;
-        
+
         Vector3 camPos = _cam.transform.position;
         if (!BoundingBox.CalculateArmBounds(
             ref depthMatrices[0], ref _wristPos, ref _elbowPos, ref camPos, 

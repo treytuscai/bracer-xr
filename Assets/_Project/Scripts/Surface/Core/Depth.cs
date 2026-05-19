@@ -4,8 +4,9 @@ using Unity.Jobs;
 using UnityEngine;
 using UnityEngine.Rendering;
 using System;
+using Surface.Buffer;
 
-namespace Surface.Helpers
+namespace Surface.Core
 {
     /// <summary>
     /// Manages the GPU side of the depth pipeline: blits Meta's environment

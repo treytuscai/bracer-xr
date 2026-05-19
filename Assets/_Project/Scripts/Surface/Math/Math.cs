@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace Surface.Helpers
+namespace Surface.Math
 {
     public static class BoundingBox
     {

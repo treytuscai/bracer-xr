@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
 
-namespace Surface.Helpers
+namespace Surface.Core
 {
     // --------------------------------------------------------
     // SEED JOB (Runs in parallel across all cells)

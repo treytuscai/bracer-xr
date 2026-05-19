@@ -2,7 +2,7 @@ using Unity.Collections;
 using UnityEngine;
 using System;
 
-namespace Surface.Helpers
+namespace Surface.Buffer
 {
     public class SurfaceBuffer : IDisposable
     {
