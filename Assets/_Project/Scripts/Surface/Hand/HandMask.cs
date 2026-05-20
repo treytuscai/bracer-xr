@@ -151,72 +151,72 @@ namespace Surface.Hand
             _isInitialized = true;
             return true;
         }
-    }
 
-    // ================================================================
-    // BURST JOB
-    // ================================================================
-
-    /// <summary>
-    /// Flags depth cells that fall inside the hand's capsule skeleton.
-    /// Runs in parallel across all grid cells. Early-outs on first capsule hit.
-    /// </summary>
-    [BurstCompile]
-    public struct HandMaskJob : IJobParallelFor
-    {
-        [ReadOnly] public NativeArray<Vector3> Hits;
-        [ReadOnly] public NativeArray<bool> HasDepth;
-        [ReadOnly] public NativeArray<Vector3> JointPositions;
-        [ReadOnly] public NativeArray<int>     SegStart;
-        [ReadOnly] public NativeArray<int>     SegEnd;
-
-        public int   SegmentCount;
-        public float MaskRadiusSq;
-
-        [WriteOnly] public NativeArray<bool> IsHandMasked;
-
-        public void Execute(int index)
-        {
-            if (!HasDepth[index]) 
-            {
-                IsHandMasked[index] = false;
-                return;
-            }
-
-            Vector3 hit = Hits[index];
-            for (int seg = 0; seg < SegmentCount; seg++)
-            {
-                float dSq = PointCapsuleDistSq(
-                    hit,
-                    JointPositions[SegStart[seg]],
-                    JointPositions[SegEnd[seg]]
-                );
-
-                if (dSq < MaskRadiusSq)
-                {
-                    IsHandMasked[index] = true;
-                    return; // Early-out: one hit is enough
-                }
-            }
-
-            IsHandMasked[index] = false;
-        }
+        // ================================================================
+        // BURST JOB
+        // ================================================================
 
         /// <summary>
-        /// Squared distance from point P to the nearest point on line segment AB.
-        /// Burst compiles this inline, no managed call overhead.
+        /// Flags depth cells that fall inside the hand's capsule skeleton.
+        /// Runs in parallel across all grid cells. Early-outs on first capsule hit.
         /// </summary>
-        private static float PointCapsuleDistSq(Vector3 p, Vector3 a, Vector3 b)
+        [BurstCompile]
+        struct HandMaskJob : IJobParallelFor
         {
-            Vector3 ab = b - a;
-            float abSq = Vector3.Dot(ab, ab);
- 
-            // Degenerate segment (joint on top of joint), treat as sphere
-            if (abSq < 1e-8f) return (p - a).sqrMagnitude;
- 
-            float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / abSq);
-            Vector3 closest = a + ab * t;
-            return (p - closest).sqrMagnitude;
+            [ReadOnly] public NativeArray<Vector3> Hits;
+            [ReadOnly] public NativeArray<bool> HasDepth;
+            [ReadOnly] public NativeArray<Vector3> JointPositions;
+            [ReadOnly] public NativeArray<int>     SegStart;
+            [ReadOnly] public NativeArray<int>     SegEnd;
+
+            public int   SegmentCount;
+            public float MaskRadiusSq;
+
+            [WriteOnly] public NativeArray<bool> IsHandMasked;
+
+            public void Execute(int index)
+            {
+                if (!HasDepth[index]) 
+                {
+                    IsHandMasked[index] = false;
+                    return;
+                }
+
+                Vector3 hit = Hits[index];
+                for (int seg = 0; seg < SegmentCount; seg++)
+                {
+                    float dSq = PointCapsuleDistSq(
+                        hit,
+                        JointPositions[SegStart[seg]],
+                        JointPositions[SegEnd[seg]]
+                    );
+
+                    if (dSq < MaskRadiusSq)
+                    {
+                        IsHandMasked[index] = true;
+                        return; // Early-out: one hit is enough
+                    }
+                }
+
+                IsHandMasked[index] = false;
+            }
+
+            /// <summary>
+            /// Squared distance from point P to the nearest point on line segment AB.
+            /// Burst compiles this inline, no managed call overhead.
+            /// </summary>
+            private static float PointCapsuleDistSq(Vector3 p, Vector3 a, Vector3 b)
+            {
+                Vector3 ab = b - a;
+                float abSq = Vector3.Dot(ab, ab);
+    
+                // Degenerate segment (joint on top of joint), treat as sphere
+                if (abSq < 1e-8f) return (p - a).sqrMagnitude;
+    
+                float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / abSq);
+                Vector3 closest = a + ab * t;
+                return (p - closest).sqrMagnitude;
+            }
         }
     }
 }
