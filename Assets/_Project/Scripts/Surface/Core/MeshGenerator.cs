@@ -26,6 +26,18 @@ namespace Surface.Core
         private NativeArray<float> _partialSums;
         private NativeArray<int> _partialCounts;
 
+        public MeshGenerator(
+            float maxQuadEdge,
+            float displayOffset,
+            float displayWidth,
+            float displayHeight)
+        {
+            MaxQuadEdgeSq   = maxQuadEdge * maxQuadEdge;
+            DisplayOffset   = displayOffset;
+            DisplayWidth    = displayWidth;
+            DisplayHeight   = displayHeight;
+        }
+
         /// <summary>
         /// Main entry point for the mesh generation pipeline. Schedules and executes a chain of Burst jobs.
         /// </summary>

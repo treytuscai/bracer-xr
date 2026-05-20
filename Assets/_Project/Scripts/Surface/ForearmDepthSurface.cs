@@ -152,7 +152,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _handMask = new HandMask(handSkeleton, handMaskRadius);
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
-        _meshGenerator = new MeshGenerator();
+        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
     }
 
     /// <summary>
@@ -351,14 +351,7 @@ public class ForearmDepthSurface : MonoBehaviour
             JobHandle smoothHandle = RunSmoothing(extractionHandle);
             RunBoundarySmoothing(smoothHandle);
 
-            // 5. MESH GENERATION
-            // Configure generator settings from Inspector
-            _meshGenerator.MaxQuadEdgeSq = maxQuadEdge * maxQuadEdge;
-            _meshGenerator.DisplayOffset = displayOffset;
-            _meshGenerator.DisplayWidth = displayWidth;
-            _meshGenerator.DisplayHeight = displayHeight;
-
-            // Execute the multi-pass Burst pipeline.
+            // 5. MESH GENERATION: Execute the multi-pass Burst pipeline.
             _meshGenerator.Generate(
                 _meshBuffer,
                 _surfaceBuffer, 
