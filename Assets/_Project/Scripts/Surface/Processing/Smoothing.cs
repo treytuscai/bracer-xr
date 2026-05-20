@@ -3,9 +3,81 @@ using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
 using System.Collections.Generic;
+using Surface.Buffer;
 
 namespace Surface.Processing
 {
+    /// <summary>
+    /// Schedules Laplacian smoothing passes and runs boundary contour
+    /// smoothing on the main thread. Owns the managed Lists used for
+    /// boundary chain tracing.
+    /// </summary>
+    public class SurfaceSmoother
+    {
+        // Configuration (set from Inspector values each frame before Run)
+        public int SmoothPasses;
+        public int EdgeSmoothPasses;
+        public int EdgeWindowRadius;
+ 
+        // Owned memory for boundary tracing (managed, reused across frames)
+        private readonly List<int> _chain = new List<int>(512);
+        private readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
+
+        public SurfaceSmoother(int smoothPasses, int edgeSmoothPasses, int edgeWindowRadius)
+        {
+            SmoothPasses     = smoothPasses;
+            EdgeSmoothPasses = edgeSmoothPasses;
+            EdgeWindowRadius = edgeWindowRadius;
+        }
+ 
+        /// <summary>
+        /// Runs the full smoothing pipeline: Laplacian passes (Burst, parallel)
+        /// followed by boundary contour smoothing (main thread, sequential).
+        /// Blocks internally. After this returns, buffer.Hits is final.
+        /// </summary>
+        public void Schedule(
+            SurfaceBuffer buffer,
+            int rows, int cols,
+            JobHandle dependency)
+        {
+            // Laplacian passes
+            JobHandle lastPass = dependency;
+            for (int i = 0; i < SmoothPasses; i++)
+            {
+                var job = new SmoothSurfaceJob
+                {
+                    Hits       = buffer.Hits,
+                    IsSurface  = buffer.IsSurface,
+                    Smoothed   = buffer.Smoothed,
+                    GridHeight = rows,
+                    GridWidth  = cols
+                };
+ 
+                lastPass = job.Schedule(rows * cols, 64, lastPass);
+ 
+                // Swap references for next iteration.
+                // The job already captured its pointers at Schedule time.
+                var temp = buffer.Hits;
+                buffer.Hits = buffer.Smoothed;
+                buffer.Smoothed = temp;
+            }
+ 
+            // Boundary smoothing (main thread, sequential)
+            lastPass.Complete();
+ 
+            BoundarySmoother.ProcessBoundary(
+                EdgeSmoothPasses,
+                EdgeWindowRadius,
+                rows, cols,
+                buffer.Hits,
+                buffer.IsSurface,
+                buffer.BoundaryVisited,
+                _chain,
+                _chainSmoothed
+            );
+        }
+    }
+
     /// <summary>
     /// Applies a Laplacian smoothing pass across the reconstructed surface.
     /// This runs in parallel on the GPU-optimized background threads using Burst.

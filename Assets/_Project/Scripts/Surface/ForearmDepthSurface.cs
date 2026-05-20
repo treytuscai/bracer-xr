@@ -1,5 +1,4 @@
 using UnityEngine;
-using System.Collections.Generic;
 using Unity.Jobs;
 using Unity.Collections;
 using Surface.Buffer;
@@ -7,7 +6,6 @@ using Surface.Core;
 using Surface.Math;
 using Surface.Processing;
 using Surface.Hand;
-using UnityEngine.XR;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the
@@ -114,7 +112,7 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceExtractor _surfaceExtractor;
     private DepthReadback _depthReadback;
     private MeshGenerator _meshGenerator;
-
+    private SurfaceSmoother _surfaceSmoother;
 
     // Mesh components
     MeshFilter _meshFilter; 
@@ -131,8 +129,6 @@ public class ForearmDepthSurface : MonoBehaviour
     // Buffers
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
-    readonly List<int> _boundaryChain = new List<int>(512);
-    readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
 
     // Frame state computed in LateUpdate, consumed by UV() and public API
     static readonly int wristBoneIndex = 19; // Index of the wrist bone in OVRSkeleton.Bones
@@ -152,6 +148,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _handMask = new HandMask(handSkeleton, handMaskRadius);
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
+        _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
     }
 
@@ -333,7 +330,7 @@ public class ForearmDepthSurface : MonoBehaviour
             {
                 // Skips seed/flood entirely, useful for seeing
                 // what the raw unprojection actually produces.
-                sampleHandle.Complete();
+                maskHandle.Complete();
                 int total = _rows * _cols;
                 for (int i = 0; i < total; i++)
                     _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
@@ -348,8 +345,7 @@ public class ForearmDepthSurface : MonoBehaviour
             }
 
             // 4. SMOOTHING: Laplacian and Boundary passes
-            JobHandle smoothHandle = RunSmoothing(extractionHandle);
-            RunBoundarySmoothing(smoothHandle);
+            _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
 
             // 5. MESH GENERATION: Execute the multi-pass Burst pipeline.
             _meshGenerator.Generate(
@@ -372,62 +368,6 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Unlock so LateUpdate can request the next frame
         _isProcessingMesh = false;
-    }
-
-    /// <summary>
-    /// Applies a Laplacian smoothing pass across the reconstructed surface.
-    /// This runs in parallel on the GPU-optimized background threads using Burst.
-    /// </summary>
-    private JobHandle RunSmoothing(JobHandle dependency)
-    {
-        if (smoothPasses <= 0) return dependency;
-
-        JobHandle currentHandle = dependency;
-
-        for (int i = 0; i < smoothPasses; i++)
-        {
-            var job = new SmoothSurfaceJob {
-                Hits = _surfaceBuffer.Hits,
-                IsSurface = _surfaceBuffer.IsSurface,
-                Smoothed = _surfaceBuffer.Smoothed,
-                GridHeight = _rows, GridWidth = _cols
-            };
-
-            // Schedule this pass to start ONLY AFTER the previous pass finishes
-            currentHandle = job.Schedule(_rows * _cols, 64, currentHandle);
-
-            // Swap the array references for the NEXT iteration. 
-            // The job we just scheduled already grabbed the pointers it needs.
-            var temp = _surfaceBuffer.Hits;
-            _surfaceBuffer.Hits = _surfaceBuffer.Smoothed;
-            _surfaceBuffer.Smoothed = temp;
-        }
-
-        // Return the handle representing the very last smoothing pass
-        return currentHandle;
-    }
-
-    /// <summary>
-    /// Extracts ordered boundary contours from the kept-cell grid and applies a 1D moving average 
-    /// along each chain to smooth jagged mesh edges. Runs on the main thread using flat-indexed 
-    /// native buffers to maintain zero garbage collection.
-    /// </summary>
-    void RunBoundarySmoothing(JobHandle dependency)
-    {
-        // Ensure all background Burst jobs (Extraction + Laplacian) are done
-        dependency.Complete();
-
-        BoundarySmoother.ProcessBoundary(
-            edgeSmoothPasses, 
-            edgeWindowRadius, 
-            _rows, 
-            _cols, 
-            _surfaceBuffer.Hits, 
-            _surfaceBuffer.IsSurface, 
-            _surfaceBuffer.BoundaryVisited, 
-            _boundaryChain, 
-            _chainSmoothed
-        );
     }
 
     private void UpdateUnityMesh()
