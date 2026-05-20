@@ -58,24 +58,20 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
     [Range(2, 20)] public int pixelStride = 8;
 
-    [Header("Seed (wrist->elbow cylinder filter)")]
-    [Tooltip("(Also used in Flood) Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
+    [Header("Seed + Flood")]
+    [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
     [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
     [Range(0f, 0.10f)] public float maxFromElbow = 0.05f;
-
-    [Header("Flood (depth connectivity expansion)")]
-    [Tooltip("Max 3D step between adjacent grid hits to count as connected (m).")]
+    [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
 
     [Header("Smoothing")]
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
     [Range(0, 5)]
     public int smoothPasses = 3;
-
-    [Header("Edge Smoothing")]
     [Tooltip("1D smoothing passes along boundary contour chains")]
     [Range(0, 5)] public int edgeSmoothPasses = 2;
     [Tooltip("Half-width of the moving average window along boundary chains")]
@@ -100,50 +96,32 @@ public class ForearmDepthSurface : MonoBehaviour
              "When on, bump maxQuadEdge to ~0.5 so the mesh doesn't get pruned by edge length.")]
     public bool bypassSeedFlood = false;
 
-    // Camera Reference
-    Camera _cam;
+    // Shared data flowing between pipeline stages
+    private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
+    private MeshBuffer _meshBuffer = new MeshBuffer();
 
-    // True if this frame produced a valid mesh
-    bool _hasFrame;
-
-    // Classes
+    // Pipeline stages (constructed in Awake, called in sequence each frame)
+    private ArmFrame _armFrame;
     private HandMask _handMask;
     private SurfaceExtractor _surfaceExtractor;
     private DepthReadback _depthReadback;
     private MeshGenerator _meshGenerator;
     private SurfaceSmoother _surfaceSmoother;
 
-    // Mesh components
+    // Unity rendering
     MeshFilter _meshFilter; 
     MeshRenderer _meshRenderer; 
     Mesh _mesh;
 
-    // Depth readback
+    // Per-frame state
+    int _rows, _cols;
     private int _cropX, _cropY, _cropW, _cropH;
     private bool _isProcessingMesh = false;
-
-    // Current grid dimensions
-    int _rows, _cols;
-
-    // Buffers
-    private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
-    private MeshBuffer _meshBuffer = new MeshBuffer();
-
-    // Frame state computed in LateUpdate, consumed by UV() and public API
-    static readonly int wristBoneIndex = 19; // Index of the wrist bone in OVRSkeleton.Bones
-    static readonly int elbowBoneIndex = 11; // Index of the elbow bone in OVRSkeleton.Bones
-    Transform _wrist, _elbow;
-    Vector3 _wristPos, _elbowPos;   // Cached bone world positions
-    Vector3 _axis;                  // Wrist->elbow direction (normalized)
-    Vector3 _axisRight, _axisUp;    // Orthogonal frame perpendicular to axis
-    float _projCenter;              // Linear projection center for UV mapping.
-    static readonly Vector3 _wristUpLocal = Vector3.up; // Local up
-    float _pronationAngle;          // Signed angle (rad) of forearm rotation
-    float _smoothedPronation;       // Temporally smoothed to reduce bone jitter
-    float _orientationAngle;        // Current snapped rotation (0 or ±π/2)
+    bool _hasFrame;
 
     void Awake()
     {
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
         _handMask = new HandMask(handSkeleton, handMaskRadius);
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
@@ -198,7 +176,8 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void LateUpdate()
     {
-        if (!SetupBasis()) {
+        if (!_armFrame.TryUpdate())
+        {
             _hasFrame = false;
             return;
         }
@@ -208,12 +187,15 @@ public class ForearmDepthSurface : MonoBehaviour
         Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
         if (depthMatrices == null || depthMatrices.Length == 0) return;
 
+        Vector3 wristPos = _armFrame.WristPos;
+        Vector3 elbowPos = _armFrame.ElbowPos;
+        Vector3 camPos   = _armFrame.Cam.transform.position;
+
         // CALCULATE SCREEN-SPACE CROP
         // Project the 3D arm into the depth buffer's 2D space to find the active region
-        Vector3 camPos = _cam.transform.position;
         if (!BoundingBox.CalculateArmBounds(
-            ref depthMatrices[0], ref _wristPos, ref _elbowPos, ref camPos, 
-            _cam.fieldOfView, _cam.pixelWidth, _cam.pixelHeight, 
+            ref depthMatrices[0], ref wristPos, ref elbowPos, ref camPos, 
+            _armFrame.Cam.fieldOfView, _armFrame.Cam.pixelWidth, _armFrame.Cam.pixelHeight, 
             maxRadialDist, pixelStride, 
             out _cropX, out _cropY, out _cropW, out _cropH)) 
         {
@@ -225,7 +207,7 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _depthReadback.Schedule(
-                _cam.pixelWidth, _cam.pixelHeight,
+                _armFrame.Cam.pixelWidth, _armFrame.Cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
                 _surfaceBuffer, pixelStride,
                 OnDepthReady
@@ -240,69 +222,6 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshBuffer?.Dispose();
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
-    }
-
-    private bool SetupBasis() 
-    {
-        // 1. BASIC COMPONENT VALIDATION
-        if (bodySkeleton == null || centerEyeAnchor == null) return false;
-        
-        if (_cam == null) _cam = centerEyeAnchor.GetComponent<Camera>();
-        if (_cam == null) return false;
-
-        // 2. BONE RESOLUTION
-        // Check if the skeleton has initialized and indices are within range
-        var bones = bodySkeleton.Bones;
-        if (bones == null || bones.Count <= Mathf.Max(wristBoneIndex, elbowBoneIndex)) return false;
-
-        _wrist = bones[wristBoneIndex].Transform;
-        _elbow = bones[elbowBoneIndex].Transform;
-
-        // Ensure transforms are valid (can be null if tracking is lost)
-        if (_wrist == null || _elbow == null) return false;
-
-        // 3. TRANSFORM & AXIS RESOLUTION
-        _wristPos = _wrist.position;
-        _elbowPos = _elbow.position;
-        
-        // Safety check: avoid NaN if wrist and elbow overlap
-        Vector3 delta = _elbowPos - _wristPos;
-        if (delta.sqrMagnitude < 0.001f) return false; 
-        _axis = delta.normalized;
-
-        // 4. ORTHOGONAL FRAME CONSTRUCTION
-        // Derive a camera-facing coordinate system for the arm
-        Vector3 armMid = (_wristPos + _elbowPos) * 0.5f;
-        Vector3 toCamera = (_cam.transform.position - armMid).normalized;
-        
-        // axisRight points across the arm from the camera's perspective
-        _axisRight = Vector3.Cross(_axis, toCamera).normalized;
-        _axisUp = Vector3.Cross(_axisRight, _axis).normalized;
-
-        // 5. PRONATION MATH (Physical Rotation)
-        // Project the wrist's local "up" into our camera-derived frame to track twist
-        Vector3 wristUpWorld = (_wrist.rotation * _wristUpLocal).normalized;
-        Vector3 boneRight = Vector3.Cross(_axis, wristUpWorld).normalized;
-        
-        float cos = Vector3.Dot(boneRight, _axisRight);
-        float sin = Vector3.Dot(Vector3.Cross(boneRight, _axisRight), _axis);
-        _pronationAngle = Mathf.Atan2(sin, cos);
-        
-        // Smooth the pronation to ignore micro-jitters in IK/Hand-Tracking
-        _smoothedPronation = Mathf.Lerp(_smoothedPronation, _pronationAngle, 0.15f);
-
-        // 6. SCREEN ORIENTATION SNAPPING
-        // Determine if the arm is predominantly horizontal or vertical on screen
-        float screenX = Vector3.Dot(_axis, _cam.transform.right);
-        float screenY = Vector3.Dot(_axis, _cam.transform.up);
-        
-        // Snaps to 90-degree increments to keep the UI content aligned to the arm's long axis
-        float targetOrientation = Mathf.Abs(screenX) > Mathf.Abs(screenY) ? -Mathf.PI * 0.5f : 0f;
-        
-        // We use a low Lerp value here so the UI "spins" smoothly when you rotate your arm
-        _orientationAngle = Mathf.LerpAngle(_orientationAngle, targetOrientation, 0.1f);
-
-        return true;
     }
 
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
@@ -335,7 +254,7 @@ public class ForearmDepthSurface : MonoBehaviour
             // Schedules the BFS/Flood jobs
             extractionHandle = _surfaceExtractor.Schedule(
                 _surfaceBuffer, _rows, _cols,
-                _wristPos, _elbowPos, _axis,
+                _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
                 maskHandle);
         }
 
@@ -347,8 +266,8 @@ public class ForearmDepthSurface : MonoBehaviour
             _meshBuffer,
             _surfaceBuffer, 
             _rows, _cols,
-            _wristPos, _axis, _axisRight,
-            _smoothedPronation, _orientationAngle,
+            _armFrame.WristPos, _armFrame.Axis, _armFrame.AxisRight,
+            _armFrame.Pronation, _armFrame.Orientation,
             transform.worldToLocalMatrix,
             out float frameCenter
         );
@@ -388,12 +307,12 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     public bool    IsValid          => _hasFrame;
-    public Vector3 WristPosition    => _wristPos;
-    public Vector3 ElbowPosition    => _elbowPos;
-    public Vector3 AxisDir          => _axis;
-    public Vector3 AxisRight        => _axisRight;
-    public Vector3 AxisUp           => _axisUp;
+    public Vector3 WristPosition    => _armFrame.WristPos;
+    public Vector3 ElbowPosition    => _armFrame.ElbowPos;
+    public Vector3 AxisDir          => _armFrame.Axis;
+    public Vector3 AxisRight        => _armFrame.AxisRight;
+    public Vector3 AxisUp           => _armFrame.AxisUp;
+    public float   PronationAngle   => _armFrame.Pronation;
+    public float   OrientationAngle => _armFrame.Orientation;
     public Mesh    SurfaceMesh      => _mesh;
-    public float   PronationAngle   => _smoothedPronation;
-    public float   OrientationAngle => _orientationAngle;
 }
