@@ -82,7 +82,7 @@ namespace Surface.Processing
         /// This runs in parallel on the GPU-optimized background threads using Burst.
         /// </summary>
         [BurstCompile]
-        public struct SmoothSurfaceJob : IJobParallelFor
+        struct SmoothSurfaceJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<Vector3> Hits;
             public NativeArray<Vector3> Smoothed;
