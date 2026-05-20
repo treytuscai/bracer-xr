@@ -32,7 +32,7 @@ namespace Surface.Core
             Debug.Log("[Depth] MetaDepthCopy shader loaded.");
         }
 
-        public void RequestDepth(
+        public void Schedule(
             int screenWidth, int screenHeight, 
             int xMin, int yMin, int width, int height, 
             Action<NativeArray<Vector4>, int, int, int, int> onComplete) // Note: Vector4!
@@ -97,7 +97,7 @@ namespace Surface.Core
         /// strides and copies world positions into the surface buffer. No camera
         /// math involved — the shader already produced world-space coordinates.
         /// </summary>
-        public static JobHandle ScheduleUnprojection(
+        public static JobHandle Schedule(
             NativeArray<Vector4> worldPositions,
             int croppedWidth,
             int croppedHeight,

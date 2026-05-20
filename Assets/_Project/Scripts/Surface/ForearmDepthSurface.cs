@@ -226,7 +226,7 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _isProcessingMesh = true;
-            _depthReadback.RequestDepth(
+            _depthReadback.Schedule(
                 _cam.pixelWidth, _cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
                 OnDepthDataReceived // Callback when GPU data hits CPU memory
@@ -317,7 +317,7 @@ public class ForearmDepthSurface : MonoBehaviour
         }
 
         // 2. UNPROJECTION: Schedule the job that fills _surfaceBuffer.Hits
-        JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
+        JobHandle sampleHandle = DepthSampler.Schedule(
             rawCroppedDepth, safeW, safeH, _surfaceBuffer, pixelStride,
             out _rows, out _cols);
 
