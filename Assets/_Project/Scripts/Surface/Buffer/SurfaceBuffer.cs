@@ -12,6 +12,7 @@ namespace Surface.Buffer
         public NativeArray<bool> HasDepth;
         public NativeQueue<int> BFSQueue;
         public NativeArray<bool> BoundaryVisited;
+        public NativeArray<bool> IsHandMasked;
 
         private int _currentSize = -1;
 
@@ -28,6 +29,7 @@ namespace Surface.Buffer
             HasDepth = new NativeArray<bool>(total, Allocator.Persistent);
             BFSQueue = new NativeQueue<int>(Allocator.Persistent);
             BoundaryVisited = new NativeArray<bool>(total, Allocator.Persistent);
+            IsHandMasked = new NativeArray<bool>(total, Allocator.Persistent);
             
             _currentSize = total;
         }
@@ -40,6 +42,7 @@ namespace Surface.Buffer
             if (HasDepth.IsCreated) HasDepth.Dispose();
             if (BoundaryVisited.IsCreated) BoundaryVisited.Dispose();
             if (BFSQueue.IsCreated) BFSQueue.Dispose();
+            if (IsHandMasked.IsCreated) IsHandMasked.Dispose();
             _currentSize = -1;
         }
     }

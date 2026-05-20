@@ -6,6 +6,8 @@ using Surface.Buffer;
 using Surface.Core;
 using Surface.Math;
 using Surface.Processing;
+using Surface.Hand;
+using UnityEngine.XR;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the
@@ -44,10 +46,16 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
+    [Tooltip("Right Hand skeleton. Masks interacting hand from forearm depth")]
+    public OVRSkeleton handSkeleton;
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
     [Tooltip("Material for rendering the forearm surface. Falls back to transparent cyan if unset")]
     public Material surfaceMaterial;
+
+    [Header("Hand Masking")]
+    [Range(0.01f, 0.04f)]
+    public float handMaskRadius = 0.02f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -101,6 +109,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // True if this frame produced a valid mesh
     bool _hasFrame;
 
+    // Hand masking
+    private HandMask _handMask;
+
     // Mesh components
     MeshFilter _meshFilter; 
     MeshRenderer _meshRenderer; 
@@ -136,6 +147,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
     void Awake()
     {
+        _handMask = new HandMask(handSkeleton, handMaskRadius);
         _meshGenerator = new MeshGenerator();
         _readbackManager = new DepthReadback();
     }
@@ -224,6 +236,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
     void OnDestroy()
     {
+        _handMask?.Dispose();
         _readbackManager?.Dispose();
         _meshBuffer?.Dispose();
         _buffer.Dispose();
@@ -307,6 +320,8 @@ public class ForearmDepthSurface : MonoBehaviour
             rawCroppedDepth, safeW, safeH, _buffer, pixelStride,
             out _rows, out _cols);
 
+        JobHandle maskHandle = _handMask.Schedule(_buffer, sampleHandle);
+
         if (_rows > 0 && _cols > 0)
         {
             // 3. EXTRACTION: Seed and Flood to isolate the forearm
@@ -323,7 +338,7 @@ public class ForearmDepthSurface : MonoBehaviour
             else
             {
                 // This schedules the BFS/Flood jobs
-                extractionHandle = RunExtractionJobs(sampleHandle);
+                extractionHandle = RunExtractionJobs(maskHandle);
             }
 
             // 4. SMOOTHING: Laplacian and Boundary passes
@@ -375,6 +390,7 @@ public class ForearmDepthSurface : MonoBehaviour
             Hits = _buffer.Hits,
             HasDepth = _buffer.HasDepth,
             Kept = _buffer.IsSurface,
+            IsHandMasked = _buffer.IsHandMasked,
             BFSQueueWriter = _buffer.BFSQueue.AsParallelWriter(),
             WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
             MaxRSq = maxRadialDist * maxRadialDist, 
@@ -389,6 +405,7 @@ public class ForearmDepthSurface : MonoBehaviour
             Hits = _buffer.Hits,
             HasDepth = _buffer.HasDepth,
             Kept = _buffer.IsSurface,
+            IsHandMasked = _buffer.IsHandMasked,
             Cols = _cols, Rows = _rows,
             WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
             ConnSq = connectivityThreshold * connectivityThreshold, 

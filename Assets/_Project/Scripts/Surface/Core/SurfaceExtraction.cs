@@ -13,10 +13,11 @@ namespace Surface.Core
     {
         [ReadOnly] public NativeArray<Vector3> Hits;
         [ReadOnly] public NativeArray<bool> HasDepth;
-        
         public NativeArray<bool> Kept;
-        public NativeQueue<int>.ParallelWriter BFSQueueWriter;
+        public NativeArray<bool> IsHandMasked;
 
+        public NativeQueue<int>.ParallelWriter BFSQueueWriter;
+        
         public Vector3 WristPos;
         public Vector3 ElbowPos;
         public Vector3 Axis;
@@ -27,7 +28,7 @@ namespace Surface.Core
 
         public void Execute(int index)
         {
-            if (!HasDepth[index]) return;
+            if (!HasDepth[index] || IsHandMasked[index]) return;
 
             Vector3 p = Hits[index];
 
@@ -58,6 +59,7 @@ namespace Surface.Core
         [ReadOnly] public NativeArray<Vector3> Hits;
         [ReadOnly] public NativeArray<bool> HasDepth;
         public NativeArray<bool> Kept;
+        public NativeArray<bool> IsHandMasked;
 
         public int Cols;
         public int Rows;
@@ -92,7 +94,7 @@ namespace Surface.Core
 
                     int nIdx = nr * Cols + nc;
 
-                    if (Kept[nIdx] || !HasDepth[nIdx]) continue;
+                    if (Kept[nIdx] || !HasDepth[nIdx] || IsHandMasked[nIdx]) continue;
 
                     Vector3 neighborHit = Hits[nIdx];
 
