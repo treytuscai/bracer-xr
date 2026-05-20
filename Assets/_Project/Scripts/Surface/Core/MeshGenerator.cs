@@ -5,6 +5,7 @@ using Unity.Jobs;
 using UnityEngine;
 using Surface.Buffer;
 using System.Threading; // Required for Interlocked operations
+using System;
 
 namespace Surface.Core
 {
@@ -12,7 +13,7 @@ namespace Surface.Core
     /// Executes the multi-threaded Burst pipeline to transform segmented depth hits into a renderable mesh.
     /// Handles boundary smoothing, UV generation, and edge-gap rejection.
     /// </summary>
-    public class MeshGenerator 
+    public class MeshGenerator : IDisposable
     {
         // ------------------------------------------------------------------
         // CONFIGURATION PARAMETERS (Passed in from the main controller)
@@ -140,6 +141,12 @@ namespace Surface.Core
             // counts from the unmanaged NativeArray back to the standard C# properties.
             meshBuf.VertexCount = meshBuf.Counter[0];
             meshBuf.TriangleCount = meshBuf.Counter[1];
+        }
+
+        public void Dispose()
+        {
+            if (_partialSums.IsCreated) _partialSums.Dispose();
+            if (_partialCounts.IsCreated) _partialCounts.Dispose();
         }
 
         // =======================================================================================

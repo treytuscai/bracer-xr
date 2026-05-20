@@ -3,6 +3,7 @@ using Surface.Buffer;
 using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
+using System;
 
 namespace Surface.Hand
 {
@@ -12,7 +13,7 @@ namespace Surface.Hand
     /// refreshes joint world positions each frame, and schedules a Burst
     /// job that flags depth cells falling inside the hand volume.
     /// </summary>
-    public class HandMask
+    public class HandMask : IDisposable
     {
         // ------------------------------------------------------------------
         // CONFIGURATION 

@@ -240,6 +240,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _depthReadback?.Dispose();
         _meshBuffer?.Dispose();
         _surfaceBuffer.Dispose();
+        _meshGenerator?.Dispose();
     }
 
     private bool SetupBasis() 
