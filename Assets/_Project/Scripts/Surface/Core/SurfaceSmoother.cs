@@ -5,7 +5,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using Surface.Buffer;
 
-namespace Surface.Processing
+namespace Surface.Core
 {
     /// <summary>
     /// Schedules Laplacian smoothing passes and runs boundary contour

@@ -3,8 +3,6 @@ using Unity.Jobs;
 using Surface.Buffer;
 using Surface.Core;
 using Surface.Math;
-using Surface.Processing;
-using Surface.Hand;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the

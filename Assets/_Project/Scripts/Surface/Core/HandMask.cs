@@ -5,7 +5,7 @@ using Unity.Jobs;
 using Unity.Collections;
 using System;
 
-namespace Surface.Hand
+namespace Surface.Core
 {
     /// <summary>
     /// Owns all memory and scheduling for hand-based depth masking.
