@@ -5,6 +5,7 @@ Shader "Custom/ForearmProjection"
         _MainTex ("UI Texture", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
         _FadeWidth ("Edge Fade Width (m)", Float) = 0.015
+        _DepthBias ("Depth Occlusion Bias", Float) = 0.15
     }
 
     SubShader
@@ -16,62 +17,74 @@ Shader "Custom/ForearmProjection"
 
         Pass
         {
-            CGPROGRAM
+            HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_instancing
+            #pragma multi_compile _ HARD_OCCLUSION SOFT_OCCLUSION
 
-            #include "UnityCG.cginc"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.meta.xr.sdk.core/Shaders/EnvironmentDepth/URP/EnvironmentOcclusionURP.hlsl"
 
-            sampler2D _MainTex;
-            fixed4 _Color;
+            TEXTURE2D(_MainTex);
+            SAMPLER(sampler_MainTex);
+            half4 _Color;
             float _FadeWidth;
+            float _DepthBias;
 
-            struct appdata
+            struct Attributes
             {
-                float4 vertex   : POSITION;
-                float2 uv       : TEXCOORD0;
-                float  edgeDist : TEXCOORD1;
+                float4 positionOS : POSITION;
+                float2 uv         : TEXCOORD0;
+                float2 edgeDist   : TEXCOORD1;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
-            struct v2f
+            struct Varyings
             {
-                float4 pos      : SV_POSITION;
-                float2 uv       : TEXCOORD0;
-                float  edgeDist : TEXCOORD1;
+                float4 positionCS : SV_POSITION;
+                float2 uv         : TEXCOORD0;
+                float  edgeDist   : TEXCOORD1;
+                META_DEPTH_VERTEX_OUTPUT(2)
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
-            v2f vert(appdata v)
+            Varyings vert(Attributes input)
             {
-                v2f o;
-                UNITY_SETUP_INSTANCE_ID(v);
-                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
+                Varyings output = (Varyings)0;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
-                o.pos      = UnityObjectToClipPos(v.vertex);
-                o.uv       = v.uv;
-                o.edgeDist = v.edgeDist;
-                return o;
+                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+                output.uv         = input.uv;
+                output.edgeDist   = input.edgeDist.x;
+
+                META_DEPTH_INITIALIZE_VERTEX_OUTPUT(output, input.positionOS);
+
+                return output;
             }
 
-            fixed4 frag(v2f i) : SV_Target
+            half4 frag(Varyings input) : SV_Target
             {
-                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                if (i.uv.y < 0.0 || i.uv.y > 1.0)
+                if (input.uv.y < 0.0 || input.uv.y > 1.0)
                     discard;
 
-                float2 uv = float2(frac(i.uv.x), i.uv.y);
-                fixed4 col = tex2D(_MainTex, uv) * _Color;
+                float2 uv = float2(frac(input.uv.x), input.uv.y);
+                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
 
-                // Per-fragment smoothstep on the interpolated physical distance
-                // from the mesh edge. Produces uniform-width fade strips.
-                col.a *= smoothstep(0.0, _FadeWidth, i.edgeDist);
+                // Edge fade
+                col.a *= smoothstep(0.0, _FadeWidth, input.edgeDist);
+
+                // Environment depth occlusion: discard fragments behind real geometry.
+                // When HARD_OCCLUSION is defined, this multiplies col by 0 or 1.
+                // When neither keyword is active, this compiles to a no-op.
+                META_DEPTH_OCCLUDE_OUTPUT_PREMULTIPLY(input, col, _DepthBias);
 
                 return col;
             }
-            ENDCG
+            ENDHLSL
         }
     }
 }

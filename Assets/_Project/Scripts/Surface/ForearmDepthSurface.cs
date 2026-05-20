@@ -48,8 +48,8 @@ public class ForearmDepthSurface : MonoBehaviour
     public Material surfaceMaterial;
 
     [Header("Hand Masking")]
-    [Range(0.01f, 0.04f)]
-    public float handMaskRadius = 0.02f;
+    [Range(0.01f, 0.06f)]
+    public float handMaskRadius = 0.04f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -144,6 +144,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Use assigned material if provided, otherwise a transparent cyan fallback for debug
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
+        _meshRenderer.material.EnableKeyword("HARD_OCCLUSION");
     }
 
     /// <summary>
