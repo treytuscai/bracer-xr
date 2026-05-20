@@ -9,10 +9,14 @@ using Surface.Buffer;
 namespace Surface.Core
 {
     /// <summary>
-    /// Manages the GPU side of the depth pipeline: blits Meta's environment
-    /// depth texture through MetaDepthCopy.shader (which reconstructs world
-    /// position per pixel) and AsyncGPUReadback's the cropped region back to
-    /// the CPU as a NativeArray of world-space positions.
+    /// Manages the full GPU->CPU depth pipeline: blits Meta's environment
+    /// depth texture through MetaDepthCopy.shader, reads back the cropped
+    /// region via AsyncGPUReadback, then schedules a Burst job to unproject
+    /// the raw pixels into world-space hits in SurfaceBuffer.
+    ///
+    /// The callback fires with a JobHandle the caller can chain into
+    /// downstream jobs (masking, extraction, etc.) plus the grid dimensions.
+    /// On error, fires with (default, 0, 0) so the caller can bail cleanly.
     /// </summary>
     public class DepthReadback : IDisposable
     {
@@ -32,10 +36,16 @@ namespace Surface.Core
             Debug.Log("[Depth] MetaDepthCopy shader loaded.");
         }
 
+        /// <summary>
+        /// Requests an async GPU readback of the cropped depth region.
+        /// When the readback completes, schedules the unprojection job
+        /// and invokes onComplete with the resulting JobHandle and grid size.
+        /// </summary>
         public void Schedule(
-            int screenWidth, int screenHeight, 
-            int xMin, int yMin, int width, int height, 
-            Action<NativeArray<Vector4>, int, int, int, int> onComplete) // Note: Vector4!
+            int screenWidth, int screenHeight,
+            int xMin, int yMin, int width, int height,
+            SurfaceBuffer buffer, int pixelStride,
+            Action<JobHandle, int, int> onComplete)
         {
             if (_isReadbackPending) return;
 
@@ -43,13 +53,12 @@ namespace Surface.Core
             {
                 if (_worldPosRT != null) _worldPosRT.Release();
                 
-                // CRITICAL FIX: Must be ARGBFloat to hold the X,Y,Z,W data from the shader!
                 _worldPosRT = new RenderTexture(screenWidth, screenHeight, 0, RenderTextureFormat.ARGBFloat);
                 _worldPosRT.Create();
             }
 
-            // CRITICAL FIX: Pass the physical depth camera matrix to the shader!
             Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
+
             if (depthMatrices != null && depthMatrices.Length > 0)
             {
                 _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
@@ -67,17 +76,40 @@ namespace Surface.Core
             {
                 _isReadbackPending = false;
 
-                if (request.hasError) 
-                {
-                    Debug.LogError("[Depth] GPU Readback Error!");
-                    onComplete?.Invoke(default, xMin, yMin, width, height); 
-                    return;
-                }
+                    if (request.hasError)
+                    {
+                        Debug.LogError("[Depth] GPU Readback Error!");
+                        onComplete?.Invoke(default, 0, 0);
+                        return;
+                    }
 
-                // Get the Vector4 array!
-                NativeArray<Vector4> rawDepth = request.GetData<Vector4>();
-                onComplete?.Invoke(rawDepth, xMin, yMin, width, height);
-            });
+                    NativeArray<Vector4> raw = request.GetData<Vector4>();
+                    if (!raw.IsCreated || raw.Length == 0)
+                    {
+                        onComplete?.Invoke(default, 0, 0);
+                        return;
+                    }
+
+                    // Schedule the unprojection job that fills buffer.Hits
+                    int cols = Mathf.Max(2, Mathf.CeilToInt((float)width / pixelStride));
+                    int rows = Mathf.Max(2, Mathf.CeilToInt((float)height / pixelStride));
+                    buffer.ResizeIfNeeded(rows, cols);
+
+                    var job = new DepthUnprojectionJob
+                    {
+                        WorldPositions = raw,
+                        DepthWidth     = width,
+                        DepthHeight    = height,
+                        PixelStride    = pixelStride,
+                        Cols           = cols,
+                        Hits           = buffer.Hits,
+                        HasDepth       = buffer.HasDepth,
+                        IsSurface      = buffer.IsSurface
+                    };
+
+                    JobHandle handle = job.Schedule(rows * cols, 64);
+                    onComplete?.Invoke(handle, rows, cols);
+                });
         }
 
         public void Dispose()
@@ -85,98 +117,54 @@ namespace Surface.Core
             if (_worldPosRT != null) _worldPosRT.Release();
             if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
         }
-    }
 
-    // --------------------------------------------------------
-    // SCHEDULER (Main Thread)
-    // --------------------------------------------------------
-    public static class DepthSampler
-    {
+        // --------------------------------------------------------
+        // BURST JOB
+        // --------------------------------------------------------
         /// <summary>
-        /// Schedules a Burst job that samples the readback buffer at fixed pixel
-        /// strides and copies world positions into the surface buffer. No camera
-        /// math involved — the shader already produced world-space coordinates.
+        /// Reads world-space positions from the readback buffer at fixed strides.
+        /// The shader has already done all unprojection work via Meta's depth-frame
+        /// reprojection matrix, so this job is pure indexed copy + validity check.
         /// </summary>
-        public static JobHandle Schedule(
-            NativeArray<Vector4> worldPositions,
-            int croppedWidth,
-            int croppedHeight,
-            SurfaceBuffer buffer,
-            int pixelStride,
-            out int rows,
-            out int cols)
+        [BurstCompile]
+        private struct DepthUnprojectionJob : IJobParallelFor
         {
-            cols = Mathf.Max(2, Mathf.CeilToInt((float)croppedWidth / pixelStride));
-            rows = Mathf.Max(2, Mathf.CeilToInt((float)croppedHeight / pixelStride));
+            [ReadOnly] public NativeArray<Vector4> WorldPositions;
 
-            buffer.ResizeIfNeeded(rows, cols);
+            public int DepthWidth;
+            public int DepthHeight;
+            public int PixelStride;
+            public int Cols;
 
-            var job = new DepthUnprojectionJob
+            [WriteOnly] public NativeArray<Vector3> Hits;
+            [WriteOnly] public NativeArray<bool> HasDepth;
+            [WriteOnly] public NativeArray<bool> IsSurface;
+
+            public void Execute(int index)
             {
-                WorldPositions = worldPositions,
-                DepthWidth = croppedWidth,
-                DepthHeight = croppedHeight,
-                PixelStride = pixelStride,
-                Cols = cols,
-                Hits = buffer.Hits,
-                HasDepth = buffer.HasDepth,
-                IsSurface = buffer.IsSurface
-            };
+                int r = index / Cols;
+                int c = index % Cols;
 
-            return job.Schedule(rows * cols, 64);
-        }
-    }
+                int dx = c * PixelStride;
+                int dy = r * PixelStride;
 
-    // --------------------------------------------------------
-    // BURST JOB (parallel background threads)
-    // --------------------------------------------------------
-    /// <summary>
-    /// Reads world-space positions from the readback buffer at fixed strides.
-    /// The shader has already done all unprojection work via Meta's depth-frame
-    /// reprojection matrix, so this job is pure indexed copy + validity check.
-    /// </summary>
-    [BurstCompile]
-    public struct DepthUnprojectionJob : IJobParallelFor
-    {
-        [ReadOnly] public NativeArray<Vector4> WorldPositions;
+                if (dx >= DepthWidth) dx = DepthWidth - 1;
+                if (dy >= DepthHeight) dy = DepthHeight - 1;
 
-        public int DepthWidth;
-        public int DepthHeight;
-        public int PixelStride;
-        public int Cols;
+                Vector4 sample = WorldPositions[dy * DepthWidth + dx];
 
-        [WriteOnly] public NativeArray<Vector3> Hits;
-        [WriteOnly] public NativeArray<bool> HasDepth;
-        [WriteOnly] public NativeArray<bool> IsSurface;
+                if (sample.w < 0f)
+                {
+                    HasDepth[index] = false;
+                    IsSurface[index] = false;
+                    Hits[index] = Vector3.zero;
+                    return;
+                }
 
-        public void Execute(int index)
-        {
-            int r = index / Cols;
-            int c = index % Cols;
-
-            int dx = c * PixelStride;
-            int dy = r * PixelStride;
-
-            // Clamp to prevent out-of-bounds at the bottom/right edges of
-            // the cropped readback when (cols * stride) overshoots width.
-            if (dx >= DepthWidth) dx = DepthWidth - 1;
-            if (dy >= DepthHeight) dy = DepthHeight - 1;
-
-            Vector4 sample = WorldPositions[dy * DepthWidth + dx];
-
-            // The shader uses w < 0 as the invalid sentinel; valid pixels carry
-            // their raw depth in w (which is in [0, 1]) for diagnostic logging.
-            if (sample.w < 0f)
-            {
-                HasDepth[index] = false;
+                Hits[index] = new Vector3(sample.x, sample.y, sample.z);
+                HasDepth[index] = true;
                 IsSurface[index] = false;
-                Hits[index] = Vector3.zero;
-                return;
             }
-
-            Hits[index] = new Vector3(sample.x, sample.y, sample.z);
-            HasDepth[index] = true;
-            IsSurface[index] = false;
         }
     }
 }

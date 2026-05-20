@@ -1,6 +1,5 @@
 using UnityEngine;
 using Unity.Jobs;
-using Unity.Collections;
 using Surface.Buffer;
 using Surface.Core;
 using Surface.Math;
@@ -204,12 +203,12 @@ public class ForearmDepthSurface : MonoBehaviour
             return;
         }
 
-        // 1. DEPTH MATRIX VALIDATION (Quest 3 Specific)
+        // DEPTH MATRIX VALIDATION (Quest 3 Specific)
         // We must fetch these every frame as Meta updates them for the current head pose
         Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
         if (depthMatrices == null || depthMatrices.Length == 0) return;
 
-        // 2. CALCULATE SCREEN-SPACE CROP
+        // CALCULATE SCREEN-SPACE CROP
         // Project the 3D arm into the depth buffer's 2D space to find the active region
         Vector3 camPos = _cam.transform.position;
         if (!BoundingBox.CalculateArmBounds(
@@ -221,15 +220,15 @@ public class ForearmDepthSurface : MonoBehaviour
             return; // Arm is likely behind the camera or off-screen
         }
 
-        // 3. ASYNC GPU READBACK REQUEST
+        // ASYNC GPU READBACK REQUEST
         // Only request a new frame if the previous Burst/Readback job has finished
         if (!_isProcessingMesh)
         {
-            _isProcessingMesh = true;
             _depthReadback.Schedule(
                 _cam.pixelWidth, _cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
-                OnDepthDataReceived // Callback when GPU data hits CPU memory
+                _surfaceBuffer, pixelStride,
+                OnDepthReady
             );
         }
     }
@@ -306,68 +305,59 @@ public class ForearmDepthSurface : MonoBehaviour
         return true;
     }
 
-    // THIS RUNS WHEN THE GPU IS DONE COPYING
-    void OnDepthDataReceived(NativeArray<Vector4> rawCroppedDepth, int safeX, int safeY, int safeW, int safeH)
+    void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
     {
-        // 1. DEADLOCK FIX: If the GPU errored out, unlock and abort
-        if (!rawCroppedDepth.IsCreated || rawCroppedDepth.Length == 0)
+        if (rows == 0 || cols == 0)
         {
             _isProcessingMesh = false;
             return;
         }
 
-        // 2. UNPROJECTION: Schedule the job that fills _surfaceBuffer.Hits
-        JobHandle sampleHandle = DepthSampler.Schedule(
-            rawCroppedDepth, safeW, safeH, _surfaceBuffer, pixelStride,
-            out _rows, out _cols);
+        _rows = rows;
+        _cols = cols;
 
+        // HAND MASKING: Flag depth cells inside hand
         JobHandle maskHandle = _handMask.Schedule(_surfaceBuffer, sampleHandle);
 
-        if (_rows > 0 && _cols > 0)
+        // EXTRACTION: Seed and Flood to isolate the forearm
+        JobHandle extractionHandle;
+        if (bypassSeedFlood)
         {
-            // 3. EXTRACTION: Seed and Flood to isolate the forearm
-            JobHandle extractionHandle = default;
-            if (bypassSeedFlood)
-            {
-                // Skips seed/flood entirely, useful for seeing
-                // what the raw unprojection actually produces.
-                maskHandle.Complete();
-                int total = _rows * _cols;
-                for (int i = 0; i < total; i++)
-                    _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
-            }
-            else
-            {
-                // This schedules the BFS/Flood jobs
-                extractionHandle = _surfaceExtractor.Schedule(
-                    _surfaceBuffer, _rows, _cols,
-                    _wristPos, _elbowPos, _axis,
-                    maskHandle);
-            }
-
-            // 4. SMOOTHING: Laplacian and Boundary passes
-            _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
-
-            // 5. MESH GENERATION: Execute the multi-pass Burst pipeline.
-            _meshGenerator.Generate(
-                _meshBuffer,
-                _surfaceBuffer, 
-                _rows, _cols,
-                _wristPos, _axis, _axisRight,
-                _smoothedPronation, _orientationAngle,
-                transform.worldToLocalMatrix,
-                out float frameCenter
-            );
-
-            _projCenter = Mathf.Lerp(_projCenter, frameCenter, 0.1f);
-
-            // 6. GPU UPLOAD: Push NativeArrays to the Mesh object
-            UpdateUnityMesh();
-
-            _hasFrame = true;
+            // Skips seed/flood entirely, for seeing the raw unprojection.
+            maskHandle.Complete();
+            int total = _rows * _cols;
+            for (int i = 0; i < total; i++)
+                _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
+            extractionHandle = default;
+        }
+        else
+        {
+            // Schedules the BFS/Flood jobs
+            extractionHandle = _surfaceExtractor.Schedule(
+                _surfaceBuffer, _rows, _cols,
+                _wristPos, _elbowPos, _axis,
+                maskHandle);
         }
 
+        // SMOOTHING: Laplacian and Boundary passes
+        _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
+
+        // MESH GENERATION: Execute the multi-pass Burst pipeline.
+        _meshGenerator.Generate(
+            _meshBuffer,
+            _surfaceBuffer, 
+            _rows, _cols,
+            _wristPos, _axis, _axisRight,
+            _smoothedPronation, _orientationAngle,
+            transform.worldToLocalMatrix,
+            out float frameCenter
+        );
+
+        // GPU UPLOAD: Push NativeArrays to the Mesh object
+        UpdateUnityMesh();
+
         // Unlock so LateUpdate can request the next frame
+        _hasFrame = true;
         _isProcessingMesh = false;
     }
 
