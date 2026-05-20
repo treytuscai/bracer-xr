@@ -109,17 +109,19 @@ public class ForearmDepthSurface : MonoBehaviour
     // True if this frame produced a valid mesh
     bool _hasFrame;
 
-    // Hand masking
+    // Classes
     private HandMask _handMask;
+    private SurfaceExtractor _surfaceExtractor;
+    private DepthReadback _depthReadback;
+    private MeshGenerator _meshGenerator;
+
 
     // Mesh components
     MeshFilter _meshFilter; 
     MeshRenderer _meshRenderer; 
-    private MeshGenerator _meshGenerator;
     Mesh _mesh;
 
     // Depth readback
-    private DepthReadback _readbackManager;
     private int _cropX, _cropY, _cropW, _cropH;
     private bool _isProcessingMesh = false;
 
@@ -127,7 +129,7 @@ public class ForearmDepthSurface : MonoBehaviour
     int _rows, _cols;
 
     // Buffers
-    private SurfaceBuffer _buffer = new SurfaceBuffer();
+    private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
     readonly List<int> _boundaryChain = new List<int>(512);
     readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
@@ -148,8 +150,9 @@ public class ForearmDepthSurface : MonoBehaviour
     void Awake()
     {
         _handMask = new HandMask(handSkeleton, handMaskRadius);
+        _depthReadback = new DepthReadback();
+        _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _meshGenerator = new MeshGenerator();
-        _readbackManager = new DepthReadback();
     }
 
     /// <summary>
@@ -226,7 +229,7 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _isProcessingMesh = true;
-            _readbackManager.RequestDepth(
+            _depthReadback.RequestDepth(
                 _cam.pixelWidth, _cam.pixelHeight,
                 _cropX, _cropY, _cropW, _cropH,
                 OnDepthDataReceived // Callback when GPU data hits CPU memory
@@ -237,9 +240,9 @@ public class ForearmDepthSurface : MonoBehaviour
     void OnDestroy()
     {
         _handMask?.Dispose();
-        _readbackManager?.Dispose();
+        _depthReadback?.Dispose();
         _meshBuffer?.Dispose();
-        _buffer.Dispose();
+        _surfaceBuffer.Dispose();
     }
 
     private bool SetupBasis() 
@@ -315,12 +318,12 @@ public class ForearmDepthSurface : MonoBehaviour
             return;
         }
 
-        // 2. UNPROJECTION: Schedule the job that fills _buffer.Hits
+        // 2. UNPROJECTION: Schedule the job that fills _surfaceBuffer.Hits
         JobHandle sampleHandle = DepthSampler.ScheduleUnprojection(
-            rawCroppedDepth, safeW, safeH, _buffer, pixelStride,
+            rawCroppedDepth, safeW, safeH, _surfaceBuffer, pixelStride,
             out _rows, out _cols);
 
-        JobHandle maskHandle = _handMask.Schedule(_buffer, sampleHandle);
+        JobHandle maskHandle = _handMask.Schedule(_surfaceBuffer, sampleHandle);
 
         if (_rows > 0 && _cols > 0)
         {
@@ -333,12 +336,15 @@ public class ForearmDepthSurface : MonoBehaviour
                 sampleHandle.Complete();
                 int total = _rows * _cols;
                 for (int i = 0; i < total; i++)
-                    _buffer.IsSurface[i] = _buffer.HasDepth[i];
+                    _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
             }
             else
             {
                 // This schedules the BFS/Flood jobs
-                extractionHandle = RunExtractionJobs(maskHandle);
+                extractionHandle = _surfaceExtractor.Schedule(
+                    _surfaceBuffer, _rows, _cols,
+                    _wristPos, _elbowPos, _axis,
+                    maskHandle);
             }
 
             // 4. SMOOTHING: Laplacian and Boundary passes
@@ -355,7 +361,7 @@ public class ForearmDepthSurface : MonoBehaviour
             // Execute the multi-pass Burst pipeline.
             _meshGenerator.Generate(
                 _meshBuffer,
-                _buffer, 
+                _surfaceBuffer, 
                 _rows, _cols,
                 _wristPos, _axis, _axisRight,
                 _smoothedPronation, _orientationAngle,
@@ -376,49 +382,6 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Executes the Burst-compiled Jobs to extract the forearm surface.
-    /// Waits for the unprojection job to finish before starting the Seed and Flood passes.
-    /// </summary>
-    private JobHandle RunExtractionJobs(JobHandle dependency)
-    {
-        // Clear the queue from the previous frame
-        _buffer.BFSQueue.Clear();
-
-        // Stage 1: seed = cylinder filter around the wrist->elbow line.
-        // Catches a stable strip of forearm cells even when IOBT elbow is off.
-        var seedJob = new SeedFromAxisJob {
-            Hits = _buffer.Hits,
-            HasDepth = _buffer.HasDepth,
-            Kept = _buffer.IsSurface,
-            IsHandMasked = _buffer.IsHandMasked,
-            BFSQueueWriter = _buffer.BFSQueue.AsParallelWriter(),
-            WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
-            MaxRSq = maxRadialDist * maxRadialDist, 
-            MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
-        };
-        JobHandle seedHandle = seedJob.Schedule(_rows * _cols, 64, dependency);
-
-        // Stage 2: flood from seeds via depth connectivity.
-        // Expands onto forearm cells the seed cylinder missed.
-        var floodJob = new FloodFromSeedsJob {
-            BFSQueue = _buffer.BFSQueue,
-            Hits = _buffer.Hits,
-            HasDepth = _buffer.HasDepth,
-            Kept = _buffer.IsSurface,
-            IsHandMasked = _buffer.IsHandMasked,
-            Cols = _cols, Rows = _rows,
-            WristPos = _wristPos, ElbowPos = _elbowPos, Axis = _axis,
-            ConnSq = connectivityThreshold * connectivityThreshold, 
-            MaxRSq = maxRadialDist * maxRadialDist,
-            MinFromWrist = minFromWrist, MaxFromElbow = maxFromElbow
-        };
-        
-        // Schedule flood, wait for seed to finish first, then block until flood is done
-        JobHandle floodHandle = floodJob.Schedule(seedHandle);
-        return floodHandle;
-    }
-
-    /// <summary>
     /// Applies a Laplacian smoothing pass across the reconstructed surface.
     /// This runs in parallel on the GPU-optimized background threads using Burst.
     /// </summary>
@@ -431,9 +394,9 @@ public class ForearmDepthSurface : MonoBehaviour
         for (int i = 0; i < smoothPasses; i++)
         {
             var job = new SmoothSurfaceJob {
-                Hits = _buffer.Hits,
-                IsSurface = _buffer.IsSurface,
-                Smoothed = _buffer.Smoothed,
+                Hits = _surfaceBuffer.Hits,
+                IsSurface = _surfaceBuffer.IsSurface,
+                Smoothed = _surfaceBuffer.Smoothed,
                 GridHeight = _rows, GridWidth = _cols
             };
 
@@ -442,9 +405,9 @@ public class ForearmDepthSurface : MonoBehaviour
 
             // Swap the array references for the NEXT iteration. 
             // The job we just scheduled already grabbed the pointers it needs.
-            var temp = _buffer.Hits;
-            _buffer.Hits = _buffer.Smoothed;
-            _buffer.Smoothed = temp;
+            var temp = _surfaceBuffer.Hits;
+            _surfaceBuffer.Hits = _surfaceBuffer.Smoothed;
+            _surfaceBuffer.Smoothed = temp;
         }
 
         // Return the handle representing the very last smoothing pass
@@ -466,9 +429,9 @@ public class ForearmDepthSurface : MonoBehaviour
             edgeWindowRadius, 
             _rows, 
             _cols, 
-            _buffer.Hits, 
-            _buffer.IsSurface, 
-            _buffer.BoundaryVisited, 
+            _surfaceBuffer.Hits, 
+            _surfaceBuffer.IsSurface, 
+            _surfaceBuffer.BoundaryVisited, 
             _boundaryChain, 
             _chainSmoothed
         );

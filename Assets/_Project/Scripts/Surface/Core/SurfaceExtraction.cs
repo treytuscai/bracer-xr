@@ -2,9 +2,87 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
+using Surface.Buffer;
 
 namespace Surface.Core
 {
+    /// <summary>
+    /// Schedules the Seed + Flood Burst jobs that isolate the forearm
+    /// from the raw depth grid. Owns no memory, reads/writes SurfaceBuffer.
+    /// </summary>
+    public class SurfaceExtractor
+    {
+        // ------------------------------------------------------------------
+        // CONFIGURATION 
+        // ------------------------------------------------------------------
+        public float MaxRadialDist;
+        public float MinFromWrist;
+        public float MaxFromElbow;
+        public float ConnectivityThreshold;
+
+        public SurfaceExtractor(
+            float maxRadialDist, 
+            float minFromWrist, 
+            float maxFromElbow,
+            float connectivityThreshold)
+        {
+            MaxRadialDist         = maxRadialDist;
+            MinFromWrist          = minFromWrist;
+            MaxFromElbow          = maxFromElbow;
+            ConnectivityThreshold = connectivityThreshold;
+        }
+ 
+        public JobHandle Schedule(
+            SurfaceBuffer buffer,
+            int rows, int cols,
+            Vector3 wristPos, Vector3 elbowPos, Vector3 axis,
+            JobHandle dependency)
+        {
+            buffer.BFSQueue.Clear();
+ 
+            float maxRSq = MaxRadialDist * MaxRadialDist;
+            float connSq = ConnectivityThreshold * ConnectivityThreshold;
+ 
+            // Stage 1: Cylinder seed around wrist->elbow axis
+            var seedJob = new SeedFromAxisJob
+            {
+                Hits            = buffer.Hits,
+                HasDepth        = buffer.HasDepth,
+                Kept            = buffer.IsSurface,
+                IsHandMasked    = buffer.IsHandMasked,
+                BFSQueueWriter  = buffer.BFSQueue.AsParallelWriter(),
+                WristPos        = wristPos,
+                ElbowPos        = elbowPos,
+                Axis            = axis,
+                MaxRSq          = maxRSq,
+                MinFromWrist    = MinFromWrist,
+                MaxFromElbow    = MaxFromElbow
+            };
+            JobHandle seedHandle = seedJob.Schedule(rows * cols, 64, dependency);
+ 
+            // Stage 2: BFS flood from seeds via depth connectivity
+            var floodJob = new FloodFromSeedsJob
+            {
+                BFSQueue        = buffer.BFSQueue,
+                Hits            = buffer.Hits,
+                HasDepth        = buffer.HasDepth,
+                Kept            = buffer.IsSurface,
+                IsHandMasked    = buffer.IsHandMasked,
+                Cols            = cols,
+                Rows            = rows,
+                WristPos        = wristPos,
+                ElbowPos        = elbowPos,
+                Axis            = axis,
+                ConnSq          = connSq,
+                MaxRSq          = maxRSq,
+                MinFromWrist    = MinFromWrist,
+                MaxFromElbow    = MaxFromElbow
+            };
+ 
+            return floodJob.Schedule(seedHandle);
+        }
+    }
+
     // --------------------------------------------------------
     // SEED JOB (Runs in parallel across all cells)
     // --------------------------------------------------------
