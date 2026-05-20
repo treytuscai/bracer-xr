@@ -2,7 +2,6 @@ using UnityEngine;
 using Unity.Jobs;
 using Surface.Buffer;
 using Surface.Core;
-using Surface.Math;
 
 /// <summary>
 /// Reconstructs the forearm surface as a triangle mesh each frame using the
@@ -113,7 +112,6 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // Per-frame state
     int _rows, _cols;
-    private int _cropX, _cropY, _cropW, _cropH;
     private bool _isProcessingMesh = false;
     bool _hasFrame;
 
@@ -180,35 +178,13 @@ public class ForearmDepthSurface : MonoBehaviour
             return;
         }
 
-        // DEPTH MATRIX VALIDATION (Quest 3 Specific)
-        // We must fetch these every frame as Meta updates them for the current head pose
-        Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
-        if (depthMatrices == null || depthMatrices.Length == 0) return;
-
-        Vector3 wristPos = _armFrame.WristPos;
-        Vector3 elbowPos = _armFrame.ElbowPos;
-        Vector3 camPos   = _armFrame.Cam.transform.position;
-
-        // CALCULATE SCREEN-SPACE CROP
-        // Project the 3D arm into the depth buffer's 2D space to find the active region
-        if (!BoundingBox.CalculateArmBounds(
-            ref depthMatrices[0], ref wristPos, ref elbowPos, ref camPos, 
-            _armFrame.Cam.fieldOfView, _armFrame.Cam.pixelWidth, _armFrame.Cam.pixelHeight, 
-            maxRadialDist, pixelStride, 
-            out _cropX, out _cropY, out _cropW, out _cropH)) 
-        {
-            return; // Arm is likely behind the camera or off-screen
-        }
-
         // ASYNC GPU READBACK REQUEST
         // Only request a new frame if the previous Burst/Readback job has finished
         if (!_isProcessingMesh)
         {
             _depthReadback.Schedule(
-                _armFrame.Cam.pixelWidth, _armFrame.Cam.pixelHeight,
-                _cropX, _cropY, _cropW, _cropH,
-                _surfaceBuffer, pixelStride,
-                OnDepthReady
+                _armFrame, maxRadialDist, pixelStride,
+                _surfaceBuffer, OnDepthReady
             );
         }
     }
