@@ -46,21 +46,9 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         public Vector3 WristPos    { get; private set; }
         public Vector3 ElbowPos    { get; private set; }
-        public float BoneLength { get; private set; }
         public Vector3 Axis        { get; private set; }
         public Vector3 AxisRight   { get; private set; }
         public Vector3 AxisUp      { get; private set; }
-        /// <summary>
-        /// Bone-relative right direction (perpendicular to axis, rotates with
-        /// forearm pronation, does NOT change with camera movement). Used by
-        /// TemporalInfill for stable cylindrical caching across frames.
-        /// </summary>
-        public Vector3 StableRight { get; private set; }
-        /// <summary>
-        /// Bone-relative up direction (perpendicular to axis and StableRight,
-        /// rotates with forearm pronation). Completes the arm-intrinsic basis.
-        /// </summary>
-        public Vector3 StableUp    { get; private set; }
         public float   Pronation   { get; private set; }
         public float   Orientation { get; private set; }
         public Camera  Cam         { get; private set; }
@@ -99,12 +87,9 @@ namespace Surface.Core
             if (delta.sqrMagnitude < 0.001f) return false;
 
             Vector3 axis = delta.normalized;
-            float boneLength = delta.magnitude;
-
             WristPos = wristPos;
             ElbowPos = elbowPos;
             Axis     = axis;
-            BoneLength = boneLength;
 
             // 3. ORTHOGONAL FRAME (camera-facing)
             Vector3 armMid = (wristPos + elbowPos) * 0.5f;
@@ -122,10 +107,6 @@ namespace Surface.Core
             _rawPronation = Mathf.Atan2(sin, cos);
             _smoothedPronation = Mathf.Lerp(_smoothedPronation, _rawPronation, 0.15f);
             Pronation = _smoothedPronation;
-
-            // 4b. STABLE ARM-INTRINSIC BASIS
-            StableRight = boneRight;
-            StableUp    = Vector3.Cross(boneRight, axis).normalized;
 
             // 5. SCREEN ORIENTATION SNAPPING
             float screenX = Vector3.Dot(axis, _cam.transform.right);

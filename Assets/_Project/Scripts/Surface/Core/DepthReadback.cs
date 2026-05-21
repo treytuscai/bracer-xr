@@ -105,7 +105,6 @@ namespace Surface.Core
                     int cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
                     int rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
                     buffer.ResizeIfNeeded(rows, cols);
-                    buffer.InitializeAtlas();
 
                     var job = new DepthUnprojectionJob
                     {
