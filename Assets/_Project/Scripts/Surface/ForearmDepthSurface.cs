@@ -100,6 +100,7 @@ public class ForearmDepthSurface : MonoBehaviour
     // Pipeline stages (constructed in Awake, called in sequence each frame)
     private ArmFrame _armFrame;
     private HandMask _handMask;
+    private TemporalInfill _temporalInfill;
     private SurfaceExtractor _surfaceExtractor;
     private DepthReadback _depthReadback;
     private MeshGenerator _meshGenerator;
@@ -119,6 +120,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
         _handMask = new HandMask(handSkeleton, handMaskRadius);
+        _temporalInfill = new TemporalInfill();
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
@@ -213,12 +215,22 @@ public class ForearmDepthSurface : MonoBehaviour
         // HAND MASKING: Flag depth cells inside hand
         JobHandle maskHandle = _handMask.Schedule(_surfaceBuffer, sampleHandle);
 
+        // TEMPORAL INFILL: Reconstruct arm surface under hand from cylindrical cache
+        JobHandle infillHandle = _temporalInfill.Schedule(
+            _surfaceBuffer, rows, cols,
+            _armFrame.Cam.transform.position, 
+            _armFrame.WristPos, _armFrame.Axis, 
+            _armFrame.StableRight, _armFrame.StableUp,
+            _armFrame.BoneLength, 
+            maxRadialDist, 
+            maskHandle);
+
         // EXTRACTION: Seed and Flood to isolate the forearm
         JobHandle extractionHandle;
         if (bypassSeedFlood)
         {
             // Skips seed/flood entirely, for seeing the raw unprojection.
-            maskHandle.Complete();
+            infillHandle.Complete();
             int total = _rows * _cols;
             for (int i = 0; i < total; i++)
                 _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
@@ -230,7 +242,7 @@ public class ForearmDepthSurface : MonoBehaviour
             extractionHandle = _surfaceExtractor.Schedule(
                 _surfaceBuffer, _rows, _cols,
                 _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
-                maskHandle);
+                infillHandle);
         }
 
         // SMOOTHING: Laplacian and Boundary passes
