@@ -95,7 +95,6 @@ namespace Surface.Core
                     int frozenIdx = r * _frozenCols + c;
                     int liveIdx   = r * cols + c;
 
-                    if (!buf.IsHandMasked[liveIdx] || buf.IsSurface[liveIdx]) continue;
                     if (!_frozenIsSurface[frozenIdx]) continue;
 
                     buf.Hits[liveIdx]      = wristPos + wristRot * _frozenLocalHits[frozenIdx];
@@ -107,7 +106,7 @@ namespace Surface.Core
             int total = rows * cols;
             for (int i = 0; i < total; i++)
             {
-                if (!buf.IsHandMasked[i] || buf.IsSurface[i]) continue;
+                if (buf.IsSurface[i]) continue;
 
                 int r = i / cols, c = i % cols;
                 Vector3 sum   = Vector3.zero;
