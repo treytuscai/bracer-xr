@@ -85,6 +85,11 @@ namespace Surface.Core
             if (!_isFrozen || !_hasData) return;
             if (_hasFrozenWrist && Vector3.Distance(wristPos, _frozenWristPos) > JumpThresh) return;
 
+            // Discard live seed+flood results — frozen buffer owns the surface entirely
+            int total = rows * cols;
+            for (int i = 0; i < total; i++)
+                buf.IsSurface[i] = false;
+
             int injectRows = Mathf.Min(_frozenRows, rows);
             int injectCols = Mathf.Min(_frozenCols, cols);
 
@@ -103,7 +108,6 @@ namespace Surface.Core
             }
 
             // Gap fill — average 4-connected neighbors for cells the frozen buffer missed
-            int total = rows * cols;
             for (int i = 0; i < total; i++)
             {
                 if (buf.IsSurface[i]) continue;
