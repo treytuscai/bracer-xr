@@ -8,30 +8,13 @@ using Surface.Core;
 /// Quest 3 depth buffer, anchored to wrist and elbow bones from OVRSkeleton.
 ///
 /// Pipeline (runs every LateUpdate):
-///   1. Sample:  Project wrist/elbow into screen space, build a distance-aware
-///               padded bbox, cast a grid of depth rays via EnvironmentRaycastManager.
-///   2. Seed:    Mark cells inside a cylinder around the wrist->elbow axis line.
-///               This catches a stable strip of forearm even when IOBT elbow is off.
-///   3. Flood:   BFS from seed cells onto depth-connected neighbors, bounded by
-///               connectivity threshold, a loose radial cap, and longitudinal limits.
-///               Expands across the real forearm surface past where the axis missed.
-///   4. Mesh:    Convert kept cells to vertices (local space), tile adjacent 2x2
-///               blocks into quads/triangles, reject edges spanning depth gaps.
-///   5. UV:      Map each vertex to (U, V) in a wrist-anchored cylindrical frame.
-///               U = angle around the arm axis, V = distance from wrist normalized
-///               by bone length. Follows forearm rotation, ignores hand flexion.
-///
-/// Key constraints:
-///   - Depth rays must be camera-aligned (from centerEyeAnchor through screen-space
-///     pixels). The depth buffer is a 2D camera projection. Rays from other origins
-///     (e.g. fingertip toward arm, radial from bone axis) don't map to depth pixels
-///     and return nothing. This is architectural, not tunable.
-///   - IOBT elbow position is used for direction only. It reports short on bend.
-///     Flood-fill handles expansion past the reported elbow.
-///
-/// Public API: IsValid, WristPosition, ElbowPosition, AxisDir, AxisRight,
-///             AxisUp, AxisLength, SurfaceMesh — consumed by TouchInputManager
-///             and VisualFeedbackController.
+///   1. Sample:  GPU depth readback in a screen-space crop around the forearm.
+///   2. Mask:    Flag depth cells inside the interacting hand's AABB.
+///   3. Seed:    Mark cells inside a cylinder around the wrist→elbow axis line.
+///   4. Flood:   BFS from seed cells onto depth-connected neighbors.
+///   5. Smooth:  Laplacian passes + boundary contour smoothing.
+///   6. Freeze:  On any hand occlusion, hold the last clean surface stable.
+///   7. Mesh:    Convert kept cells to vertices, tile quads/tris, compute UVs.
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -67,9 +50,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
     [Header("Smoothing")]
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
-    [Range(0, 5)]
-    public int smoothPasses = 3;
-    [Tooltip("1D smoothing passes along boundary contour chains")]
+    [Range(0, 5)] public int smoothPasses = 3;
     [Range(0, 5)] public int edgeSmoothPasses = 2;
     [Tooltip("Half-width of the moving average window along boundary chains")]
     [Range(1, 6)] public int edgeWindowRadius = 3;
@@ -87,12 +68,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
     public float displayOffset = 0.12f;
 
-    [Header("Debug")]
-    [Tooltip("Skip seed/flood. Treat every valid depth pixel as surface and mesh it. " +
-             "Use to visualize the raw unprojection independent of arm-finding logic. " +
-             "When on, bump maxQuadEdge to ~0.5 so the mesh doesn't get pruned by edge length.")]
-    public bool bypassSeedFlood = false;
-
     // Shared data flowing between pipeline stages
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
@@ -103,6 +78,7 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceExtractor _surfaceExtractor;
     private DepthReadback _depthReadback;
     private MeshGenerator _meshGenerator;
+    private ForearmModel _forearmModel;
     private SurfaceSmoother _surfaceSmoother;
 
     // Unity rendering
@@ -113,6 +89,7 @@ public class ForearmDepthSurface : MonoBehaviour
     // Per-frame state
     int _rows, _cols;
     private bool _isProcessingMesh = false;
+    private bool _isOccluded = false;
     bool _hasFrame;
 
     void Awake()
@@ -123,11 +100,11 @@ public class ForearmDepthSurface : MonoBehaviour
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
+        _forearmModel = new ForearmModel();
     }
 
     /// <summary>
-    /// Initializes the dynamic mesh, assigns or creates a surface material,
-    /// sets up the debug axis line, and caches the camera reference.
+    /// Initializes the dynamic mesh and assigns or creates a surface material.
     /// </summary>
     void Start()
     {
@@ -166,9 +143,7 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Per-frame pipeline: resolves bones, samples depth in a screen-space bbox,
-    /// seeds a cylinder filter around the wrist->elbow line, flood-fills via depth
-    /// connectivity, builds an orthogonal wrist frame for UVs, and outputs the mesh.
+    /// Requests a new depth readback each frame (unless one is in flight).
     /// Runs in LateUpdate so bone transforms are finalized before reading.
     /// </summary>
     void LateUpdate()
@@ -187,6 +162,7 @@ public class ForearmDepthSurface : MonoBehaviour
                 _armFrame, maxRadialDist, pixelStride,
                 _surfaceBuffer, OnDepthReady
             );
+            _handMask.SnapshotJoints();
         }
     }
 
@@ -197,6 +173,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshBuffer?.Dispose();
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
+        _forearmModel?.Dispose();
     }
 
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
@@ -210,33 +187,44 @@ public class ForearmDepthSurface : MonoBehaviour
         _rows = rows;
         _cols = cols;
 
-        // HAND MASKING: Flag depth cells inside hand
+        // MASK: flag depth cells inside the hand AABB
         JobHandle maskHandle = _handMask.Schedule(_surfaceBuffer, sampleHandle);
 
-        // EXTRACTION: Seed and Flood to isolate the forearm
-        JobHandle extractionHandle;
-        if (bypassSeedFlood)
-        {
-            // Skips seed/flood entirely, for seeing the raw unprojection.
-            maskHandle.Complete();
-            int total = _rows * _cols;
-            for (int i = 0; i < total; i++)
-                _surfaceBuffer.IsSurface[i] = _surfaceBuffer.HasDepth[i];
-            extractionHandle = default;
-        }
-        else
-        {
-            // Schedules the BFS/Flood jobs
-            extractionHandle = _surfaceExtractor.Schedule(
-                _surfaceBuffer, _rows, _cols,
-                _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
-                maskHandle);
-        }
+        // EXTRACT: seed cylinder + BFS flood to isolate the forearm
+        JobHandle extractionHandle = _surfaceExtractor.Schedule(
+            _surfaceBuffer, _rows, _cols,
+            _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
+            maskHandle);
 
-        // SMOOTHING: Laplacian and Boundary passes
+        // SMOOTH: Laplacian passes + boundary contour smoothing.
+        // Calls Complete() internally, all arrays are readable after this returns.
         _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
+        
+        // FREEZE: on any hand occlusion hold the last clean surface.
+        // Capture runs every live frame so the frozen snapshot is always fresh.
+        int maskedCount = 0;
+        int total = _rows * _cols;
+        for (int i = 0; i < total; i++)
+            if (_surfaceBuffer.IsHandMasked[i]) maskedCount++;
 
-        // MESH GENERATION: Execute the multi-pass Burst pipeline.
+        bool wasOccluded = _isOccluded;
+        _isOccluded = maskedCount > 0;
+
+        if (_isOccluded && !wasOccluded)
+            _forearmModel.Freeze();
+        else if (!_isOccluded && wasOccluded)
+            _forearmModel.Unfreeze();
+
+        if (_forearmModel.IsFrozen)
+            _forearmModel.Infill(
+                _surfaceBuffer, _rows, _cols,
+                _armFrame.WristPos, _armFrame.WristRotation);
+        else
+            _forearmModel.Capture(
+                _surfaceBuffer, _rows, _cols,
+                _armFrame.WristPos, _armFrame.WristRotation);
+
+        // MESH: build geometry from the final IsSurface hits
         _meshGenerator.Generate(
             _meshBuffer,
             _surfaceBuffer, 
@@ -244,7 +232,7 @@ public class ForearmDepthSurface : MonoBehaviour
             _armFrame.WristPos, _armFrame.Axis, _armFrame.AxisRight,
             _armFrame.Pronation, _armFrame.Orientation,
             transform.worldToLocalMatrix,
-            out float frameCenter
+            out _
         );
 
         // GPU UPLOAD: Push NativeArrays to the Mesh object

@@ -45,6 +45,7 @@ namespace Surface.Core
         // PUBLIC (read after TryUpdate returns true)
         // ------------------------------------------------------------------
         public Vector3 WristPos    { get; private set; }
+        public Quaternion WristRotation { get; private set; }
         public Vector3 ElbowPos    { get; private set; }
         public Vector3 Axis        { get; private set; }
         public Vector3 AxisRight   { get; private set; }
@@ -90,6 +91,7 @@ namespace Surface.Core
             WristPos = wristPos;
             ElbowPos = elbowPos;
             Axis     = axis;
+            WristRotation = _wrist.rotation;
 
             // 3. ORTHOGONAL FRAME (camera-facing)
             Vector3 armMid = (wristPos + elbowPos) * 0.5f;
