@@ -31,12 +31,12 @@ public class ForearmDepthSurface : MonoBehaviour
     public Material surfaceMaterial;
 
     [Header("Hand Masking")]
-    [Range(0.01f, 0.06f)]
-    public float handMaskRadius = 0.04f;
+    [Tooltip("Padding around hand mask to prevent incorporating into mesh surface")]
+    [Range(0.01f, 0.06f)] public float handMaskRadius = 0.05f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
-    [Range(2, 20)] public int pixelStride = 8;
+    [Range(2, 20)] public int pixelStride = 6;
 
     [Header("Seed + Flood")]
     [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
@@ -51,22 +51,22 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Smoothing")]
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
     [Range(0, 5)] public int smoothPasses = 3;
-    [Range(0, 5)] public int edgeSmoothPasses = 2;
+    [Range(0, 5)] public int edgeSmoothPasses = 4;
     [Tooltip("Half-width of the moving average window along boundary chains")]
     [Range(1, 6)] public int edgeWindowRadius = 3;
 
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.030f;
+    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.03f;
 
     [Header("Display")]
     [Tooltip("Physical width of the display region on the arm (m)")]
-    public float displayWidth = 0.05f;
+    public float displayWidth = 0.24f;
     [Tooltip("Physical height of the display region along the arm (m)")]
-    public float displayHeight = 0.05f;
+    public float displayHeight = 0.12f;
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
-    public float displayOffset = 0.12f;
+    public float displayOffset = 0.13f;
 
     // Shared data flowing between pipeline stages
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
