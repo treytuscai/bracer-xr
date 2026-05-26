@@ -8,110 +8,92 @@ using System;
 namespace Surface.Core
 {
     /// <summary>
-    /// Masks depth cells that fall inside the right hand's bounding volume,
-    /// preventing hand-surface depth from contaminating the forearm mesh.
+    /// Masks depth cells that fall inside the interacting hand's volume using
+    /// per-bone capsule segments derived from the skeleton hierarchy.
     ///
-    /// Uses an axis-aligned bounding box (AABB) of all hand joint positions
-    /// with configurable padding. This replaced per-capsule distance checks
-    /// because capsules left gaps between fingers where hand depth leaked
-    /// through, creating bumpy mesh artifacts at the hand-arm boundary.
+    /// Each frame SnapshotJoints() walks all bones, builds a capsule for every
+    /// parent->child bone pair, and stores the results in both native arrays
+    /// (for the Burst masking job) and managed Vector4 arrays (for the shader
+    /// finger-occlusion upload in ForearmDepthSurface).
     ///
-    /// The AABB is intentionally generous — it masks more cells than strictly
-    /// necessary, but SurfaceMemory fills the masked region with learned
-    /// cloud points, so over-masking is harmless and prevents all contamination.
-    ///
-    /// Joint positions are captured in SnapshotJoints() at the same moment as
-    /// the depth readback request (called from LateUpdate), so the mask aligns
-    /// with the depth data despite async GPU readback timing.
+    /// Joint positions are captured at the same moment as the depth readback
+    /// request (called from LateUpdate), so mask and depth frame stay aligned
+    /// despite async GPU readback timing.
     /// </summary>
     public class HandMask : IDisposable
     {
-        // ------------------------------------------------------------------
-        // CONFIGURATION
-        // ------------------------------------------------------------------
+        private const int MaxCapsules = 24;
+
         private float _padding;
-
-        // ------------------------------------------------------------------
-        // SKELETON REFERENCE
-        // ------------------------------------------------------------------
         private OVRSkeleton _handSkeleton;
-
-        // ------------------------------------------------------------------
-        // NATIVE MEMORY
-        // ------------------------------------------------------------------
-        private NativeArray<Vector3> _jointPositions;
-        private int _jointCount;
         private bool _isInitialized;
 
-        // ------------------------------------------------------------------
-        // AABB (computed fresh each frame in SnapshotJoints)
-        // ------------------------------------------------------------------
-        private Vector3 _boxMin;
-        private Vector3 _boxMax;
-        private bool _hasValidBox;
+        // Native capsule arrays — fed into the Burst masking job each frame
+        private NativeArray<Vector3> _nativeCapsuleA;
+        private NativeArray<Vector3> _nativeCapsuleB;
+
+        // Managed capsule arrays — exposed publicly for material SetVectorArray
+        private readonly Vector4[] _managedCapsuleA = new Vector4[MaxCapsules];
+        private readonly Vector4[] _managedCapsuleB = new Vector4[MaxCapsules];
+        private int _capsuleCount;
+
+        // Public accessors for ForearmDepthSurface shader upload
+        public Vector4[] CapsuleA    => _managedCapsuleA;
+        public Vector4[] CapsuleB    => _managedCapsuleB;
+        public int       CapsuleCount => _capsuleCount;
+        public float     Radius       => _padding;
+        public bool      HasCapsules  => _capsuleCount > 0;
 
         public HandMask(OVRSkeleton handSkeleton, float maskRadius)
         {
             _handSkeleton = handSkeleton;
-            _padding = maskRadius;
-            _isInitialized = false;
-            _hasValidBox = false;
+            _padding      = maskRadius;
         }
 
         /// <summary>
-        /// Captures joint positions at schedule time and computes the padded
-        /// AABB. Called from LateUpdate alongside DepthReadback.Schedule() so
-        /// the mask matches the depth frame.
+        /// Builds capsule segments from parent→child bone pairs and caches
+        /// them in both native (Burst) and managed (shader) storage.
+        /// Called from LateUpdate alongside DepthReadback.Schedule().
         /// </summary>
         public void SnapshotJoints()
         {
             if (!_isInitialized && !TryInit()) return;
 
             var bones = _handSkeleton.Bones;
+            _capsuleCount = 0;
 
-            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-            int validCount = 0;
-
-            for (int i = 0; i < _jointCount; i++)
+            for (int i = 0; i < bones.Count && _capsuleCount < MaxCapsules; i++)
             {
-                Vector3 pos = (i < bones.Count && bones[i].Transform != null)
-                    ? bones[i].Transform.position
-                    : Vector3.zero;
+                if (bones[i]?.Transform == null) continue;
 
-                _jointPositions[i] = pos;
+                int parentIdx = bones[i].ParentBoneIndex;
+                if (parentIdx < 0 || parentIdx >= bones.Count) continue;
+                if (bones[parentIdx]?.Transform == null) continue;
 
-                // Skip untracked joints (position stuck at origin)
-                if (pos.sqrMagnitude < 0.001f) continue;
+                Vector3 a = bones[parentIdx].Transform.position;
+                Vector3 b = bones[i].Transform.position;
 
-                min = Vector3.Min(min, pos);
-                max = Vector3.Max(max, pos);
-                validCount++;
+                // Skip untracked joints parked at world origin
+                if (a.sqrMagnitude < 0.001f || b.sqrMagnitude < 0.001f) continue;
+
+                int idx = _capsuleCount++;
+                _nativeCapsuleA[idx] = a;
+                _nativeCapsuleB[idx] = b;
+                _managedCapsuleA[idx] = new Vector4(a.x, a.y, a.z, 0f);
+                _managedCapsuleB[idx] = new Vector4(b.x, b.y, b.z, 0f);
             }
-
-            if (validCount < 3)
-            {
-                _hasValidBox = false;
-                return;
-            }
-
-            // Expand by padding on all sides
-            _boxMin = min - Vector3.one * _padding;
-            _boxMax = max + Vector3.one * _padding;
-            _hasValidBox = true;
         }
 
         /// <summary>
-        /// Schedules the Burst job that flags depth cells inside the hand AABB.
-        /// Returns the input dependency unchanged if no valid box exists.
+        /// Schedules the Burst job that flags depth cells inside any hand capsule.
+        /// Returns the input dependency unchanged if no capsules are valid.
         /// </summary>
         public JobHandle Schedule(SurfaceBuffer surfBuf, JobHandle dependency)
         {
             if (!_isInitialized && !TryInit()) return dependency;
 
-            if (!_hasValidBox)
+            if (_capsuleCount == 0)
             {
-                // No valid hand box — clear all mask flags so nothing is masked
                 var clearJob = new ClearMaskJob { IsHandMasked = surfBuf.IsHandMasked };
                 return clearJob.Schedule(surfBuf.IsHandMasked.Length, 128, dependency);
             }
@@ -120,8 +102,10 @@ namespace Surface.Core
             {
                 Hits         = surfBuf.Hits,
                 HasDepth     = surfBuf.HasDepth,
-                BoxMin       = _boxMin,
-                BoxMax       = _boxMax,
+                CapsuleA     = _nativeCapsuleA,
+                CapsuleB     = _nativeCapsuleB,
+                CapsuleCount = _capsuleCount,
+                RadiusSq     = _padding * _padding,
                 IsHandMasked = surfBuf.IsHandMasked
             };
 
@@ -130,21 +114,18 @@ namespace Surface.Core
 
         public void Dispose()
         {
-            if (_jointPositions.IsCreated) _jointPositions.Dispose();
+            if (_nativeCapsuleA.IsCreated) _nativeCapsuleA.Dispose();
+            if (_nativeCapsuleB.IsCreated) _nativeCapsuleB.Dispose();
         }
-
-        // ------------------------------------------------------------------
-        // INIT
-        // ------------------------------------------------------------------
 
         private bool TryInit()
         {
             var bones = _handSkeleton.Bones;
             if (bones == null || bones.Count == 0) return false;
 
-            _jointCount = bones.Count;
-            _jointPositions = new NativeArray<Vector3>(_jointCount, Allocator.Persistent);
-            _isInitialized = true;
+            _nativeCapsuleA = new NativeArray<Vector3>(MaxCapsules, Allocator.Persistent);
+            _nativeCapsuleB = new NativeArray<Vector3>(MaxCapsules, Allocator.Persistent);
+            _isInitialized  = true;
             return true;
         }
 
@@ -152,41 +133,41 @@ namespace Surface.Core
         // BURST JOBS
         // ==================================================================
 
-        /// <summary>
-        /// Flags depth cells whose 3D hit position falls inside the padded
-        /// hand AABB. Six comparisons per cell — much faster than 28 capsule
-        /// checks and covers the full hand volume with no gaps.
-        /// </summary>
         [BurstCompile]
         struct HandMaskJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<Vector3> Hits;
-            [ReadOnly] public NativeArray<bool> HasDepth;
-
-            public Vector3 BoxMin;
-            public Vector3 BoxMax;
-
+            [ReadOnly] public NativeArray<bool>    HasDepth;
+            [ReadOnly] public NativeArray<Vector3> CapsuleA;
+            [ReadOnly] public NativeArray<Vector3> CapsuleB;
+            public int   CapsuleCount;
+            public float RadiusSq;
             [WriteOnly] public NativeArray<bool> IsHandMasked;
 
             public void Execute(int index)
             {
-                if (!HasDepth[index])
-                {
-                    IsHandMasked[index] = false;
-                    return;
-                }
+                if (!HasDepth[index]) { IsHandMasked[index] = false; return; }
 
                 Vector3 p = Hits[index];
-                IsHandMasked[index] =
-                    p.x >= BoxMin.x && p.x <= BoxMax.x &&
-                    p.y >= BoxMin.y && p.y <= BoxMax.y &&
-                    p.z >= BoxMin.z && p.z <= BoxMax.z;
+                for (int ci = 0; ci < CapsuleCount; ci++)
+                {
+                    Vector3 ab   = CapsuleB[ci] - CapsuleA[ci];
+                    Vector3 ap   = p - CapsuleA[ci];
+                    float   abSq = ab.x*ab.x + ab.y*ab.y + ab.z*ab.z;
+                    float   raw  = abSq > 1e-6f ? (ap.x*ab.x + ap.y*ab.y + ap.z*ab.z) / abSq : 0f;
+                    float   t    = raw < 0f ? 0f : (raw > 1f ? 1f : raw);
+                    Vector3 d    = p - (CapsuleA[ci] + t * ab);
+                    if (d.x*d.x + d.y*d.y + d.z*d.z < RadiusSq)
+                    {
+                        IsHandMasked[index] = true;
+                        return;
+                    }
+                }
+
+                IsHandMasked[index] = false;
             }
         }
 
-        /// <summary>
-        /// Clears all mask flags when no valid hand box exists (hand not tracked).
-        /// </summary>
         [BurstCompile]
         struct ClearMaskJob : IJobParallelFor
         {

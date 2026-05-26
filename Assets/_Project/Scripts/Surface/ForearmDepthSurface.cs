@@ -33,6 +33,9 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Hand Masking")]
     [Tooltip("Padding around hand mask to prevent incorporating into mesh surface")]
     [Range(0.01f, 0.06f)] public float handMaskRadius = 0.05f;
+    [Header("Finger Occlusion")]
+    [Tooltip("Radius of the per-joint sphere that punches a hole in the UI where fingers touch")]
+    [Range(0.005f, 0.03f)] public float fingerOccluderRadius = 0.0065f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -82,8 +85,9 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceSmoother _surfaceSmoother;
 
     // Unity rendering
-    MeshFilter _meshFilter; 
-    MeshRenderer _meshRenderer; 
+    MeshFilter _meshFilter;
+    MeshRenderer _meshRenderer;
+    Material _material;
     Mesh _mesh;
 
     // Per-frame state
@@ -120,8 +124,8 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshFilter.mesh = _mesh;
 
         // Use assigned material if provided, otherwise a transparent cyan fallback for debug
-        _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
-        _meshRenderer.material.EnableKeyword("HARD_OCCLUSION");
+        _material = _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
+        _material.EnableKeyword("SOFT_OCCLUSION");
     }
 
     /// <summary>
@@ -164,6 +168,24 @@ public class ForearmDepthSurface : MonoBehaviour
             );
             _handMask.SnapshotJoints();
         }
+
+        UpdateFingerSpheres();
+    }
+
+    private void UpdateFingerSpheres()
+    {
+        if (_material == null) return;
+
+        if (!_handMask.HasCapsules)
+        {
+            _material.SetInt("_FingerCapsuleCount", 0);
+            return;
+        }
+
+        _material.SetVectorArray("_FingerCapsuleA", _handMask.CapsuleA);
+        _material.SetVectorArray("_FingerCapsuleB", _handMask.CapsuleB);
+        _material.SetInt("_FingerCapsuleCount", _handMask.CapsuleCount);
+        _material.SetFloat("_FingerRadius", fingerOccluderRadius);
     }
 
     void OnDestroy()

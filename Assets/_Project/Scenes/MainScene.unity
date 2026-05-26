@@ -896,9 +896,9 @@ MonoBehaviour:
   bodySkeleton: {fileID: 745195948}
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 0}
+  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
   handMaskRadius: 0.05
-  freezePercentage: 0
+  fingerOccluderRadius: 0.0065
   pixelStride: 6
   maxRadialDist: 0.15
   minFromWrist: -0.02
