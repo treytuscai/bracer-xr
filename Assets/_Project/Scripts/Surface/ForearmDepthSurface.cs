@@ -9,8 +9,8 @@ using Surface.Core;
 ///
 /// Pipeline (runs every LateUpdate):
 ///   1. Sample:  GPU depth readback in a screen-space crop around the forearm.
-///   2. Mask:    Flag depth cells inside the interacting hand's AABB.
-///   3. Seed:    Mark cells inside a cylinder around the wrist→elbow axis line.
+///   2. Mask:    Flag depth cells inside the interacting hand's capsules.
+///   3. Seed:    Mark cells inside a cylinder around the wrist->elbow axis line.
 ///   4. Flood:   BFS from seed cells onto depth-connected neighbors.
 ///   5. Smooth:  Laplacian passes + boundary contour smoothing.
 ///   6. Freeze:  On any hand occlusion, hold the last clean surface stable.
