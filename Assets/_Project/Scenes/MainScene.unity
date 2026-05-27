@@ -786,8 +786,8 @@ MonoBehaviour:
   handMaskRadius: 0.03
   pixelStride: 6
   maxRadialDist: 0.15
-  minFromWrist: -0.02
-  maxFromElbow: 0.05
+  minFromWrist: -0.12
+  maxFromElbow: 0.02
   connectivityThreshold: 0.025
   smoothPasses: 3
   edgeSmoothPasses: 4
@@ -873,7 +873,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchDetectHeight: 0.025
+  touchDetectHeight: 0.035
   showTouchDebug: 1
 --- !u!1 &1529137805
 GameObject:

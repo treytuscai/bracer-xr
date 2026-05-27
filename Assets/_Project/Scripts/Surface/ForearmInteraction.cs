@@ -17,7 +17,7 @@ public class ForearmInteraction : MonoBehaviour
     [Header("Touch")]
     [Tooltip("Symmetric window around the surface: fingers within this distance above OR " +
              "pressed through count as touching (m)")]
-    [Range(0.005f, 0.04f)] public float touchDetectHeight = 0.025f;
+    [Range(0.005f, 0.05f)] public float touchDetectHeight = 0.035f;
 
     [Header("Debug")]
     [Tooltip("Draw a green circle on the surface material at the active touch UV")]

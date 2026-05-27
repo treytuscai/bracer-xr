@@ -42,9 +42,9 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
     [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
-    [Range(-0.05f, 0f)] public float minFromWrist = -0.02f;
+    [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
-    [Range(0f, 0.10f)] public float maxFromElbow = 0.05f;
+    [Range(0f, 0.10f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
 
