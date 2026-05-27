@@ -7,7 +7,7 @@ Shader "Custom/ForearmProjection"
         _FadeWidth  ("Edge Fade Width (m)", Float)              = 0.015
         // xy = UV coordinate, z = active (1) / inactive (0), w = unused
         _TouchPoint ("Touch Debug Point (uv.xy, active, _)", Vector) = (0,0,0,0)
-        _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.04
+        _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.02
     }
 
     SubShader
@@ -67,10 +67,11 @@ Shader "Custom/ForearmProjection"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                if (input.uv.y < 0.0 || input.uv.y > 1.0)
+                if (input.uv.x < 0.0 || input.uv.x > 1.0 ||
+                    input.uv.y < 0.0 || input.uv.y > 1.0)
                     discard;
 
-                float2 uv = float2(frac(input.uv.x), input.uv.y);
+                float2 uv = input.uv;
                 half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
                 col.a *= smoothstep(0.0, _FadeWidth, input.edgeDist);
 

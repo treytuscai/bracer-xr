@@ -793,9 +793,10 @@ MonoBehaviour:
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
   maxQuadEdge: 0.03
-  displayWidth: 0.24
-  displayHeight: 0.12
-  displayOffset: 0.13
+  displayWidth: 0.5
+  displayHeight: 0.5
+  displayOffset: 0.02
+  landscapeUOffset: 0.5
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -873,7 +874,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchDetectHeight: 0.035
+  touchHoverHeight: 0.02
+  touchDepth: 0.04
   showTouchDebug: 1
 --- !u!1 &1529137805
 GameObject:

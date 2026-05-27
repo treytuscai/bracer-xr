@@ -15,9 +15,10 @@ using Surface.Buffer;
 public class ForearmInteraction : MonoBehaviour
 {
     [Header("Touch")]
-    [Tooltip("Symmetric window around the surface: fingers within this distance above OR " +
-             "pressed through count as touching (m)")]
-    [Range(0.005f, 0.05f)] public float touchDetectHeight = 0.035f;
+    [Tooltip("How far above the surface a finger can hover and still register as a touch (m)")]
+    [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.02f;
+    [Tooltip("How far through the surface a finger can press before being ignored (m)")]
+    [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
 
     [Header("Debug")]
     [Tooltip("Draw a green circle on the surface material at the active touch UV")]
@@ -65,7 +66,6 @@ public class ForearmInteraction : MonoBehaviour
 
         float displayStart = _surface.displayOffset - _surface.displayHeight * 0.5f;
         float displayEnd   = _surface.displayOffset + _surface.displayHeight * 0.5f;
-        float touchThresh  = touchDetectHeight;
         float bestAbove    = float.MaxValue;
         bool  found        = false;
 
@@ -77,7 +77,7 @@ public class ForearmInteraction : MonoBehaviour
             float along  = Vector3.Dot(toPos, _surface.AxisDir);
             float across = Vector3.Dot(toPos, _surface.AxisRight);
 
-            // Cheap pre-rejection: skip vertices clearly outside the display region
+            // Cheap pre-rejection using physical arm-frame extents (orientation-independent)
             float u = (across + _surface.displayWidth  * 0.5f) / _surface.displayWidth;
             float v = (along  - displayStart)                   / (displayEnd - displayStart);
             if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
@@ -86,7 +86,7 @@ public class ForearmInteraction : MonoBehaviour
 
             // Positive = above surface, negative = pressed through. Both are valid touches.
             float above = Vector3.Dot(pos - surfaceHit, _surface.AxisUp);
-            if (above < -touchThresh || above > touchThresh) continue;
+            if (above < -touchDepth || above > touchHoverHeight) continue;
 
             // UV in the same cylindrical space as the rendered mesh (pronation, orientation,
             // ProjCenter all applied) so the coordinate correctly addresses the texture.
@@ -118,17 +118,17 @@ public class ForearmInteraction : MonoBehaviour
     private Vector2 ComputeMeshUV(Vector3 pt)
     {
         Vector3 fromWrist = pt - _surface.WristPosition;
-        bool isLandscape  = Mathf.Abs(_surface.OrientationAngle) > Mathf.PI * 0.25f;
 
         float distAlong = Vector3.Dot(fromWrist, _surface.AxisDir);
         float v = 1f - (((distAlong - _surface.displayOffset) /
-                          Mathf.Max(isLandscape ? _surface.displayWidth : _surface.displayHeight, 1e-4f)) + 0.5f);
+                          Mathf.Max(_surface.displayHeight, 1e-4f)) + 0.5f);
 
         float projR = Vector3.Dot(fromWrist, _surface.AxisRight);
         float u = ((projR - _surface.ProjCenter) /
-                    Mathf.Max(isLandscape ? _surface.displayHeight : _surface.displayWidth, 1e-4f)) + 0.5f;
+                    Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.5f;
 
-        u += (_surface.PronationAngle + (isLandscape ? Mathf.PI * 0.75f : 0f)) / Mathf.PI;
+        bool isLandscape = Mathf.Abs(_surface.OrientationAngle) > Mathf.PI * 0.25f;
+        u += _surface.PronationAngle / Mathf.PI + (isLandscape ? _surface.LandscapeUOffset : 0f);
 
         float cu = u - 0.5f, cv = v - 0.5f;
         float cosA = Mathf.Cos(_surface.OrientationAngle);

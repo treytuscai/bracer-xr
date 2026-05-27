@@ -22,6 +22,7 @@ namespace Surface.Core
         public float DisplayOffset;
         public float DisplayWidth;
         public float DisplayHeight;
+        public float LandscapeUOffset;
 
         // Persistent arrays to store partial summation data across worker threads
         private NativeArray<float> _partialSums;
@@ -31,12 +32,14 @@ namespace Surface.Core
             float maxQuadEdge,
             float displayOffset,
             float displayWidth,
-            float displayHeight)
+            float displayHeight,
+            float landscapeUOffset)
         {
             MaxQuadEdgeSq   = maxQuadEdge * maxQuadEdge;
             DisplayOffset   = displayOffset;
             DisplayWidth    = displayWidth;
             DisplayHeight   = displayHeight;
+            LandscapeUOffset = landscapeUOffset;
         }
 
         /// <summary>
@@ -116,6 +119,7 @@ namespace Surface.Core
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
                 ProjCenter = finalProjCenter, Pronation = pronation, Orientation = orientation,
                 Offset = DisplayOffset, Width = DisplayWidth, Height = DisplayHeight,
+                LandscapeUOffset = LandscapeUOffset,
                 WorldToLocal = worldToLocal,
                 OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs, OutEdgeDists = meshBuf.EdgeDists,
                 CellToVert = meshBuf.CellToVert,
@@ -236,7 +240,7 @@ namespace Surface.Core
             [ReadOnly] public NativeArray<float> RowMin, RowMax;
             public int Rows, Cols;
             public Vector3 WristPos, Axis, AxisRight;
-            public float ProjCenter, Pronation, Orientation, Offset, Width, Height;
+            public float ProjCenter, Pronation, Orientation, Offset, Width, Height, LandscapeUOffset;
             public Matrix4x4 WorldToLocal;
 
             // Arrays disabled from restriction because we write to non-linear atomic indices
@@ -278,15 +282,18 @@ namespace Surface.Core
             private Vector2 CalculateUV(Vector3 pt)
             {
                 Vector3 fromWrist = pt - WristPos;
-                bool isLandscape = Mathf.Abs(Orientation) > Mathf.PI * 0.25f;
-                
+
+                // V = wrist-to-elbow (along), always using Height.
+                // U = across-arm, always using Width.
+                // The 2D orientation rotation at the end handles landscape visually.
                 float distAlong = Vector3.Dot(fromWrist, Axis);
-                float v = 1f - (((distAlong - Offset) / Mathf.Max(isLandscape ? Width : Height, 1e-4f)) + 0.5f);
-                
+                float v = 1f - (((distAlong - Offset) / Mathf.Max(Height, 1e-4f)) + 0.5f);
+
                 float projR = Vector3.Dot(fromWrist, AxisRight);
-                float u = ((projR - ProjCenter) / Mathf.Max(isLandscape ? Height : Width, 1e-4f)) + 0.5f;
-                
-                u += (Pronation + (isLandscape ? Mathf.PI * 0.75f : 0f)) / Mathf.PI;
+                float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.5f;
+
+                bool isLandscape = Mathf.Abs(Orientation) > Mathf.PI * 0.25f;
+                u += Pronation / Mathf.PI + (isLandscape ? LandscapeUOffset : 0f);
 
                 float cu = u - 0.5f, cv = v - 0.5f;
                 float cosA = Mathf.Cos(Orientation), sinA = Mathf.Sin(Orientation);

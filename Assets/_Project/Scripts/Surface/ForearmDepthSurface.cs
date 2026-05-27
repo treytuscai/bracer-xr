@@ -62,11 +62,14 @@ public class ForearmDepthSurface : MonoBehaviour
 
     [Header("Display")]
     [Tooltip("Physical width of the display region on the arm (m)")]
-    public float displayWidth = 0.24f;
+    public float displayWidth = 0.5f;
     [Tooltip("Physical height of the display region along the arm (m)")]
-    public float displayHeight = 0.12f;
+    public float displayHeight = 0.5f;
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
-    public float displayOffset = 0.13f;
+    public float displayOffset = 0.0f;
+    [Tooltip("Extra U offset (in turns) applied when the arm is in landscape orientation, " +
+             "to shift the texture start away from the inner forearm")]
+    [Range(-1f, 1f)] public float landscapeUOffset = 0.5f;
 
     // Shared data flowing between pipeline stages
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
@@ -101,7 +104,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
-        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
+        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight, landscapeUOffset);
         _forearmModel = new ForearmModel();
     }
 
@@ -288,6 +291,8 @@ public class ForearmDepthSurface : MonoBehaviour
     public int           SurfaceCols     => _cols;
     public float         ProjCenter      => _projCenter;
     public Material      SurfaceMat      => _mat;
+
+    public float     LandscapeUOffset => landscapeUOffset;
 
     // Hand vertex data (downsampled world positions baked from the hand mesh each frame)
     public Vector4[] HandVertices    => _handMask.Vertices;
