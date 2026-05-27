@@ -4,95 +4,85 @@ using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
 using System;
+using System.Collections.Generic;
 
 namespace Surface.Core
 {
     /// <summary>
-    /// Masks depth cells that fall inside the interacting hand's volume using
-    /// per-bone capsule segments derived from the skeleton hierarchy.
+    /// Masks depth cells that fall inside the interacting hand's volume by sampling
+    /// world-space vertices baked from the hand's SkinnedMeshRenderer each frame.
     ///
-    /// Each frame SnapshotJoints() walks all bones, builds a capsule for every
-    /// parent->child bone pair, and stores the results in both native arrays
-    /// (for the Burst masking job) and managed Vector4 arrays (for the shader
-    /// finger-occlusion upload in ForearmDepthSurface).
+    /// Dense vertex coverage replaces per-bone capsule segments: no parent-bone
+    /// hierarchy tracking is needed, and the Burst job reduces to simple sphere tests.
+    /// The same vertex array is exposed publicly for the shader's soft occlusion fade.
     ///
-    /// Joint positions are captured at the same moment as the depth readback
-    /// request (called from LateUpdate), so mask and depth frame stay aligned
-    /// despite async GPU readback timing.
+    /// SnapshotMesh() is called from LateUpdate alongside DepthReadback.Schedule()
+    /// so the mask stays aligned with the depth frame despite async GPU readback.
     /// </summary>
     public class HandMask : IDisposable
     {
-        private const int MaxCapsules = 24;
+        private const int MaxVerts = 64;
 
         private float _padding;
-        private OVRSkeleton _handSkeleton;
+        private SkinnedMeshRenderer _handMesh;
         private bool _isInitialized;
 
-        // Native capsule arrays — fed into the Burst masking job each frame
-        private NativeArray<Vector3> _nativeCapsuleA;
-        private NativeArray<Vector3> _nativeCapsuleB;
+        private Mesh _bakedMesh;
+        private readonly List<Vector3> _vertList = new List<Vector3>(1024);
 
-        // Managed capsule arrays — exposed publicly for material SetVectorArray
-        private readonly Vector4[] _managedCapsuleA = new Vector4[MaxCapsules];
-        private readonly Vector4[] _managedCapsuleB = new Vector4[MaxCapsules];
-        private int _capsuleCount;
+        // Native vertex array — fed into the Burst masking job each frame
+        private NativeArray<Vector3> _nativeVerts;
 
-        // Public accessors for ForearmDepthSurface shader upload
-        public Vector4[] CapsuleA    => _managedCapsuleA;
-        public Vector4[] CapsuleB    => _managedCapsuleB;
-        public int       CapsuleCount => _capsuleCount;
-        public float     Radius       => _padding;
-        public bool      HasCapsules  => _capsuleCount > 0;
+        // Managed vertex array — exposed publicly for material SetVectorArray
+        private readonly Vector4[] _managedVerts = new Vector4[MaxVerts];
+        private int _vertCount;
 
-        public HandMask(OVRSkeleton handSkeleton, float maskRadius)
+        public Vector4[] Vertices    => _managedVerts;
+        public int       VertexCount => _vertCount;
+        public bool      HasVertices => _vertCount > 0;
+        public float     Radius      => _padding;
+
+        public HandMask(SkinnedMeshRenderer handMesh, float maskRadius)
         {
-            _handSkeleton = handSkeleton;
-            _padding      = maskRadius;
+            _handMesh = handMesh;
+            _padding  = maskRadius;
         }
 
         /// <summary>
-        /// Builds capsule segments from parent→child bone pairs and caches
-        /// them in both native (Burst) and managed (shader) storage.
+        /// Bakes the hand mesh for the current pose, downsamples to MaxVerts world-space
+        /// points, and caches them in both native (Burst) and managed (shader) storage.
         /// Called from LateUpdate alongside DepthReadback.Schedule().
         /// </summary>
-        public void SnapshotJoints()
+        public void SnapshotMesh()
         {
+            if (_handMesh == null) return;
             if (!_isInitialized && !TryInit()) return;
 
-            var bones = _handSkeleton.Bones;
-            _capsuleCount = 0;
+            _handMesh.BakeMesh(_bakedMesh);
+            _bakedMesh.GetVertices(_vertList);
 
-            for (int i = 0; i < bones.Count && _capsuleCount < MaxCapsules; i++)
+            int total = _vertList.Count;
+            int step  = Mathf.Max(1, total / MaxVerts);
+            Matrix4x4 l2w = _handMesh.transform.localToWorldMatrix;
+            _vertCount = 0;
+
+            for (int i = 0; i < total && _vertCount < MaxVerts; i += step)
             {
-                if (bones[i]?.Transform == null) continue;
-
-                int parentIdx = bones[i].ParentBoneIndex;
-                if (parentIdx < 0 || parentIdx >= bones.Count) continue;
-                if (bones[parentIdx]?.Transform == null) continue;
-
-                Vector3 a = bones[parentIdx].Transform.position;
-                Vector3 b = bones[i].Transform.position;
-
-                // Skip untracked joints parked at world origin
-                if (a.sqrMagnitude < 0.001f || b.sqrMagnitude < 0.001f) continue;
-
-                int idx = _capsuleCount++;
-                _nativeCapsuleA[idx] = a;
-                _nativeCapsuleB[idx] = b;
-                _managedCapsuleA[idx] = new Vector4(a.x, a.y, a.z, 0f);
-                _managedCapsuleB[idx] = new Vector4(b.x, b.y, b.z, 0f);
+                Vector3 world = l2w.MultiplyPoint3x4(_vertList[i]);
+                if (world.sqrMagnitude < 0.001f) continue;
+                _nativeVerts[_vertCount]   = world;
+                _managedVerts[_vertCount]  = new Vector4(world.x, world.y, world.z, 0f);
+                _vertCount++;
             }
         }
 
         /// <summary>
-        /// Schedules the Burst job that flags depth cells inside any hand capsule.
-        /// Returns the input dependency unchanged if no capsules are valid.
+        /// Schedules the Burst job that flags depth cells inside the hand volume.
+        /// Returns the input dependency unchanged when no vertices are available.
         /// </summary>
         public JobHandle Schedule(SurfaceBuffer surfBuf, JobHandle dependency)
         {
-            if (!_isInitialized && !TryInit()) return dependency;
-
-            if (_capsuleCount == 0)
+            if (_vertCount == 0)
             {
                 var clearJob = new ClearMaskJob { IsHandMasked = surfBuf.IsHandMasked };
                 return clearJob.Schedule(surfBuf.IsHandMasked.Length, 128, dependency);
@@ -102,9 +92,8 @@ namespace Surface.Core
             {
                 Hits         = surfBuf.Hits,
                 HasDepth     = surfBuf.HasDepth,
-                CapsuleA     = _nativeCapsuleA,
-                CapsuleB     = _nativeCapsuleB,
-                CapsuleCount = _capsuleCount,
+                Verts        = _nativeVerts,
+                VertCount    = _vertCount,
                 RadiusSq     = _padding * _padding,
                 IsHandMasked = surfBuf.IsHandMasked
             };
@@ -114,18 +103,17 @@ namespace Surface.Core
 
         public void Dispose()
         {
-            if (_nativeCapsuleA.IsCreated) _nativeCapsuleA.Dispose();
-            if (_nativeCapsuleB.IsCreated) _nativeCapsuleB.Dispose();
+            if (_nativeVerts.IsCreated) _nativeVerts.Dispose();
+            if (_bakedMesh != null) UnityEngine.Object.Destroy(_bakedMesh);
         }
 
         private bool TryInit()
         {
-            var bones = _handSkeleton.Bones;
-            if (bones == null || bones.Count == 0) return false;
-
-            _nativeCapsuleA = new NativeArray<Vector3>(MaxCapsules, Allocator.Persistent);
-            _nativeCapsuleB = new NativeArray<Vector3>(MaxCapsules, Allocator.Persistent);
-            _isInitialized  = true;
+            if (_handMesh == null) return false;
+            _handMesh.updateWhenOffscreen = true;
+            _bakedMesh   = new Mesh();
+            _nativeVerts = new NativeArray<Vector3>(MaxVerts, Allocator.Persistent);
+            _isInitialized = true;
             return true;
         }
 
@@ -138,9 +126,8 @@ namespace Surface.Core
         {
             [ReadOnly] public NativeArray<Vector3> Hits;
             [ReadOnly] public NativeArray<bool>    HasDepth;
-            [ReadOnly] public NativeArray<Vector3> CapsuleA;
-            [ReadOnly] public NativeArray<Vector3> CapsuleB;
-            public int   CapsuleCount;
+            [ReadOnly] public NativeArray<Vector3> Verts;
+            public int   VertCount;
             public float RadiusSq;
             [WriteOnly] public NativeArray<bool> IsHandMasked;
 
@@ -149,14 +136,9 @@ namespace Surface.Core
                 if (!HasDepth[index]) { IsHandMasked[index] = false; return; }
 
                 Vector3 p = Hits[index];
-                for (int ci = 0; ci < CapsuleCount; ci++)
+                for (int vi = 0; vi < VertCount; vi++)
                 {
-                    Vector3 ab   = CapsuleB[ci] - CapsuleA[ci];
-                    Vector3 ap   = p - CapsuleA[ci];
-                    float   abSq = ab.x*ab.x + ab.y*ab.y + ab.z*ab.z;
-                    float   raw  = abSq > 1e-6f ? (ap.x*ab.x + ap.y*ab.y + ap.z*ab.z) / abSq : 0f;
-                    float   t    = raw < 0f ? 0f : (raw > 1f ? 1f : raw);
-                    Vector3 d    = p - (CapsuleA[ci] + t * ab);
+                    Vector3 d = p - Verts[vi];
                     if (d.x*d.x + d.y*d.y + d.z*d.z < RadiusSq)
                     {
                         IsHandMasked[index] = true;

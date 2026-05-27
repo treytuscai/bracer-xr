@@ -23,19 +23,18 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
-    [Tooltip("Right Hand skeleton. Masks interacting hand from forearm depth")]
-    public OVRSkeleton handSkeleton;
+    [Tooltip("Hand SkinnedMeshRenderer for depth masking and occlusion fade")]
+    public SkinnedMeshRenderer handMesh;
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
     [Tooltip("Material for rendering the forearm surface. Falls back to transparent cyan if unset")]
     public Material surfaceMaterial;
 
     [Header("Hand Masking")]
-    [Tooltip("Padding around hand mask to prevent incorporating into mesh surface")]
-    [Range(0.01f, 0.06f)] public float handMaskRadius = 0.05f;
-    [Header("Finger Occlusion")]
-    [Tooltip("Radius of the per-joint sphere that punches a hole in the UI where fingers touch")]
-    [Range(0.005f, 0.03f)] public float fingerOccluderRadius = 0.0065f;
+    [Tooltip("Padding around hand mesh vertices to prevent incorporating into arm surface")]
+    [Range(0.005f, 0.05f)] public float handMaskRadius = 0.03f;
+    [Tooltip("How far above the arm surface (m) a hand vertex counts as a touch")]
+    [Range(0.005f, 0.04f)] public float touchDetectHeight = 0.025f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -84,11 +83,16 @@ public class ForearmDepthSurface : MonoBehaviour
     private ForearmModel _forearmModel;
     private SurfaceSmoother _surfaceSmoother;
 
+    [Header("Debug")]
+    public bool showTouchDebug = true;
+
     // Unity rendering
     MeshFilter _meshFilter;
     MeshRenderer _meshRenderer;
-    Material _material;
     Mesh _mesh;
+
+    // Debug touch marker (created at runtime, destroyed with this component)
+    GameObject _touchDebugSphere;
 
     // Per-frame state
     int _rows, _cols;
@@ -99,7 +103,7 @@ public class ForearmDepthSurface : MonoBehaviour
     void Awake()
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
-        _handMask = new HandMask(handSkeleton, handMaskRadius);
+        _handMask = new HandMask(handMesh, handMaskRadius);
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
@@ -124,8 +128,18 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshFilter.mesh = _mesh;
 
         // Use assigned material if provided, otherwise a transparent cyan fallback for debug
-        _material = _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
-        _material.EnableKeyword("SOFT_OCCLUSION");
+        _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
+
+        if (showTouchDebug)
+        {
+            _touchDebugSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            _touchDebugSphere.transform.localScale = Vector3.one * 0.015f;
+            Destroy(_touchDebugSphere.GetComponent<Collider>());
+            var mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            mat.color = Color.red;
+            _touchDebugSphere.GetComponent<Renderer>().material = mat;
+            _touchDebugSphere.SetActive(false);
+        }
     }
 
     /// <summary>
@@ -166,26 +180,59 @@ public class ForearmDepthSurface : MonoBehaviour
                 _armFrame, maxRadialDist, pixelStride,
                 _surfaceBuffer, OnDepthReady
             );
-            _handMask.SnapshotJoints();
+            _handMask.SnapshotMesh();
         }
 
-        UpdateFingerSpheres();
+        if (showTouchDebug && _touchDebugSphere != null)
+        {
+            bool hit = TryGetTouchPoint(out _, out Vector3 wp);
+            _touchDebugSphere.SetActive(hit);
+            if (hit) _touchDebugSphere.transform.position = wp;
+        }
     }
 
-    private void UpdateFingerSpheres()
+    /// <summary>
+    /// Projects all hand joints onto the display region and returns the UV coordinate
+    /// and world point of whichever joint is closest to the arm surface and inside the
+    /// display bounds. Returns false when no joint qualifies.
+    /// </summary>
+    public bool TryGetTouchPoint(out Vector2 uv, out Vector3 worldPoint)
     {
-        if (_material == null) return;
+        uv = Vector2.zero;
+        worldPoint = Vector3.zero;
 
-        if (!_handMask.HasCapsules)
+        if (!IsValid || !_handMask.HasVertices) return false;
+
+        float displayStart = displayOffset - displayHeight * 0.5f;
+        float displayEnd   = displayOffset + displayHeight * 0.5f;
+        float touchThresh  = touchDetectHeight;
+        float bestAbove    = float.MaxValue;
+        bool  found        = false;
+
+        for (int i = 0; i < _handMask.VertexCount; i++)
         {
-            _material.SetInt("_FingerCapsuleCount", 0);
-            return;
+            Vector3 pos = _handMask.Vertices[i];
+
+            Vector3 toPos  = pos - WristPosition;
+            float   above  = Vector3.Dot(toPos, AxisUp);
+            if (above < 0f || above > touchThresh) continue;
+
+            float along  = Vector3.Dot(toPos, AxisDir);
+            float across = Vector3.Dot(toPos, AxisRight);
+            float u = (across + displayWidth  * 0.5f) / displayWidth;
+            float v = (along  - displayStart)          / (displayEnd - displayStart);
+            if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
+
+            if (above < bestAbove)
+            {
+                bestAbove  = above;
+                uv         = new Vector2(u, v);
+                worldPoint = pos - AxisUp * above;
+                found      = true;
+            }
         }
 
-        _material.SetVectorArray("_FingerCapsuleA", _handMask.CapsuleA);
-        _material.SetVectorArray("_FingerCapsuleB", _handMask.CapsuleB);
-        _material.SetInt("_FingerCapsuleCount", _handMask.CapsuleCount);
-        _material.SetFloat("_FingerRadius", fingerOccluderRadius);
+        return found;
     }
 
     void OnDestroy()
@@ -196,6 +243,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
         _forearmModel?.Dispose();
+        if (_touchDebugSphere != null) Destroy(_touchDebugSphere);
     }
 
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
