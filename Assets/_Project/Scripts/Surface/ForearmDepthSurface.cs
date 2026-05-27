@@ -33,8 +33,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Hand Masking")]
     [Tooltip("Padding around hand mesh vertices to prevent incorporating into arm surface")]
     [Range(0.005f, 0.05f)] public float handMaskRadius = 0.03f;
-    [Tooltip("How far above the arm surface (m) a hand vertex counts as a touch")]
-    [Range(0.005f, 0.04f)] public float touchDetectHeight = 0.025f;
 
     [Header("Sampling")]
     [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
@@ -83,22 +81,18 @@ public class ForearmDepthSurface : MonoBehaviour
     private ForearmModel _forearmModel;
     private SurfaceSmoother _surfaceSmoother;
 
-    [Header("Debug")]
-    public bool showTouchDebug = true;
-
     // Unity rendering
     MeshFilter _meshFilter;
     MeshRenderer _meshRenderer;
     Mesh _mesh;
-
-    // Debug touch marker (created at runtime, destroyed with this component)
-    GameObject _touchDebugSphere;
+    Material _mat;
 
     // Per-frame state
     int _rows, _cols;
     private bool _isProcessingMesh = false;
     private bool _isOccluded = false;
     bool _hasFrame;
+    float _projCenter;
 
     void Awake()
     {
@@ -129,17 +123,7 @@ public class ForearmDepthSurface : MonoBehaviour
 
         // Use assigned material if provided, otherwise a transparent cyan fallback for debug
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
-
-        if (showTouchDebug)
-        {
-            _touchDebugSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            _touchDebugSphere.transform.localScale = Vector3.one * 0.015f;
-            Destroy(_touchDebugSphere.GetComponent<Collider>());
-            var mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
-            mat.color = Color.red;
-            _touchDebugSphere.GetComponent<Renderer>().material = mat;
-            _touchDebugSphere.SetActive(false);
-        }
+        _mat = _meshRenderer.material;
     }
 
     /// <summary>
@@ -182,57 +166,6 @@ public class ForearmDepthSurface : MonoBehaviour
             );
             _handMask.SnapshotMesh();
         }
-
-        if (showTouchDebug && _touchDebugSphere != null)
-        {
-            bool hit = TryGetTouchPoint(out _, out Vector3 wp);
-            _touchDebugSphere.SetActive(hit);
-            if (hit) _touchDebugSphere.transform.position = wp;
-        }
-    }
-
-    /// <summary>
-    /// Projects all hand joints onto the display region and returns the UV coordinate
-    /// and world point of whichever joint is closest to the arm surface and inside the
-    /// display bounds. Returns false when no joint qualifies.
-    /// </summary>
-    public bool TryGetTouchPoint(out Vector2 uv, out Vector3 worldPoint)
-    {
-        uv = Vector2.zero;
-        worldPoint = Vector3.zero;
-
-        if (!IsValid || !_handMask.HasVertices) return false;
-
-        float displayStart = displayOffset - displayHeight * 0.5f;
-        float displayEnd   = displayOffset + displayHeight * 0.5f;
-        float touchThresh  = touchDetectHeight;
-        float bestAbove    = float.MaxValue;
-        bool  found        = false;
-
-        for (int i = 0; i < _handMask.VertexCount; i++)
-        {
-            Vector3 pos = _handMask.Vertices[i];
-
-            Vector3 toPos  = pos - WristPosition;
-            float   above  = Vector3.Dot(toPos, AxisUp);
-            if (above < 0f || above > touchThresh) continue;
-
-            float along  = Vector3.Dot(toPos, AxisDir);
-            float across = Vector3.Dot(toPos, AxisRight);
-            float u = (across + displayWidth  * 0.5f) / displayWidth;
-            float v = (along  - displayStart)          / (displayEnd - displayStart);
-            if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
-
-            if (above < bestAbove)
-            {
-                bestAbove  = above;
-                uv         = new Vector2(u, v);
-                worldPoint = pos - AxisUp * above;
-                found      = true;
-            }
-        }
-
-        return found;
     }
 
     void OnDestroy()
@@ -243,7 +176,6 @@ public class ForearmDepthSurface : MonoBehaviour
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
         _forearmModel?.Dispose();
-        if (_touchDebugSphere != null) Destroy(_touchDebugSphere);
     }
 
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
@@ -297,12 +229,12 @@ public class ForearmDepthSurface : MonoBehaviour
         // MESH: build geometry from the final IsSurface hits
         _meshGenerator.Generate(
             _meshBuffer,
-            _surfaceBuffer, 
+            _surfaceBuffer,
             _rows, _cols,
             _armFrame.WristPos, _armFrame.Axis, _armFrame.AxisRight,
             _armFrame.Pronation, _armFrame.Orientation,
             transform.worldToLocalMatrix,
-            out _
+            out _projCenter
         );
 
         // GPU UPLOAD: Push NativeArrays to the Mesh object
@@ -339,6 +271,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.RecalculateBounds();
     }
 
+    // Arm frame
     public bool    IsValid          => _hasFrame;
     public Vector3 WristPosition    => _armFrame.WristPos;
     public Vector3 ElbowPosition    => _armFrame.ElbowPos;
@@ -348,4 +281,16 @@ public class ForearmDepthSurface : MonoBehaviour
     public float   PronationAngle   => _armFrame.Pronation;
     public float   OrientationAngle => _armFrame.Orientation;
     public Mesh    SurfaceMesh      => _mesh;
+
+    // Surface buffer — for interaction and other consumers
+    public SurfaceBuffer SurfaceBuf      => _surfaceBuffer;
+    public int           SurfaceRows     => _rows;
+    public int           SurfaceCols     => _cols;
+    public float         ProjCenter      => _projCenter;
+    public Material      SurfaceMat      => _mat;
+
+    // Hand vertex data (downsampled world positions baked from the hand mesh each frame)
+    public Vector4[] HandVertices    => _handMask.Vertices;
+    public int       HandVertexCount => _handMask.VertexCount;
+    public bool      HasHandVertices => _handMask.HasVertices;
 }

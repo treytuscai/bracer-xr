@@ -2,9 +2,12 @@ Shader "Custom/ForearmProjection"
 {
     Properties
     {
-        _MainTex   ("UI Texture", 2D)         = "white" {}
-        _Color     ("Tint", Color)            = (1,1,1,1)
-        _FadeWidth ("Edge Fade Width (m)", Float) = 0.015
+        _MainTex    ("UI Texture", 2D)                          = "white" {}
+        _Color      ("Tint", Color)                             = (1,1,1,1)
+        _FadeWidth  ("Edge Fade Width (m)", Float)              = 0.015
+        // xy = UV coordinate, z = active (1) / inactive (0), w = unused
+        _TouchPoint ("Touch Debug Point (uv.xy, active, _)", Vector) = (0,0,0,0)
+        _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.04
     }
 
     SubShader
@@ -26,8 +29,10 @@ Shader "Custom/ForearmProjection"
             TEXTURE2D(_MainTex);
             SAMPLER(sampler_MainTex);
 
-            half4 _Color;
-            float _FadeWidth;
+            half4  _Color;
+            float  _FadeWidth;
+            float4 _TouchPoint;
+            float  _TouchRadius;
 
             struct Attributes
             {
@@ -68,6 +73,18 @@ Shader "Custom/ForearmProjection"
                 float2 uv = float2(frac(input.uv.x), input.uv.y);
                 half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
                 col.a *= smoothstep(0.0, _FadeWidth, input.edgeDist);
+
+                // Touch debug: draw a filled green circle at the touch UV
+                if (_TouchPoint.z > 0.5)
+                {
+                    float2 diff = uv - _TouchPoint.xy;
+                    float  d    = length(diff);
+                    float  r    = _TouchRadius;
+                    // Filled circle with soft 0.005 UV-unit antialiased edge
+                    float circle = 1.0 - smoothstep(r - 0.005, r, d);
+                    col.rgb = lerp(col.rgb, half3(0.0, 1.0, 0.0), circle * 0.85);
+                    col.a   = max(col.a, circle * 0.85);
+                }
 
                 return col;
             }
