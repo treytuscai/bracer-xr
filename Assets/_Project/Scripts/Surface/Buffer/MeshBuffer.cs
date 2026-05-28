@@ -5,100 +5,136 @@ using System;
 namespace Surface.Buffer
 {
     /// <summary>
-    /// Manages the memory buffers required for generating the forearm mesh.
-    /// Uses NativeArrays to allow high-performance, multi-threaded access via the Burst Compiler.
-    /// Memory is kept persistent across frames to eliminate Garbage Collection overhead.
+    /// Output buffer written by MeshGenerator and consumed by ForearmDepthSurface.UpdateUnityMesh.
+    /// Holds the vertex, UV, index, and auxiliary arrays needed for a single frame's mesh upload.
+    ///
+    /// SPARSE → DENSE COMPACTION
+    /// The depth grid has (rows × cols) cells but only a subset are flagged as surface.
+    /// MeshGenerator allocates arrays sized to the grid maximum (worst case: every cell
+    /// is surface) and fills them densely from index 0 using atomic counters. Only
+    /// [0 .. VertexCount) and [0 .. TriangleCount) are valid after generation completes;
+    /// the rest of each array is pre-allocated but unused. ForearmDepthSurface uploads
+    /// only the valid slice via SetVertices/SetIndices with explicit counts.
+    ///
+    /// ATOMIC COUNTER PATTERN
+    /// VertexJob and TriangleJob run in parallel across thousands of cells. Each job
+    /// claims its output slot via Interlocked.Increment/Add on Counter[0] and Counter[1]
+    /// respectively, producing a unique write index without locks. After jobs complete,
+    /// the counts are copied from Counter into VertexCount and TriangleCount so the main
+    /// thread can pass them to Unity's Mesh API without touching the NativeArray again.
+    ///
+    /// WHY PUBLIC FIELDS INSTEAD OF PROPERTIES?
+    /// All arrays are assigned via object initializers inside Burst job structs and written
+    /// to by parallel jobs. Public fields are required for the Burst job struct pattern.
     /// </summary>
     public class MeshBuffer : IDisposable
     {
         // ------------------------------------------------------------------
-        // MESH DATA ARRAYS
-        // These correspond directly to the data Unity's Mesh API expects.
+        // MESH DATA ARRAYS  (size = rows × cols; only [0..VertexCount) is valid)
+        // Written by MeshGenerator jobs; uploaded to Unity's Mesh API each frame.
         // ------------------------------------------------------------------
-        
-        /// <summary> Local-space vertex positions. </summary>
+
+        /// <summary> Local-space vertex positions, transformed from world hits by WorldToLocal. </summary>
         public NativeArray<Vector3> Vertices;
-        
-        /// <summary> UV0 channel: Contains the projected and rotated UI coordinates. </summary>
+        /// <summary>
+        /// UV0: linear projection coordinates. U = distance along AxisRight from the arm's
+        /// visible center, normalized by displayWidth. V = distance along Axis from wrist,
+        /// normalized by displayHeight. Pronation scroll offset and orientation rotation
+        /// are applied on top. See ArmFrame and MeshGenerator.CalculateUV for full details.
+        /// </summary>
         public NativeArray<Vector2> UVs;
-        
-        /// <summary> UV1 channel: X stores the physical distance to the row's mesh edge for smooth shader fading. </summary>
+        /// <summary>
+        /// UV1: X = distance from vertex to its row's nearest mesh boundary edge.
+        /// ForearmProjection.shader reads this to drive a soft alpha fade at the mesh perimeter.
+        /// </summary>
         public NativeArray<Vector2> EdgeDists;
-        
-        /// <summary> Triangle indices pointing to the Vertices array. </summary>
+        /// <summary>
+        /// Triangle index buffer (size = (rows-1)*(cols-1)*6 maximum).
+        /// Written atomically by TriangleJob; only [0..TriangleCount) is valid.
+        /// </summary>
         public NativeArray<int> Triangles;
 
         // ------------------------------------------------------------------
-        // LOOKUP & BOUNDARY ARRAYS
-        // Used internally by the generation jobs to process the grid.
+        // INTERNAL GENERATION ARRAYS  (used only within MeshGenerator jobs)
         // ------------------------------------------------------------------
-        
-        /// <summary> Maps a 1D grid index to its compressed index in the Vertices array. Holds -1 if the cell is empty. </summary>
+
+        /// <summary>
+        /// Maps flat grid cell index → dense vertex array index.
+        /// -1 for cells that are not on the surface and received no vertex.
+        /// TriangleJob reads this to convert grid-space quad corners to vertex indices.
+        /// </summary>
         public NativeArray<int> CellToVert;
-        
-        /// <summary> The minimum projected extent of the mesh for a specific row. </summary>
+        /// <summary> Minimum lateral projection (along AxisRight) of any surface cell in this row. </summary>
         public NativeArray<float> RowMin;
-        
-        /// <summary> The maximum projected extent of the mesh for a specific row. </summary>
+        /// <summary> Maximum lateral projection (along AxisRight) of any surface cell in this row. </summary>
         public NativeArray<float> RowMax;
 
         // ------------------------------------------------------------------
-        // FINAL COUNTS
-        // Populated by the generator so the main thread knows how much data to upload to the GPU.
+        // ATOMIC COUNTERS AND FINAL COUNTS
         // ------------------------------------------------------------------
-        public NativeArray<int> Counter; // Index 0 = Vertices, Index 1 = Triangles
+
+        /// <summary>
+        /// Two-element NativeArray used as atomic counters by parallel Burst jobs.
+        /// Counter[0] = running vertex count (incremented by VertexJob via Interlocked).
+        /// Counter[1] = running triangle index count (incremented by TriangleJob).
+        /// Both are reset to 0 at the start of each Generate call, then copied into
+        /// VertexCount and TriangleCount after all jobs complete.
+        /// </summary>
+        public NativeArray<int> Counter;
+
+        /// <summary> Number of valid entries in Vertices/UVs/EdgeDists after the last Generate call. </summary>
         public int VertexCount;
+        /// <summary> Number of valid entries in Triangles after the last Generate call. </summary>
         public int TriangleCount;
 
         /// <summary>
-        /// Checks if the arrays match the required dimensions for the current frame.
-        /// If not (or if they are uninitialized), it disposes the old memory and allocates new buffers.
+        /// Allocates all arrays for a (rows × cols) grid if the current allocation no longer
+        /// matches the required dimensions. Disposes the previous allocation first.
+        /// Safe to call every frame; returns immediately when dimensions are unchanged.
         /// </summary>
-        /// <param name="rows">Number of rows in the depth grid.</param>
-        /// <param name="cols">Number of columns in the depth grid.</param>
         public void ResizeIfNeeded(int rows, int cols)
         {
             int totalCells = rows * cols;
-            
-            // A grid of (R x C) vertices can form at most (R-1)*(C-1) quads.
-            // Each quad is 2 triangles = 6 indices.
+            // A grid of (R × C) cells forms at most (R-1)×(C-1) quads; each quad = 2 tris = 6 indices.
             int maxTris = (rows - 1) * (cols - 1) * 6;
 
-            // If arrays are already the correct size, do nothing.
-            if (Vertices.IsCreated && Vertices.Length == totalCells && Triangles.Length == maxTris) return;
+            // RowMin/RowMax are indexed by row, so we must also verify rows hasn't changed
+            // independently of totalCells. A row/col swap (e.g. 10×20 → 20×10) keeps the
+            // same total but leaves RowMin/RowMax at the wrong length, causing out-of-bounds
+            // writes in RowBoundsJob.
+            if (Vertices.IsCreated  &&
+                Vertices.Length  == totalCells &&
+                Triangles.Length == maxTris    &&
+                RowMin.Length    == rows) return;
 
-            // Free previous allocations to prevent memory leaks
             Dispose();
 
-            // Allocate persistent memory (lives across frames)
-            Vertices = new NativeArray<Vector3>(totalCells, Allocator.Persistent);
-            UVs = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
-            EdgeDists = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
-            Triangles = new NativeArray<int>(maxTris, Allocator.Persistent);
-            CellToVert = new NativeArray<int>(totalCells, Allocator.Persistent);
-            RowMin = new NativeArray<float>(rows, Allocator.Persistent);
-            RowMax = new NativeArray<float>(rows, Allocator.Persistent);
-
-            if (Counter.IsCreated && Counter.Length == 2) return;
-            if (Counter.IsCreated) Counter.Dispose();
-            // Allocate 2 integers: [0] for vertices, [1] for triangles
-            Counter = new NativeArray<int>(2, Allocator.Persistent);
+            Vertices   = new NativeArray<Vector3>(totalCells, Allocator.Persistent);
+            UVs        = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
+            EdgeDists  = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
+            Triangles  = new NativeArray<int>(maxTris,        Allocator.Persistent);
+            CellToVert = new NativeArray<int>(totalCells,     Allocator.Persistent);
+            RowMin     = new NativeArray<float>(rows,         Allocator.Persistent);
+            RowMax     = new NativeArray<float>(rows,         Allocator.Persistent);
+            Counter    = new NativeArray<int>(2,              Allocator.Persistent);
         }
 
         /// <summary>
-        /// Safely disposes all unmanaged NativeArray memory.
-        /// Must be called when the component is destroyed to avoid memory leaks.
+        /// Disposes all NativeArrays. Each disposal is guarded by IsCreated so this is safe
+        /// to call on a partially or fully unallocated buffer.
+        /// Note: VertexCount and TriangleCount are not reset here; they are overwritten at
+        /// the start of every Generate call so stale values are never acted upon.
         /// </summary>
         public void Dispose()
         {
-            if (Vertices.IsCreated) Vertices.Dispose();
-            if (UVs.IsCreated) UVs.Dispose();
-            if (EdgeDists.IsCreated) EdgeDists.Dispose();
-            if (Triangles.IsCreated) Triangles.Dispose();
+            if (Vertices.IsCreated)   Vertices.Dispose();
+            if (UVs.IsCreated)        UVs.Dispose();
+            if (EdgeDists.IsCreated)  EdgeDists.Dispose();
+            if (Triangles.IsCreated)  Triangles.Dispose();
             if (CellToVert.IsCreated) CellToVert.Dispose();
-            if (RowMin.IsCreated) RowMin.Dispose();
-            if (RowMax.IsCreated) RowMax.Dispose();
-            if (Counter.IsCreated) Counter.Dispose();
+            if (RowMin.IsCreated)     RowMin.Dispose();
+            if (RowMax.IsCreated)     RowMax.Dispose();
+            if (Counter.IsCreated)    Counter.Dispose();
         }
     }
 }
