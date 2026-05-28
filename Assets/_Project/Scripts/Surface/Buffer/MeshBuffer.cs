@@ -8,7 +8,7 @@ namespace Surface.Buffer
     /// Output buffer written by MeshGenerator and consumed by ForearmDepthSurface.UpdateUnityMesh.
     /// Holds the vertex, UV, index, and auxiliary arrays needed for a single frame's mesh upload.
     ///
-    /// SPARSE → DENSE COMPACTION
+    /// SPARSE -> DENSE COMPACTION
     /// The depth grid has (rows × cols) cells but only a subset are flagged as surface.
     /// MeshGenerator allocates arrays sized to the grid maximum (worst case: every cell
     /// is surface) and fills them densely from index 0 using atomic counters. Only
@@ -59,7 +59,7 @@ namespace Surface.Buffer
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Maps flat grid cell index → dense vertex array index.
+        /// Maps flat grid cell index -> dense vertex array index.
         /// -1 for cells that are not on the surface and received no vertex.
         /// TriangleJob reads this to convert grid-space quad corners to vertex indices.
         /// </summary>
@@ -99,7 +99,7 @@ namespace Surface.Buffer
             int maxTris = (rows - 1) * (cols - 1) * 6;
 
             // RowMin/RowMax are indexed by row, so we must also verify rows hasn't changed
-            // independently of totalCells. A row/col swap (e.g. 10×20 → 20×10) keeps the
+            // independently of totalCells. A row/col swap (e.g. 10×20 -> 20×10) keeps the
             // same total but leaves RowMin/RowMax at the wrong length, causing out-of-bounds
             // writes in RowBoundsJob.
             if (Vertices.IsCreated  &&
