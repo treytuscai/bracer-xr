@@ -49,9 +49,9 @@ namespace Surface.Buffer
         /// the Hits and Smoothed references so the next pass reads it.
         /// </summary>
         public NativeArray<Vector3> Smoothed;
-        /// <summary> True if the depth sensor returned a valid sample for this cell. </summary>
-        public NativeArray<bool> IsSurface;
         /// <summary> True if this cell was classified as forearm surface by seed+flood. </summary>
+        public NativeArray<bool> IsSurface;
+        /// <summary> True if the depth sensor returned a valid depth sample for this cell. </summary>
         public NativeArray<bool> HasDepth;
         /// <summary>
         /// BFS work queue for the flood-fill stage. NativeQueue rather than NativeArray
