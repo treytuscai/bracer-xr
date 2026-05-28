@@ -39,19 +39,21 @@ namespace Surface.Core
         /// <summary>
         /// Computes the crop region from ArmFrame, validates depth matrices,
         /// requests the GPU readback, and schedules unprojection on completion.
-        /// Silently returns if a readback is in flight or the arm is off-screen.
+        /// Returns true only when a readback was actually enqueued; false on any
+        /// early-out (readback in flight, no depth matrices, arm off-screen).
+        /// Callers must only arm their in-flight guard when this returns true.
         /// </summary>
-        public void Schedule(
+        public bool Schedule(
             ArmFrame arm,
             float maxRadialDist, int pixelStride,
             SurfaceBuffer buffer,
             Action<JobHandle, int, int> onComplete)
         {
-            if (_isReadbackPending) return;
+            if (_isReadbackPending) return false;
 
             // Depth matrix validation (Meta updates per head pose)
             Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
-            if (depthMatrices == null || depthMatrices.Length == 0) return;
+            if (depthMatrices == null || depthMatrices.Length == 0) return false;
 
             // Compute screen-space crop around the forearm
             Camera cam = arm.Cam;
@@ -65,7 +67,7 @@ namespace Surface.Core
                 maxRadialDist, pixelStride,
                 out int cropX, out int cropY, out int cropW, out int cropH))
             {
-                return; // Arm behind camera or off-screen
+                return false; // Arm behind camera or off-screen
             }
 
             // Ensure render target matches screen dimensions
@@ -120,6 +122,7 @@ namespace Surface.Core
 
                     onComplete?.Invoke(job.Schedule(rows * cols, 64), rows, cols);
                 });
+            return true;
         }
 
         public void Dispose()

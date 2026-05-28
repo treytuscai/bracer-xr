@@ -265,12 +265,14 @@ public class ForearmDepthSurface : MonoBehaviour
         }
 
         // Only request a new GPU readback if the previous frame's Burst chain has
-        // finished. Arming _isProcessingMesh here also blocks SnapshotMesh from
-        // writing to _nativeVerts while HandMaskJob holds a ReadOnly reference to it.
+        // finished. The flag is set to Schedule()'s return value: Schedule has several
+        // silent early-return paths (no depth matrices, arm off-screen) that never call
+        // OnDepthReady, so arming unconditionally would permanently deadlock the pipeline.
+        // When a readback IS enqueued the flag also blocks SnapshotMesh from writing to
+        // _nativeVerts while HandMaskJob holds a ReadOnly reference to the same array.
         if (!_isProcessingMesh)
         {
-            _isProcessingMesh = true;
-            _depthReadback.Schedule(
+            _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist, pixelStride,
                 _surfaceBuffer, OnDepthReady
             );
