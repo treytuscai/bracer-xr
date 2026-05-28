@@ -39,12 +39,12 @@ public class ForearmInteraction : MonoBehaviour
     [Header("Touch")]
     // How far above the reconstructed surface a finger can hover and still register.
     // Allows visual feedback (e.g. highlight) before physical contact.
-    // Too large → accidental activations when the hand is near but not touching.
+    // Too large -> accidental activations when the hand is near but not touching.
     [Tooltip("How far above the surface a finger can hover and still register as a touch (m)")]
     [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.02f;
     // How far the finger can press through the surface before being rejected.
     // The depth reconstruction represents skin surface; fingertip contact means the
-    // vertex lands at or slightly below it. Too large → false touches through the arm.
+    // vertex lands at or slightly below it. Too large -> false touches through the arm.
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
 
