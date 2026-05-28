@@ -1,20 +1,42 @@
+// ForearmProjection.shader
+// URP transparent shader for the forearm display surface mesh.
+//
+// Input channels (set by MeshGenerator and ForearmDepthSurface.UpdateUnityMesh):
+//   POSITION   — local-space vertex position (world hit transformed by WorldToLocal)
+//   TEXCOORD0  — UV0: display coordinates (linear projection + pronation scroll + orientation rotation)
+//   TEXCOORD1  — UV1.x: world-space distance from this vertex to its row's nearest mesh boundary (meters)
+//
+// Per-material properties (set from C# each frame):
+//   _MainTex     — UI texture to display on the arm surface (set in Inspector)
+//   _Color       — tint multiplied against the texture (white = no tint)
+//   _FadeWidth   — distance over which alpha fades to 0 at the mesh edge (meters, Inspector)
+//   _TouchPoint  — set by ForearmInteraction.LateUpdate; drives the debug circle overlay
+//   _TouchRadius — radius of the debug circle in UV space (Inspector)
+
 Shader "Custom/ForearmProjection"
 {
     Properties
     {
         _MainTex    ("UI Texture", 2D)                          = "white" {}
         _Color      ("Tint", Color)                             = (1,1,1,1)
+        // World-space meters. Larger = wider fade zone at the irregular mesh boundary.
         _FadeWidth  ("Edge Fade Width (m)", Float)              = 0.015
-        // xy = UV coordinate, z = active (1) / inactive (0), w = unused
+        // Set by ForearmInteraction each LateUpdate: xy = touch UV, z = active (1/0), w = unused.
         _TouchPoint ("Touch Debug Point (uv.xy, active, _)", Vector) = (0,0,0,0)
         _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.02
     }
 
     SubShader
     {
+        // Transparent queue: renders after opaque geometry so alpha blending composites
+        // correctly over the environment.
         Tags { "RenderType"="Transparent" "Queue"="Transparent" }
+        // Standard premultiplied-alpha blending.
         Blend SrcAlpha OneMinusSrcAlpha
+        // No depth writes: transparent surfaces shouldn't occlude geometry behind them.
         ZWrite Off
+        // Both faces rendered: the arm surface mesh is a thin shell whose underside
+        // may be visible from certain viewing angles.
         Cull Off
 
         Pass
@@ -22,6 +44,7 @@ Shader "Custom/ForearmProjection"
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            // Enables GPU instancing support; required for XR multi-pass rendering.
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -29,16 +52,22 @@ Shader "Custom/ForearmProjection"
             TEXTURE2D(_MainTex);
             SAMPLER(sampler_MainTex);
 
-            half4  _Color;
-            float  _FadeWidth;
-            float4 _TouchPoint;
-            float  _TouchRadius;
+            // All per-material scalar/vector uniforms must be inside UnityPerMaterial CBUFFER
+            // for URP's SRP Batcher. Without this block the draw call opts out of batching
+            // and Unity uploads uniforms individually each frame — measurable cost on Quest.
+            CBUFFER_START(UnityPerMaterial)
+                half4  _Color;
+                float  _FadeWidth;
+                float4 _TouchPoint;
+                float  _TouchRadius;
+            CBUFFER_END
 
+            // Vertex input: positions and two UV channels from the MeshBuffer NativeArrays.
             struct Attributes
             {
                 float4 positionOS : POSITION;
-                float2 uv         : TEXCOORD0;
-                float2 edgeDist   : TEXCOORD1;
+                float2 uv         : TEXCOORD0; // UV0: display coordinates (see MeshGenerator.CalculateUV)
+                float2 edgeDist   : TEXCOORD1; // UV1: x = world-space distance to row boundary edge (m)
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -47,6 +76,8 @@ Shader "Custom/ForearmProjection"
                 float4 positionCS : SV_POSITION;
                 float2 uv         : TEXCOORD0;
                 float  edgeDist   : TEXCOORD1;
+                // Required for Quest stereo rendering. Without this macro pair the mesh
+                // renders correctly in only one eye.
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -58,6 +89,7 @@ Shader "Custom/ForearmProjection"
 
                 output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
                 output.uv         = input.uv;
+                // Only the x component is meaningful; y is always 0 (see MeshGenerator).
                 output.edgeDist   = input.edgeDist.x;
 
                 return output;
@@ -67,23 +99,35 @@ Shader "Custom/ForearmProjection"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
+                // Discard fragments whose UV falls outside [0,1]. This happens at the arm
+                // patch boundary where pronation scroll or landscape offset pushes surface
+                // vertices beyond the display region. Discarding prevents the texture from
+                // being sampled with clamped/wrapped UV and showing a stretched edge.
                 if (input.uv.x < 0.0 || input.uv.x > 1.0 ||
                     input.uv.y < 0.0 || input.uv.y > 1.0)
                     discard;
 
-                float2 uv = input.uv;
-                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
+                float2 uv  = input.uv;
+                half4  col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
+
+                // Edge fade: edgeDist is a world-space meter value (from RowBoundsJob via UV1),
+                // so _FadeWidth is device-independent — the same value works at any resolution.
+                // NOTE: RowBoundsJob computes per-row lateral extents only (along AxisRight),
+                // so this fade applies to the left/right sides of the mesh. The top and bottom
+                // (axial) edges do not have a computed edgeDist and cut off sharply.
                 col.a *= smoothstep(0.0, _FadeWidth, input.edgeDist);
 
-                // Touch debug: draw a filled green circle at the touch UV
+                // Debug overlay: draw a filled green circle at the active touch UV.
+                // _TouchPoint.z is the active flag set by ForearmInteraction each LateUpdate.
                 if (_TouchPoint.z > 0.5)
                 {
-                    float2 diff = uv - _TouchPoint.xy;
-                    float  d    = length(diff);
-                    float  r    = _TouchRadius;
-                    // Filled circle with soft 0.005 UV-unit antialiased edge
-                    float circle = 1.0 - smoothstep(r - 0.005, r, d);
+                    float2 diff   = uv - _TouchPoint.xy;
+                    float  d      = length(diff);
+                    float  r      = _TouchRadius;
+                    // smoothstep produces a soft antialiased edge over a 0.005 UV-unit band.
+                    float  circle = 1.0 - smoothstep(r - 0.005, r, d);
                     col.rgb = lerp(col.rgb, half3(0.0, 1.0, 0.0), circle * 0.85);
+                    // max preserves circle visibility even where surface alpha is low (mesh edge).
                     col.a   = max(col.a, circle * 0.85);
                 }
 
