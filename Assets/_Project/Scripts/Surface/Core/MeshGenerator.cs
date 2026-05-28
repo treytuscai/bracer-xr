@@ -30,7 +30,7 @@ namespace Surface.Core
     /// UV DESIGN (see ArmFrame.cs for full rationale)
     /// U is a linear projection along camera-fixed AxisRight, normalized by DisplayWidth
     /// and centered on the arm's visible patch. V is a linear projection along Axis
-    /// (wrist→elbow), normalized by DisplayHeight. A pronation scroll offset is added to U
+    /// (wrist->elbow), normalized by DisplayHeight. A pronation scroll offset is added to U
     /// so wrist rotation reveals new content rather than spinning the image. A 2D rotation
     /// compensates for portrait vs. landscape arm orientation.
     ///
@@ -161,7 +161,7 @@ namespace Surface.Core
             // ------------------------------------------------------------------
             // PASS 3: Vertex and UV generation
             // Atomically claims a dense vertex slot for each surface cell and
-            // computes world→local position, UV0, and UV1 edge distance.
+            // computes world->local position, UV0, and UV1 edge distance.
             // NativeDisableParallelForRestriction: writes land at atomic indices,
             //   not the job's own sequential index.
             // NativeDisableUnsafePtrRestriction: Interlocked requires a raw pointer
@@ -346,7 +346,7 @@ namespace Surface.Core
             /// <summary>
             /// Computes UV0 for a surface hit using linear projection onto the arm axes.
             ///
-            /// V — along arm axis (Axis, wrist→elbow):
+            /// V — along arm axis (Axis, wrist->elbow):
             ///   Dot(fromWrist, Axis) gives physical distance along the arm. Divided by
             ///   Height and centered, then flipped (1f -) so V=0 is the elbow-side of
             ///   the display window and V=1 is the wrist-side.

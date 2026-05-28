@@ -26,7 +26,7 @@ namespace Surface.Core
     ///   flood from reaching background geometry that is depth-adjacent to the arm.
     ///
     /// CYLINDER GEOMETRY
-    /// The cylinder is defined along the wrist→elbow axis with three constraints:
+    /// The cylinder is defined along the wrist->elbow axis with three constraints:
     ///   Radial:  perpendicular distance from axis ≤ MaxRadialDist.
     ///   Axial:   cell must be ≥ MinFromWrist past the wrist (negative = hand side)
     ///            and ≤ MaxFromElbow past the elbow (positive = upper arm side).
