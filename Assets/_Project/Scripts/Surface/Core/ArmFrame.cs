@@ -17,7 +17,7 @@ namespace Surface.Core
     /// stable regardless of the arm's irregular geometry.
     ///
     /// The coordinate frame produces three axes:
-    ///   Axis      — wrist→elbow unit vector (primary arm direction).
+    ///   Axis      — wrist->elbow unit vector (primary arm direction).
     ///   AxisRight — camera-fixed lateral axis; the horizontal edge of the stable viewport.
     ///   AxisUp    — camera-facing arm surface normal; completes the frame.
     ///
@@ -66,7 +66,7 @@ namespace Surface.Core
         public Vector3    WristPos      { get; private set; }
         public Quaternion WristRotation { get; private set; }
         public Vector3    ElbowPos      { get; private set; }
-        // Unit vector pointing wrist→elbow — the primary arm axis.
+        // Unit vector pointing wrist->elbow — the primary arm axis.
         public Vector3    Axis          { get; private set; }
         // Camera-fixed lateral axis. Anchoring this to the camera rather than the bone
         // means the UV projection never rotates when the user pronates their wrist —
@@ -121,7 +121,7 @@ namespace Surface.Core
             Transform elbow = bones[ElbowBoneIndex].Transform;
             if (wrist == null || elbow == null) return false;
 
-            // 2. AXIS — build the primary wrist→elbow direction.
+            // 2. AXIS — build the primary wrist->elbow direction.
             Vector3 wristPos = wrist.position;
             Vector3 elbowPos = elbow.position;
             Vector3 delta    = elbowPos - wristPos;
@@ -187,8 +187,8 @@ namespace Surface.Core
             //
             // Project the arm axis onto the camera's horizontal and vertical screen axes
             // to determine whether the arm appears more horizontal or vertical.
-            // Dot(axis, cam.right) ≈ ±1 → arm is horizontal (landscape).
-            // Dot(axis, cam.up)    ≈ ±1 → arm is vertical (portrait).
+            // Dot(axis, cam.right) ≈ ±1 -> arm is horizontal (landscape).
+            // Dot(axis, cam.up)    ≈ ±1 -> arm is vertical (portrait).
             float screenX = Vector3.Dot(axis, _cam.transform.right);
             float screenY = Vector3.Dot(axis, _cam.transform.up);
             // Portrait  (arm vertical):   target = 0     — no UV rotation needed.
