@@ -788,11 +788,11 @@ MonoBehaviour:
   maxRadialDist: 0.15
   minFromWrist: -0.12
   maxFromElbow: 0.02
-  connectivityThreshold: 0.025
+  connectivityThreshold: 0.01
   smoothPasses: 3
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
-  maxQuadEdge: 0.03
+  maxQuadEdge: 0.014
   displayWidth: 0.5
   displayHeight: 0.5
   displayOffset: 0.02

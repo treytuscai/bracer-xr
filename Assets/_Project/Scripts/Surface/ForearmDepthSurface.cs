@@ -87,7 +87,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
     [Range(0f, 0.10f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
-    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.025f;
+    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.010f;
 
     // ------------------------------------------------------------------
     // SMOOTHING
@@ -114,7 +114,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.03f;
+    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.014f;
 
     // ------------------------------------------------------------------
     // DISPLAY
