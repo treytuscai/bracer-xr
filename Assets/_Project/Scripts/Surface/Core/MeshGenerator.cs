@@ -18,13 +18,10 @@ namespace Surface.Core
     ///   1. ComputeProjectedCenterJob — finds the mean lateral position of all surface hits
     ///      along AxisRight. This "projected center" keeps the UV window centered on the
     ///      visible arm patch rather than on the wrist origin. Must complete synchronously
-    ///      before Pass 3 because VertexJob needs the scalar result.
-    ///   2. RowBoundsJob — per-row min/max lateral extents. VertexJob uses these to compute
-    ///      each vertex's distance to its row's nearest mesh edge, written to UV1 for the
-    ///      shader's soft alpha fade at the irregular mesh boundary.
-    ///   3. VertexJob — for each surface cell, atomically claims a dense vertex slot and
-    ///      computes the local-space position, UV0, and UV1 edge distance.
-    ///   4. TriangleJob — for each 2×2 grid block, emits a quad (2 tris) or triangle if
+    ///      before Pass 2 because VertexJob needs the scalar result.
+    ///   2. VertexJob — for each surface cell, atomically claims a dense vertex slot and
+    ///      computes the local-space position and UV0.
+    ///   3. TriangleJob — for each 2×2 grid block, emits a quad (2 tris) or triangle if
     ///      3 of 4 corners are present, rejecting faces whose edges exceed MaxQuadEdgeSq.
     ///
     /// UV DESIGN (see ArmFrame.cs for full rationale)
@@ -145,46 +142,25 @@ namespace Surface.Core
             finalProjCenter = totalCount > 0 ? totalSum / totalCount : 0f;
 
             // ------------------------------------------------------------------
-            // PASS 2: Row bounds
-            // Each job element processes one full row, writing the min and max
-            // lateral projections along AxisRight. VertexJob reads these to compute
-            // each vertex's distance to its row's mesh edge for the shader fade.
-            // ------------------------------------------------------------------
-            var boundsJob = new RowBoundsJob
-            {
-                Hits = surfBuf.Hits, IsSurface = surfBuf.IsSurface,
-                Cols = cols, WristPos = wristPos, AxisRight = axisRight,
-                RowMin = meshBuf.RowMin, RowMax = meshBuf.RowMax
-            };
-            handle = boundsJob.Schedule(rows, 32);
-
-            // ------------------------------------------------------------------
-            // PASS 3: Vertex and UV generation
-            // Atomically claims a dense vertex slot for each surface cell and
-            // computes world->local position, UV0, and UV1 edge distance.
-            // NativeDisableParallelForRestriction: writes land at atomic indices,
-            //   not the job's own sequential index.
-            // NativeDisableUnsafePtrRestriction: Interlocked requires a raw pointer
-            //   to Counter that Burst's safety system would otherwise block.
+            // PASS 2: Vertex and UV generation
             // ------------------------------------------------------------------
             var vertJob = new VertexJob
             {
                 Hits = surfBuf.Hits, IsSurface = surfBuf.IsSurface,
-                RowMin = meshBuf.RowMin, RowMax = meshBuf.RowMax,
                 Cols = cols,
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
                 ProjCenter = finalProjCenter, Pronation = pronation, Orientation = orientation,
                 Offset = DisplayOffset, Width = DisplayWidth, Height = DisplayHeight,
                 LandscapeUOffset = LandscapeUOffset,
                 WorldToLocal = worldToLocal,
-                OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs, OutEdgeDists = meshBuf.EdgeDists,
+                OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs,
                 CellToVert = meshBuf.CellToVert,
                 Counter = meshBuf.Counter
             };
-            handle = vertJob.Schedule(totalCells, 64, handle);
+            handle = vertJob.Schedule(totalCells, 64);
 
             // ------------------------------------------------------------------
-            // PASS 4: Triangle generation
+            // PASS 3: Triangle generation
             // Each job element is one 2×2 grid block. Emits a full quad (2 tris)
             // when all 4 corners are present, or a single triangle when exactly 3
             // are present. Faces whose world-space edges exceed MaxQuadEdgeSq are
@@ -256,44 +232,7 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Scans each row and records the min and max lateral projections (along AxisRight)
-        /// of all surface cells in that row. VertexJob reads these to compute per-vertex
-        /// edge distance for the shader's soft alpha fade at the irregular mesh perimeter.
-        /// </summary>
-        [BurstCompile]
-        struct RowBoundsJob : IJobParallelFor
-        {
-            [ReadOnly] public NativeArray<Vector3> Hits;
-            [ReadOnly] public NativeArray<bool>    IsSurface;
-            public int     Cols;
-            public Vector3 WristPos, AxisRight;
-            [WriteOnly] public NativeArray<float> RowMin;
-            [WriteOnly] public NativeArray<float> RowMax;
-
-            public void Execute(int r)
-            {
-                float min  = float.MaxValue;
-                float max  = float.MinValue;
-                bool  found = false;
-
-                for (int c = 0; c < Cols; c++)
-                {
-                    int idx = r * Cols + c;
-                    if (!IsSurface[idx]) continue;
-
-                    float proj = Vector3.Dot(Hits[idx] - WristPos, AxisRight);
-                    if (proj < min) min = proj;
-                    if (proj > max) max = proj;
-                    found = true;
-                }
-
-                RowMin[r] = found ? min : 0;
-                RowMax[r] = found ? max : 0;
-            }
-        }
-
-        /// <summary>
-        /// Converts each surface grid cell into a dense vertex with position, UV, and edge distance.
+        /// Converts each surface grid cell into a dense vertex with position and UV.
         /// Non-surface cells write CellToVert = -1 so TriangleJob skips them.
         /// </summary>
         [BurstCompile]
@@ -301,7 +240,6 @@ namespace Surface.Core
         {
             [ReadOnly] public NativeArray<Vector3> Hits;
             [ReadOnly] public NativeArray<bool>    IsSurface;
-            [ReadOnly] public NativeArray<float>   RowMin, RowMax;
             public int     Cols;
             public Vector3 WristPos, Axis, AxisRight;
             public float   ProjCenter, Pronation, Orientation, Offset, Width, Height, LandscapeUOffset;
@@ -311,7 +249,6 @@ namespace Surface.Core
             // Burst's parallel-write safety check on these output arrays.
             [NativeDisableParallelForRestriction] public NativeArray<Vector3> OutVerts;
             [NativeDisableParallelForRestriction] public NativeArray<Vector2> OutUVs;
-            [NativeDisableParallelForRestriction] public NativeArray<Vector2> OutEdgeDists;
 
             [WriteOnly] public NativeArray<int> CellToVert;
 
@@ -329,18 +266,8 @@ namespace Surface.Core
                 int vIdx = Interlocked.Increment(ref ((int*)Counter.GetUnsafePtr())[0]) - 1;
                 CellToVert[i] = vIdx;
 
-                Vector3 hit = Hits[i];
-                int r = i / Cols;
-
-                // Edge distance: how far this vertex sits from its row's nearest boundary.
-                // Min(left distance, right distance) — clamped to 0 for any out-of-row vertex.
-                // The shader reads this from UV1.x to fade alpha toward the mesh perimeter.
-                float projR = Vector3.Dot(hit - WristPos, AxisRight);
-                float dist  = Mathf.Max(0f, Mathf.Min(projR - RowMin[r], RowMax[r] - projR));
-
-                OutVerts[vIdx]     = WorldToLocal.MultiplyPoint3x4(hit);
-                OutUVs[vIdx]       = CalculateUV(hit);
-                OutEdgeDists[vIdx] = new Vector2(dist, 0f);
+                OutVerts[vIdx] = WorldToLocal.MultiplyPoint3x4(Hits[i]);
+                OutUVs[vIdx]   = CalculateUV(Hits[i]);
             }
 
             /// <summary>

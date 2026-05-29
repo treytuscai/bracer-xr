@@ -785,7 +785,7 @@ MonoBehaviour:
   surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
   handMaskRadius: 0.03
   pixelStride: 6
-  maxRadialDist: 0.15
+  maxRadialDist: 0.1
   minFromWrist: -0.12
   maxFromElbow: 0.02
   connectivityThreshold: 0.01

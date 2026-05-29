@@ -415,10 +415,6 @@ public class ForearmDepthSurface : MonoBehaviour
         // directly to the GPU without first copying into a managed List<>.
         _mesh.SetVertices(_meshBuffer.Vertices, 0, _meshBuffer.VertexCount);
         _mesh.SetUVs(0, _meshBuffer.UVs, 0, _meshBuffer.VertexCount);
-        // UV1 carries per-vertex distance to the row's mesh boundary edge.
-        // ForearmProjection.shader reads this as edgeDist to drive a soft
-        // alpha fade at the irregular mesh perimeter.
-        _mesh.SetUVs(1, _meshBuffer.EdgeDists, 0, _meshBuffer.VertexCount);
 
         // SetIndices with NativeArray<int> avoids the managed array allocation
         // that SetTriangles(List<int>) would require.

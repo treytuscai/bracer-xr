@@ -4,12 +4,10 @@
 // Input channels (set by MeshGenerator and ForearmDepthSurface.UpdateUnityMesh):
 //   POSITION   — local-space vertex position (world hit transformed by WorldToLocal)
 //   TEXCOORD0  — UV0: display coordinates (linear projection + pronation scroll + orientation rotation)
-//   TEXCOORD1  — UV1.x: world-space distance from this vertex to its row's nearest mesh boundary (meters)
 //
 // Per-material properties (set from C# each frame):
 //   _MainTex     — UI texture to display on the arm surface (set in Inspector)
 //   _Color       — tint multiplied against the texture (white = no tint)
-//   _FadeWidth   — distance over which alpha fades to 0 at the mesh edge (meters, Inspector)
 //   _TouchPoint  — set by ForearmInteraction.LateUpdate; drives the debug circle overlay
 //   _TouchRadius — radius of the debug circle in UV space (Inspector)
 
@@ -19,8 +17,6 @@ Shader "Custom/ForearmProjection"
     {
         _MainTex    ("UI Texture", 2D)                          = "white" {}
         _Color      ("Tint", Color)                             = (1,1,1,1)
-        // World-space meters. Larger = wider fade zone at the irregular mesh boundary.
-        _FadeWidth  ("Edge Fade Width (m)", Float)              = 0.015
         // Set by ForearmInteraction each LateUpdate: xy = touch UV, z = active (1/0), w = unused.
         _TouchPoint ("Touch Debug Point (uv.xy, active, _)", Vector) = (0,0,0,0)
         _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.02
@@ -57,7 +53,6 @@ Shader "Custom/ForearmProjection"
             // and Unity uploads uniforms individually each frame — measurable cost on Quest.
             CBUFFER_START(UnityPerMaterial)
                 half4  _Color;
-                float  _FadeWidth;
                 float4 _TouchPoint;
                 float  _TouchRadius;
             CBUFFER_END
@@ -67,7 +62,6 @@ Shader "Custom/ForearmProjection"
             {
                 float4 positionOS : POSITION;
                 float2 uv         : TEXCOORD0; // UV0: display coordinates (see MeshGenerator.CalculateUV)
-                float2 edgeDist   : TEXCOORD1; // UV1: x = world-space distance to row boundary edge (m)
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -75,7 +69,6 @@ Shader "Custom/ForearmProjection"
             {
                 float4 positionCS : SV_POSITION;
                 float2 uv         : TEXCOORD0;
-                float  edgeDist   : TEXCOORD1;
                 // Required for Quest stereo rendering. Without this macro pair the mesh
                 // renders correctly in only one eye.
                 UNITY_VERTEX_OUTPUT_STEREO
@@ -89,8 +82,6 @@ Shader "Custom/ForearmProjection"
 
                 output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
                 output.uv         = input.uv;
-                // Only the x component is meaningful; y is always 0 (see MeshGenerator).
-                output.edgeDist   = input.edgeDist.x;
 
                 return output;
             }
@@ -109,13 +100,6 @@ Shader "Custom/ForearmProjection"
 
                 float2 uv  = input.uv;
                 half4  col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
-
-                // Edge fade: edgeDist is a world-space meter value (from RowBoundsJob via UV1),
-                // so _FadeWidth is device-independent — the same value works at any resolution.
-                // NOTE: RowBoundsJob computes per-row lateral extents only (along AxisRight),
-                // so this fade applies to the left/right sides of the mesh. The top and bottom
-                // (axial) edges do not have a computed edgeDist and cut off sharply.
-                col.a *= smoothstep(0.0, _FadeWidth, input.edgeDist);
 
                 // Debug overlay: draw a filled green circle at the active touch UV.
                 // _TouchPoint.z is the active flag set by ForearmInteraction each LateUpdate.

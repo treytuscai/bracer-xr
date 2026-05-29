@@ -44,11 +44,6 @@ namespace Surface.Buffer
         /// </summary>
         public NativeArray<Vector2> UVs;
         /// <summary>
-        /// UV1: X = distance from vertex to its row's nearest mesh boundary edge.
-        /// ForearmProjection.shader reads this to drive a soft alpha fade at the mesh perimeter.
-        /// </summary>
-        public NativeArray<Vector2> EdgeDists;
-        /// <summary>
         /// Triangle index buffer (size = (rows-1)*(cols-1)*6 maximum).
         /// Written atomically by TriangleJob; only [0..TriangleCount) is valid.
         /// </summary>
@@ -64,10 +59,6 @@ namespace Surface.Buffer
         /// TriangleJob reads this to convert grid-space quad corners to vertex indices.
         /// </summary>
         public NativeArray<int> CellToVert;
-        /// <summary> Minimum lateral projection (along AxisRight) of any surface cell in this row. </summary>
-        public NativeArray<float> RowMin;
-        /// <summary> Maximum lateral projection (along AxisRight) of any surface cell in this row. </summary>
-        public NativeArray<float> RowMax;
 
         // ------------------------------------------------------------------
         // ATOMIC COUNTERS AND FINAL COUNTS
@@ -98,24 +89,16 @@ namespace Surface.Buffer
             // A grid of (R × C) cells forms at most (R-1)×(C-1) quads; each quad = 2 tris = 6 indices.
             int maxTris = (rows - 1) * (cols - 1) * 6;
 
-            // RowMin/RowMax are indexed by row, so we must also verify rows hasn't changed
-            // independently of totalCells. A row/col swap (e.g. 10×20 -> 20×10) keeps the
-            // same total but leaves RowMin/RowMax at the wrong length, causing out-of-bounds
-            // writes in RowBoundsJob.
             if (Vertices.IsCreated  &&
                 Vertices.Length  == totalCells &&
-                Triangles.Length == maxTris    &&
-                RowMin.Length    == rows) return;
+                Triangles.Length == maxTris) return;
 
             Dispose();
 
             Vertices   = new NativeArray<Vector3>(totalCells, Allocator.Persistent);
             UVs        = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
-            EdgeDists  = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
             Triangles  = new NativeArray<int>(maxTris,        Allocator.Persistent);
             CellToVert = new NativeArray<int>(totalCells,     Allocator.Persistent);
-            RowMin     = new NativeArray<float>(rows,         Allocator.Persistent);
-            RowMax     = new NativeArray<float>(rows,         Allocator.Persistent);
             Counter    = new NativeArray<int>(2,              Allocator.Persistent);
         }
 
@@ -129,11 +112,8 @@ namespace Surface.Buffer
         {
             if (Vertices.IsCreated)   Vertices.Dispose();
             if (UVs.IsCreated)        UVs.Dispose();
-            if (EdgeDists.IsCreated)  EdgeDists.Dispose();
             if (Triangles.IsCreated)  Triangles.Dispose();
             if (CellToVert.IsCreated) CellToVert.Dispose();
-            if (RowMin.IsCreated)     RowMin.Dispose();
-            if (RowMax.IsCreated)     RowMax.Dispose();
             if (Counter.IsCreated)    Counter.Dispose();
         }
     }
