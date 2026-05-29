@@ -26,12 +26,16 @@ namespace Surface.Core
     ///   flood from reaching background geometry that is depth-adjacent to the arm.
     ///
     /// CYLINDER GEOMETRY
-    /// The cylinder is defined along the wrist->elbow axis with three constraints:
-    ///   Radial:  perpendicular distance from axis ≤ MaxRadialDist.
-    ///   Axial:   cell must be ≥ MinFromWrist past the wrist (negative = hand side)
-    ///            and ≤ MaxFromElbow past the elbow (positive = upper arm side).
-    /// MinFromWrist is negative so the cylinder extends slightly toward the hand,
-    /// compensating for the wrist bone's position offset from the visible skin edge.
+    /// Two radii define the arm cylinder along the wrist->elbow axis:
+    ///   SeedRadialDist:  tight inner cylinder. Only cells within this radius are
+    ///                    enqueued as seeds — they must be confidently forearm.
+    ///   FloodRadialDist: wider outer wall. The BFS may expand up to this radius,
+    ///                    capturing the full arm curvature without risking runaway
+    ///                    growth into background geometry at the arm's edge.
+    ///   Axial:           cell must be ≥ MinFromWrist past the wrist (negative = hand
+    ///                    side) and ≤ MaxFromElbow past the elbow (positive = upper arm).
+    ///                    MinFromWrist is negative so the cylinder extends slightly toward
+    ///                    the hand to compensate for the wrist bone's position offset.
     /// </summary>
     public class SurfaceExtractor
     {
@@ -41,8 +45,10 @@ namespace Surface.Core
         // Values are squared on each Schedule call so runtime changes take effect
         // without requiring reconstruction.
         // ------------------------------------------------------------------
-        /// <summary> Max perpendicular distance from the arm axis (cylinder radius, meters). </summary>
-        public float MaxRadialDist;
+        /// <summary> Max radial distance for seed cells — tight inner cylinder that must be confident forearm (meters). </summary>
+        public float SeedRadialDist;
+        /// <summary> Max radial distance for flood cells — wider wall that stops runaway growth (meters). </summary>
+        public float FloodRadialDist;
         /// <summary> Min signed distance along the axis from the wrist (negative = hand side, meters). </summary>
         public float MinFromWrist;
         /// <summary> Max signed distance along the axis past the elbow (meters). </summary>
@@ -55,12 +61,14 @@ namespace Surface.Core
         /// the caller (ForearmDepthSurface) via Inspector range attributes.
         /// </summary>
         public SurfaceExtractor(
-            float maxRadialDist,
+            float seedRadialDist,
+            float floodRadialDist,
             float minFromWrist,
             float maxFromElbow,
             float connectivityThreshold)
         {
-            MaxRadialDist         = maxRadialDist;
+            SeedRadialDist        = seedRadialDist;
+            FloodRadialDist       = floodRadialDist;
             MinFromWrist          = minFromWrist;
             MaxFromElbow          = maxFromElbow;
             ConnectivityThreshold = connectivityThreshold;
@@ -82,8 +90,9 @@ namespace Surface.Core
 
             // Pre-square thresholds once here so the hot-path Execute methods
             // can use sqrMagnitude comparisons without sqrt.
-            float maxRSq = MaxRadialDist         * MaxRadialDist;
-            float connSq = ConnectivityThreshold * ConnectivityThreshold;
+            float seedRSq  = SeedRadialDist       * SeedRadialDist;
+            float floodRSq = FloodRadialDist       * FloodRadialDist;
+            float connSq   = ConnectivityThreshold * ConnectivityThreshold;
 
             var seedJob = new SeedFromAxisJob
             {
@@ -95,7 +104,7 @@ namespace Surface.Core
                 WristPos       = wristPos,
                 ElbowPos       = elbowPos,
                 Axis           = axis,
-                MaxRSq         = maxRSq,
+                MaxRSq         = seedRSq,
                 MinFromWrist   = MinFromWrist,
                 MaxFromElbow   = MaxFromElbow
             };
@@ -114,7 +123,7 @@ namespace Surface.Core
                 ElbowPos     = elbowPos,
                 Axis         = axis,
                 ConnSq       = connSq,
-                MaxRSq       = maxRSq,
+                MaxRSq       = floodRSq,
                 MinFromWrist = MinFromWrist,
                 MaxFromElbow = MaxFromElbow
             };

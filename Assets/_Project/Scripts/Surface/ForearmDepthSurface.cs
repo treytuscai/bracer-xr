@@ -18,9 +18,10 @@ using Surface.Core;
 ///                     flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Flag grid cells that fall within handMaskRadius of any downsampled
 ///                     hand mesh vertex so they are excluded from the arm surface.
-///   4. Extraction:    Mark cells inside a seed cylinder along the wrist->elbow axis, then
-///                     BFS-flood from those seeds across depth-connected neighbors to grow
-///                     the full forearm patch (IsSurface flags in SurfaceBuffer).
+///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
+///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
+///                     across depth-connected neighbors up to a wider flood cylinder
+///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
 ///   5. Smoothing:     Laplacian passes pull each surface vertex toward its neighbors,
 ///                     then boundary contour smoothing applies a 1D moving average along
 ///                     the mesh edge to reduce the staircase from the pixel grid.
@@ -73,14 +74,18 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // ------------------------------------------------------------------
     // SEED + FLOOD
-    // These four params define the imaginary cylinder used to isolate the
-    // forearm. maxRadialDist is the cylinder radius; minFromWrist and
-    // maxFromElbow cap the ends along the arm axis. connectivityThreshold
-    // gates BFS expansion: adjacent cells must be this close in 3D to be
-    // considered a continuous surface rather than a depth discontinuity.
+    // seedRadialDist defines the tight inner cylinder: only cells very close
+    // to the wrist->elbow axis are trusted as definite forearm and used as
+    // BFS starting points. floodRadialDist is the looser outer wall that lets
+    // the flood grow to capture the full arm curvature while still preventing
+    // runaway expansion into background geometry. The depth crop uses
+    // floodRadialDist as its padding so the readback region covers the full
+    // area the flood can reach. connectivityThreshold gates each BFS step.
     // ------------------------------------------------------------------
     [Header("Seed + Flood")]
-    [Tooltip("Max perpendicular distance from the arm axis to count as inside the seed cylinder (m)")]
+    [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
+    [Range(0.02f, 0.12f)] public float seedRadialDist = 0.05f;
+    [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
     [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
@@ -198,7 +203,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
         _handMask = new HandMask(handMesh, handMaskRadius);
         _depthReadback = new DepthReadback();
-        _surfaceExtractor = new SurfaceExtractor(maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
+        _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight, landscapeUOffset);
         _forearmModel = new ForearmModel();
