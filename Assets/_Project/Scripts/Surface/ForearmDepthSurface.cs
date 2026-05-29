@@ -126,8 +126,6 @@ public class ForearmDepthSurface : MonoBehaviour
     // These define the UV projection window on the arm surface.
     // displayWidth/Height are the physical dimensions of the display region.
     // displayOffset shifts the window center along the arm axis from the wrist.
-    // landscapeUOffset corrects for the inner-forearm seam when the arm is
-    // held horizontally in the camera frame.
     // ------------------------------------------------------------------
     [Header("Display")]
     [Tooltip("Physical width of the display region on the arm (m)")]
@@ -136,9 +134,6 @@ public class ForearmDepthSurface : MonoBehaviour
     public float displayHeight = 0.4f;
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
     public float displayOffset = 0.07f;
-    [Tooltip("Extra U offset (in turns) applied when the arm is in landscape orientation, " +
-             "to shift the texture start away from the inner forearm")]
-    [Range(-1f, 1f)] public float landscapeUOffset = 0.5f;
 
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES
@@ -205,7 +200,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _depthReadback = new DepthReadback();
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
-        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight, landscapeUOffset);
+        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
         _forearmModel = new ForearmModel();
     }
 
@@ -458,12 +453,8 @@ public class ForearmDepthSurface : MonoBehaviour
     public SurfaceBuffer SurfaceBuf  => _surfaceBuffer;
     public int           SurfaceRows => _rows;
     public int           SurfaceCols => _cols;
-    // Mean lateral projection of the surface along AxisRight; used externally
-    // to keep UV-space coordinates centered on the visible arm patch.
     public float         ProjCenter  => _projCenter;
     public Material      SurfaceMat  => _mat;
-
-    public float     LandscapeUOffset => landscapeUOffset;
 
     // ------------------------------------------------------------------
     // PUBLIC API — HAND VERTICES

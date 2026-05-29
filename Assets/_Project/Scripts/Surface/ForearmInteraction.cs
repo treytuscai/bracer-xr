@@ -190,9 +190,7 @@ public class ForearmInteraction : MonoBehaviour
         float u = ((projR - _surface.ProjCenter) /
                     Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.5f;
 
-        // Pronation scroll and landscape seam offset.
-        bool isLandscape = Mathf.Abs(_surface.OrientationAngle) > Mathf.PI * 0.25f;
-        u += _surface.PronationAngle / Mathf.PI + (isLandscape ? _surface.LandscapeUOffset : 0f);
+        u += _surface.PronationAngle / Mathf.PI;
 
         // 2D rotation around (0.5, 0.5) for portrait/landscape orientation.
         float cu = u - 0.5f, cv = v - 0.5f;

@@ -34,10 +34,6 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         private const int WristBoneIndex = 19;
         private const int ElbowBoneIndex = 11;
-        // Local Y-axis (up direction) of the wrist bone in the IOBT skeleton rig.
-        // Rotating this to world space gives the direction the back of the hand faces,
-        // used as the reference for measuring forearm pronation (twist).
-        private static readonly Vector3 WristUpLocal = Vector3.up;
 
         // ------------------------------------------------------------------
         // REFERENCES
@@ -153,34 +149,27 @@ namespace Surface.Core
             // The result is the arm's surface normal pointing generally toward the camera.
             AxisUp = Vector3.Cross(AxisRight, axis).normalized;
 
-            // 4. PRONATION (signed forearm twist angle around Axis)
-            // Measures how far the arm has rotated relative to the camera-fixed AxisRight.
-            // The signed angle between boneRight (bone's intrinsic lateral direction) and
-            // AxisRight is the scroll offset added to U in MeshGenerator.
-            // Unit quat × unit vector = unit vector, so no normalization needed here.
-            Vector3 wristUpWorld = wrist.rotation * WristUpLocal;
-
-            // Cross(axis, wristUpWorld) projects wristUpWorld onto the plane perpendicular
-            // to the arm axis, yielding the wrist bone's "right" direction in that plane.
-            Vector3 boneRightRaw = Vector3.Cross(axis, wristUpWorld);
-            if (boneRightRaw.sqrMagnitude >= 0.001f)
+            // 4. PRONATION (signed forearm twist from palm-down reference)
+            // In the IOBT rig wrist.up points toward the palm, so -wrist.up is the dorsal
+            // (back-of-hand) direction. Cross(axis, -wrist.up) projects that onto the plane
+            // perpendicular to the arm axis, giving boneRight (the wrist's lateral direction).
+            // palmDownRef is that same projection when the arm is in the palm-down pose
+            // (dorsal faces worldUp), so the angle between them is 0 at palm-down and pi at
+            // palm-up — gravity-anchored, consistent across portrait and landscape orientations.
+            Vector3 boneRightRaw = Vector3.Cross(axis, -wrist.up);
+            Vector3 palmDownRef  = Vector3.Cross(axis, Vector3.up);
+            if (boneRightRaw.sqrMagnitude >= 0.001f && palmDownRef.sqrMagnitude >= 0.001f)
             {
                 Vector3 boneRight = boneRightRaw.normalized;
+                palmDownRef       = palmDownRef.normalized;
 
-                // Compute the signed angle from boneRight to AxisRight, measured around Axis.
-                // Dot(A, B) = cos(θ) for unit vectors.
-                float cos = Vector3.Dot(boneRight, AxisRight);
-                // The scalar triple product (A × B) · C equals sin(θ) with a sign determined
-                // by whether the rotation from A to B is counterclockwise (positive) or
-                // clockwise (negative) when viewed along C. Using Axis as C makes this the
-                // signed twist of the wrist relative to the camera-facing frame.
-                float sin = Vector3.Dot(Vector3.Cross(boneRight, AxisRight), axis);
+                float cos          = Vector3.Dot(boneRight, palmDownRef);
+                float sin          = Vector3.Dot(Vector3.Cross(boneRight, palmDownRef), axis);
                 float rawPronation = Mathf.Atan2(sin, cos);
                 _smoothedPronation = Mathf.Lerp(_smoothedPronation, rawPronation, 0.15f);
             }
-            // If boneRightRaw is degenerate (wrist-up aligns with arm axis, e.g. fully
-            // extended arm pointing straight up), skip the update and hold the last value
-            // rather than dropping the entire frame.
+            // palmDownRef degenerates when axis is parallel to worldUp (arm straight up/down).
+            // boneRightRaw degenerates when dorsal aligns with axis. Both cases hold last value.
             Pronation = _smoothedPronation;
 
             // 5. SCREEN ORIENTATION SNAPPING (portrait vs. landscape)

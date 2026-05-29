@@ -53,9 +53,6 @@ namespace Surface.Core
         public float DisplayWidth;
         // Physical height of the display region along the arm; normalizes the V axis (meters).
         public float DisplayHeight;
-        // Additional U offset applied in landscape orientation to shift the texture start
-        // away from the inner forearm seam (UV turns, i.e. 0.5 = half-wrap).
-        public float LandscapeUOffset;
 
         // Persistent partial-sum arrays for the batch center reduction job.
         // Sized to numBatches; grow-only — never shrunk to avoid allocation churn
@@ -71,14 +68,12 @@ namespace Surface.Core
             float maxQuadEdge,
             float displayOffset,
             float displayWidth,
-            float displayHeight,
-            float landscapeUOffset)
+            float displayHeight)
         {
-            MaxQuadEdgeSq    = maxQuadEdge * maxQuadEdge;
-            DisplayOffset    = displayOffset;
-            DisplayWidth     = displayWidth;
-            DisplayHeight    = displayHeight;
-            LandscapeUOffset = landscapeUOffset;
+            MaxQuadEdgeSq = maxQuadEdge * maxQuadEdge;
+            DisplayOffset = displayOffset;
+            DisplayWidth  = displayWidth;
+            DisplayHeight = displayHeight;
         }
 
         /// <summary>
@@ -151,7 +146,6 @@ namespace Surface.Core
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
                 ProjCenter = finalProjCenter, Pronation = pronation, Orientation = orientation,
                 Offset = DisplayOffset, Width = DisplayWidth, Height = DisplayHeight,
-                LandscapeUOffset = LandscapeUOffset,
                 WorldToLocal = worldToLocal,
                 OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs,
                 CellToVert = meshBuf.CellToVert,
@@ -242,7 +236,7 @@ namespace Surface.Core
             [ReadOnly] public NativeArray<bool>    IsSurface;
             public int     Cols;
             public Vector3 WristPos, Axis, AxisRight;
-            public float   ProjCenter, Pronation, Orientation, Offset, Width, Height, LandscapeUOffset;
+            public float   ProjCenter, Pronation, Orientation, Offset, Width, Height;
             public Matrix4x4 WorldToLocal;
 
             // Non-sequential write indices (atomic slot allocation) require disabling
@@ -284,7 +278,7 @@ namespace Surface.Core
             ///   rather than the wrist. Divided by Width and offset to [0,1].
             ///   Pronation/PI is then added as a linear scroll: rotating the wrist shifts
             ///   which column of the texture is visible without rotating the UV frame.
-            ///   LandscapeUOffset shifts the seam away from the inner forearm in landscape.
+            ///   Pronation = 0 at palm-down (gravity-anchored), consistent across orientations.
             ///
             /// Orientation rotation — a 2D rotation of the UV pair around (0.5, 0.5):
             ///   Portrait  (Orientation ≈ 0):    no change.
@@ -301,10 +295,9 @@ namespace Surface.Core
                 float projR = Vector3.Dot(fromWrist, AxisRight);
                 float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.5f;
 
-                bool isLandscape = Mathf.Abs(Orientation) > Mathf.PI * 0.25f;
-                u += Pronation / Mathf.PI + (isLandscape ? LandscapeUOffset : 0f);
+                u += Pronation / Mathf.PI;
 
-                // Rotate UV around the centre point (0.5, 0.5).
+                // Rotate UV around the center point (0.5, 0.5).
                 float cu = u - 0.5f, cv = v - 0.5f;
                 float cosA = Mathf.Cos(Orientation), sinA = Mathf.Sin(Orientation);
                 return new Vector2(cu * cosA - cv * sinA + 0.5f,
