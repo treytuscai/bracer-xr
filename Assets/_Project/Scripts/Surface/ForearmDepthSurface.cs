@@ -131,11 +131,11 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Display")]
     [Tooltip("Physical width of the display region on the arm (m)")]
-    public float displayWidth = 0.5f;
+    public float displayWidth = 0.2f;
     [Tooltip("Physical height of the display region along the arm (m)")]
-    public float displayHeight = 0.5f;
+    public float displayHeight = 0.4f;
     [Tooltip("How far from the wrist (along axis) to center the display (m)")]
-    public float displayOffset = 0.0f;
+    public float displayOffset = 0.07f;
     [Tooltip("Extra U offset (in turns) applied when the arm is in landscape orientation, " +
              "to shift the texture start away from the inner forearm")]
     [Range(-1f, 1f)] public float landscapeUOffset = 0.5f;

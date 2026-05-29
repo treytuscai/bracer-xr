@@ -47,6 +47,12 @@ public class ForearmInteraction : MonoBehaviour
     // vertex lands at or slightly below it. Too large -> false touches through the arm.
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
+    // Maximum 2D arm-frame distance (along × across) from a hand vertex to the nearest
+    // surface cell for a touch to be considered valid. Roughly 2× touchHoverHeight so the
+    // lateral search radius matches the physical scale of intentional contact.
+    [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
+             "Prevents false touches when no surface cell exists beneath the finger (m)")]
+    [Range(0.005f, 0.05f)] public float maxCellSearchDist = 0.04f;
 
     [Header("Debug")]
     [Tooltip("Draw a green circle on the surface material at the active touch UV")]
@@ -197,9 +203,16 @@ public class ForearmInteraction : MonoBehaviour
 
     /// <summary>
     /// Scans all surface cells and returns the world-space hit of the cell whose
-    /// (along, across) arm-frame projection is nearest to the queried position.
-    /// O(rows × cols) — acceptable given typical grid sizes (~2,000–4,000 cells)
-    /// and that only display-region vertices reach this call after pre-rejection.
+    /// (along, across) arm-frame projection is nearest to the queried position,
+    /// provided that nearest cell is within maxCellSearchDist.
+    ///
+    /// The distance cap is the critical correctness constraint: without it, this
+    /// function always succeeds (returning some cell on the arm), and the above/below
+    /// check in the caller only validates the AxisUp component of the displacement.
+    /// When the arm rotates, AxisUp changes direction so a hand vertex that is far
+    /// from the surface in 3D can still have a near-zero AxisUp projection against a
+    /// distant cell and falsely pass as a touch. Capping the 2D search ensures the
+    /// found cell is actually beneath the finger, not just the nearest cell on the arm.
     /// </summary>
     private bool TryGetNearestSurfaceHit(float along, float across, out Vector3 hit)
     {
@@ -209,10 +222,10 @@ public class ForearmInteraction : MonoBehaviour
         int cols = _surface.SurfaceCols;
         if (rows == 0 || cols == 0) return false;
 
-        SurfaceBuffer buf    = _surface.SurfaceBuf;
-        int           total  = rows * cols;
-        float         bestSq = float.MaxValue;
-        bool          found  = false;
+        SurfaceBuffer buf       = _surface.SurfaceBuf;
+        int           total     = rows * cols;
+        float         bestSq    = maxCellSearchDist * maxCellSearchDist;
+        bool          found     = false;
 
         for (int i = 0; i < total; i++)
         {

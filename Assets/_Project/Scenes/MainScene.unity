@@ -794,9 +794,9 @@ MonoBehaviour:
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
   maxQuadEdge: 0.014
-  displayWidth: 0.5
-  displayHeight: 0.5
-  displayOffset: 0.02
+  displayWidth: 0.2
+  displayHeight: 0.4
+  displayOffset: 0.07
   landscapeUOffset: 0.5
 --- !u!23 &995909437
 MeshRenderer:
