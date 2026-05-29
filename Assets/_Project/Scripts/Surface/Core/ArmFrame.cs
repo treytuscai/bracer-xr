@@ -166,11 +166,12 @@ namespace Surface.Core
                 float cos          = Vector3.Dot(boneRight, palmDownRef);
                 float sin          = Vector3.Dot(Vector3.Cross(boneRight, palmDownRef), axis);
                 float rawPronation = Mathf.Atan2(sin, cos);
-                _smoothedPronation = Mathf.Lerp(_smoothedPronation, rawPronation, 0.15f);
+                _smoothedPronation = Mathf.LerpAngle(
+                    _smoothedPronation * Mathf.Rad2Deg,
+                    rawPronation       * Mathf.Rad2Deg,
+                    0.15f) * Mathf.Deg2Rad;
             }
-            // palmDownRef degenerates when axis is parallel to worldUp (arm straight up/down).
-            // boneRightRaw degenerates when dorsal aligns with axis. Both cases hold last value.
-            Pronation = _smoothedPronation;
+            Pronation = Mathf.Clamp(_smoothedPronation, 0f, Mathf.PI);
 
             // 5. SCREEN ORIENTATION SNAPPING (portrait vs. landscape)
             //

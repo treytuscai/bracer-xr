@@ -128,12 +128,12 @@ public class ForearmDepthSurface : MonoBehaviour
     // displayOffset shifts the window center along the arm axis from the wrist.
     // ------------------------------------------------------------------
     [Header("Display")]
-    [Tooltip("Physical width of the display region on the arm (m)")]
-    public float displayWidth = 0.2f;
-    [Tooltip("Physical height of the display region along the arm (m)")]
+    [Tooltip("Physical height of the display region along the arm (m). Primary value — set this first.")]
     public float displayHeight = 0.4f;
-    [Tooltip("How far from the wrist (along axis) to center the display (m)")]
-    public float displayOffset = 0.07f;
+    [Tooltip("Physical width of one display panel (m). Set equal to displayHeight for square (undistorted) pixels.")]
+    public float displayWidth = 0.4f;
+    [Tooltip("Center of the display window along the arm axis from the wrist (m). Formula: minFromWrist + displayHeight * 0.5")]
+    public float displayOffset = 0.08f;
 
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES

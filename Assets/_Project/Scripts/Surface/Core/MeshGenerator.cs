@@ -267,18 +267,21 @@ namespace Surface.Core
             /// <summary>
             /// Computes UV0 for a surface hit using linear projection onto the arm axes.
             ///
+            /// TWO-PANEL LAYOUT: U=[0,0.5] = dorsal (palm-down) panel, U=[0.5,1] = palmar panel.
+            /// Set DisplayWidth = DisplayHeight in the Inspector for undistorted (square-pixel)
+            /// rendering — both express the physical size of the visible display window in meters.
+            ///
             /// V — along arm axis (Axis, wrist->elbow):
             ///   Dot(fromWrist, Axis) gives physical distance along the arm. Divided by
-            ///   Height and centered, then flipped (1f -) so V=0 is the elbow-side of
-            ///   the display window and V=1 is the wrist-side.
+            ///   Height and centered, then flipped (1f -) so V=0 is the elbow-side and V=1
+            ///   is the wrist-side of the display window.
             ///
             /// U — across arm axis (AxisRight, camera-fixed):
-            ///   Dot(fromWrist, AxisRight) gives lateral distance from the wrist origin.
-            ///   ProjCenter is subtracted to center the window on the visible arm patch
-            ///   rather than the wrist. Divided by Width and offset to [0,1].
-            ///   Pronation/PI is then added as a linear scroll: rotating the wrist shifts
-            ///   which column of the texture is visible without rotating the UV frame.
-            ///   Pronation = 0 at palm-down (gravity-anchored), consistent across orientations.
+            ///   Dot(fromWrist, AxisRight) gives lateral distance from the arm center.
+            ///   Divided by Width and offset to 0.25 (dorsal panel center). A 180° wrist
+            ///   rotation adds Pronation/(2*PI) = 0.5, shifting the center to 0.75 (palmar
+            ///   panel). The camera-fixed AxisRight keeps the viewport upright; wrist rotation
+            ///   scrolls content rather than spinning the UV frame.
             ///
             /// Orientation rotation — a 2D rotation of the UV pair around (0.5, 0.5):
             ///   Portrait  (Orientation ≈ 0):    no change.
@@ -293,9 +296,9 @@ namespace Surface.Core
                 float v = 1f - (((distAlong - Offset) / Mathf.Max(Height, 1e-4f)) + 0.5f);
 
                 float projR = Vector3.Dot(fromWrist, AxisRight);
-                float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.5f;
+                float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.25f;
 
-                u += Pronation / Mathf.PI;
+                u += Pronation / (2f * Mathf.PI);
 
                 // Rotate UV around the center point (0.5, 0.5).
                 float cu = u - 0.5f, cv = v - 0.5f;

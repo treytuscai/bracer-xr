@@ -133,7 +133,7 @@ public class ForearmInteraction : MonoBehaviour
             // dead zone at the display edge when the visible arm patch is offset from the
             // wrist axis origin. Pronation and orientation rotation are intentionally omitted
             // — they are UV mapping adjustments, not physical position changes.
-            float u = ((across - _surface.ProjCenter) / _surface.displayWidth) + 0.5f;
+            float u = ((across - _surface.ProjCenter) / _surface.displayWidth) + 0.25f;
             float v = (along  - displayStart)          / (displayEnd - displayStart);
             if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
 
@@ -188,9 +188,9 @@ public class ForearmInteraction : MonoBehaviour
         // U: linear projection along the camera-fixed lateral axis, centered on ProjCenter.
         float projR = Vector3.Dot(fromWrist, _surface.AxisRight);
         float u = ((projR - _surface.ProjCenter) /
-                    Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.5f;
+                    Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.25f;
 
-        u += _surface.PronationAngle / Mathf.PI;
+        u += _surface.PronationAngle / (2f * Mathf.PI);
 
         // 2D rotation around (0.5, 0.5) for portrait/landscape orientation.
         float cu = u - 0.5f, cv = v - 0.5f;
