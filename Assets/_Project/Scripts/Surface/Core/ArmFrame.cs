@@ -60,7 +60,6 @@ namespace Surface.Core
         // PUBLIC PROPERTIES (valid only after TryUpdate returns true)
         // ------------------------------------------------------------------
         public Vector3    WristPos      { get; private set; }
-        public Quaternion WristRotation { get; private set; }
         public Vector3    ElbowPos      { get; private set; }
         // Unit vector pointing wrist->elbow — the primary arm axis.
         public Vector3    Axis          { get; private set; }
@@ -129,7 +128,6 @@ namespace Surface.Core
             WristPos      = wristPos;
             ElbowPos      = elbowPos;
             Axis          = axis;
-            WristRotation = wrist.rotation;
 
             // 3. ORTHOGONAL FRAME (camera-facing)
             // AxisRight is anchored to the camera, not the bone, to prevent texture spin
