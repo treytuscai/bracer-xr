@@ -147,21 +147,23 @@ public class ForearmInteraction : MonoBehaviour
             float above = Vector3.Dot(pos - surfaceHit, _surface.AxisUp);
             if (above < -touchDepth || above > touchHoverHeight) continue;
 
-            // Full UV computation matching the rendered mesh — only run when the vertex
-            // passed the cheaper physical tests above.
-            Vector2 hitUV = ComputeMeshUV(surfaceHit);
+            // Project the finger onto the surface plane by removing its AxisUp component.
+            // Used for both UV computation and the reported world point.
+            // AxisUp is orthogonal to both Axis and AxisRight, so this projection does not
+            // affect the along/across values that drive U and V — only the depth component
+            // is removed. Using the finger position rather than surfaceHit gives continuous
+            // sub-cell UV precision instead of snapping to the nearest grid cell (~2-3mm error).
+            Vector3 projectedPos = pos - _surface.AxisUp * above;
+            Vector2 hitUV        = ComputeMeshUV(projectedPos);
             if (hitUV.x < 0f || hitUV.x > 1f || hitUV.y < 0f || hitUV.y > 1f) continue;
 
             // Among all qualifying vertices, prefer the one that is closest to or
             // furthest through the surface — the most deliberate contact.
             if (above < bestAbove)
             {
-                bestAbove = above;
-                uv        = hitUV;
-                // Project the hand-tracked vertex onto the surface plane by removing
-                // its AxisUp component. Hand tracking is stereo-stable and more accurate
-                // than the left-eye-only depth reconstruction in surfaceHit.
-                worldPoint = pos - _surface.AxisUp * above;
+                bestAbove  = above;
+                uv         = hitUV;
+                worldPoint = projectedPos;
                 found      = true;
             }
         }
