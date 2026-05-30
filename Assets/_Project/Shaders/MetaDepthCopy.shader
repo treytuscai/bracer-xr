@@ -63,10 +63,16 @@ Shader "Hidden/MetaDepthCopy"
             TEXTURE2D_ARRAY(_EnvironmentDepthTexture);
             SAMPLER(sampler_EnvironmentDepthTexture);
 
-            // Per-material uniform: inverse of _EnvironmentDepthReprojectionMatrices[0]
-            // (left-eye world->clip matrix for the depth frame's historical pose).
-            // Inverted once per frame in C# by DepthReadback.Schedule before this blit runs.
+            // Screen-space hand silhouette rendered each frame by DepthReadback via
+            // CommandBuffer.DrawMesh before this blit. White = hand, black = clear.
+            // Declared outside CBUFFER — textures cannot live inside a constant buffer.
+            TEXTURE2D(_HandMaskTex);
+            SAMPLER(sampler_HandMaskTex);
+
             CBUFFER_START(UnityPerMaterial)
+                // Inverse of _EnvironmentDepthReprojectionMatrices[0]: left-eye world->clip
+                // matrix for the depth frame's historical pose. Inverted once per frame on
+                // the CPU by DepthReadback.Schedule to convert clip->world in this shader.
                 float4x4 _DepthInverseVP;
             CBUFFER_END
 
@@ -123,6 +129,14 @@ Shader "Hidden/MetaDepthCopy"
 
                 // Step 5: perspective divide — converts homogeneous coordinates to world position.
                 float3 worldPos = worldH.xyz / worldH.w;
+
+                // Hand mask: reject pixels covered by the hand silhouette.
+                // _HandMaskTex is a screen-space grayscale texture rendered each frame
+                // via CommandBuffer.DrawRenderer before this blit — white where the hand
+                // mesh covers the screen, black elsewhere. One texture sample replaces
+                // the per-pixel vertex loop, giving pixel-perfect masking at near-zero cost.
+                if (SAMPLE_TEXTURE2D(_HandMaskTex, sampler_HandMaskTex, input.uv).r > 0.5)
+                    return float4(0, 0, 0, -1.0);
 
                 // Return world position in xyz; w carries rawDepth so DepthReadback can
                 // distinguish valid pixels (w >= 0) from the invalid sentinel (w = -1).

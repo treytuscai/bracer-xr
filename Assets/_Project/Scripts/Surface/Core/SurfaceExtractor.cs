@@ -99,7 +99,6 @@ namespace Surface.Core
                 Hits           = buffer.Hits,
                 HasDepth       = buffer.HasDepth,
                 Kept           = buffer.IsSurface,
-                IsHandMasked   = buffer.IsHandMasked,
                 BFSQueueWriter = buffer.BFSQueue.AsParallelWriter(),
                 WristPos       = wristPos,
                 ElbowPos       = elbowPos,
@@ -116,7 +115,6 @@ namespace Surface.Core
                 Hits         = buffer.Hits,
                 HasDepth     = buffer.HasDepth,
                 Kept         = buffer.IsSurface,
-                IsHandMasked = buffer.IsHandMasked,
                 Cols         = cols,
                 Rows         = rows,
                 WristPos     = wristPos,
@@ -146,7 +144,6 @@ namespace Surface.Core
         {
             [ReadOnly] public NativeArray<Vector3> Hits;
             [ReadOnly] public NativeArray<bool>    HasDepth;
-            [ReadOnly] public NativeArray<bool>    IsHandMasked;
             public NativeArray<bool> Kept;
 
             public NativeQueue<int>.ParallelWriter BFSQueueWriter;
@@ -160,7 +157,7 @@ namespace Surface.Core
 
             public void Execute(int index)
             {
-                if (!HasDepth[index] || IsHandMasked[index]) return;
+                if (!HasDepth[index]) return;
 
                 Vector3 p = Hits[index];
 
@@ -202,7 +199,6 @@ namespace Surface.Core
             public NativeQueue<int>  BFSQueue;
             [ReadOnly] public NativeArray<Vector3> Hits;
             [ReadOnly] public NativeArray<bool>    HasDepth;
-            [ReadOnly] public NativeArray<bool>    IsHandMasked;
             public NativeArray<bool> Kept;
 
             public int Rows;
@@ -240,8 +236,7 @@ namespace Surface.Core
 
                         int nIdx = nr * Cols + nc;
 
-                        // Skip cells already kept, missing depth, or inside the hand mask.
-                        if (Kept[nIdx] || !HasDepth[nIdx] || IsHandMasked[nIdx]) continue;
+                        if (Kept[nIdx] || !HasDepth[nIdx]) continue;
 
                         // CONNECTIVITY GATE — reject if the neighbor is too far in 3D.
                         // This prevents the flood from bridging depth discontinuities

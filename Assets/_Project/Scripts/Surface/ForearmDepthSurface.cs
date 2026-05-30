@@ -16,8 +16,10 @@ using Surface.Core;
 ///                     blit through MetaDepthCopy.shader to recover world-space positions,
 ///                     GPU-readback that crop, and unproject each sampled pixel into a
 ///                     flat world-space hit grid (rows × cols).
-///   3. HandMask:      Flag grid cells that fall within handMaskRadius of any downsampled
-///                     hand mesh vertex so they are excluded from the arm surface.
+///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)
+///                     into a screen-space mask texture before the depth blit. MetaDepthCopy
+///                     rejects masked pixels (w=-1) so hand depth arrives as HasDepth=false,
+///                     naturally excluding it from extraction and touch detection.
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
@@ -25,10 +27,7 @@ using Surface.Core;
 ///   5. Smoothing:     Laplacian passes pull each surface vertex toward its neighbors,
 ///                     then boundary contour smoothing applies a 1D moving average along
 ///                     the mesh edge to reduce the staircase from the pixel grid.
-///   6. Freeze:        If any hand-masked cells are detected, lock the last clean surface
-///                     in wrist-local space and re-inject it each frame so the UI stays
-///                     stable during touch interaction. Unfreeze when the hand leaves.
-///   7. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
+///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
 /// </summary>
@@ -45,7 +44,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
-    [Tooltip("Hand SkinnedMeshRenderer for depth masking and occlusion fade")]
+    [Tooltip("Hand SkinnedMeshRenderer for GPU depth masking and touch detection")]
     public SkinnedMeshRenderer handMesh;
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
@@ -54,13 +53,14 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // ------------------------------------------------------------------
     // HAND MASKING
-    // A larger radius excludes more of the hand from the arm surface but
-    // can also clip near-wrist cells. The same radius is passed to the
-    // shader as a sphere test for the soft occlusion fade.
+    // The hand mesh is rendered as a GPU silhouette before each depth blit.
+    // Hand depth pixels are rejected at the shader level (HasDepth=false),
+    // excluding them from surface reconstruction and touch detection.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Padding around hand mesh vertices to prevent incorporating into arm surface")]
-    [Range(0.005f, 0.05f)] public float handMaskRadius = 0.03f;
+    [Tooltip("Outward inflation of the GPU hand silhouette (m). Compensates for AsyncGPUReadback " +
+             "latency during fast hand movement — increase if depth bleeds through.")]
+    [Range(0f, 0.01f)] public float handMaskInflate = 0.001f;
 
     // ------------------------------------------------------------------
     // SAMPLING
@@ -138,9 +138,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES
     // Shared NativeArrays that flow between all pipeline stages each frame.
-    // SurfaceBuffer carries per-cell flags (HasDepth, IsSurface, IsHandMasked)
-    // and the world-space hit grid (Hits). MeshBuffer carries the final
-    // vertex, UV, and index arrays for GPU upload.
+    // SurfaceBuffer carries per-cell flags (HasDepth, IsSurface) and the
+    // world-space hit grid (Hits). MeshBuffer carries the final vertex, UV,
+    // and index arrays for GPU upload.
     // ------------------------------------------------------------------
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
@@ -151,11 +151,10 @@ public class ForearmDepthSurface : MonoBehaviour
     // in sequence inside OnDepthReady.
     // ------------------------------------------------------------------
     private ArmFrame _armFrame;                 // Bone resolution and arm coordinate frame
-    private HandMask _handMask;                 // Flags cells inside the hand mesh volume
+    private HandMask _handMask;                 // Baked mesh for GPU silhouette + touch vertices
     private SurfaceExtractor _surfaceExtractor; // Seed cylinder + BFS flood
     private DepthReadback _depthReadback;       // GPU crop, readback, and world-space unproject
     private MeshGenerator _meshGenerator;       // Vertex/UV/triangle generation
-    private ForearmModel _forearmModel;         // Wrist-local freeze/thaw for occlusion hold
     private SurfaceSmoother _surfaceSmoother;   // Laplacian + boundary contour smoothing
 
     // ------------------------------------------------------------------
@@ -177,8 +176,6 @@ public class ForearmDepthSurface : MonoBehaviour
     // while the previous frame's Burst chain is still executing, which would
     // alias SurfaceBuffer reads and writes across frames.
     private bool _isProcessingMesh = false;
-    // True when any grid cell is hand-masked; drives the surface freeze.
-    private bool _isOccluded = false;
     // Set to true in OnDestroy so the async GPU readback callback can detect
     // that the component has been torn down and skip accessing freed NativeArrays.
     private bool _isDestroyed = false;
@@ -196,12 +193,11 @@ public class ForearmDepthSurface : MonoBehaviour
     void Awake()
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
-        _handMask = new HandMask(handMesh, handMaskRadius);
-        _depthReadback = new DepthReadback();
+        _handMask = new HandMask(handMesh);
+        _depthReadback = new DepthReadback(_handMask);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
-        _forearmModel = new ForearmModel();
     }
 
     /// <summary>
@@ -264,22 +260,18 @@ public class ForearmDepthSurface : MonoBehaviour
             return;
         }
 
-        // Only request a new GPU readback if the previous frame's Burst chain has
-        // finished. The flag is set to Schedule()'s return value: Schedule has several
-        // silent early-return paths (no depth matrices, arm off-screen) that never call
+        // Only request a new GPU readback if the previous frame's pipeline has finished.
+        // The flag is set to Schedule()'s return value: Schedule has several silent
+        // early-return paths (no depth matrices, arm off-screen) that never call
         // OnDepthReady, so arming unconditionally would permanently deadlock the pipeline.
-        // When a readback IS enqueued the flag also blocks SnapshotMesh from writing to
-        // _nativeVerts while HandMaskJob holds a ReadOnly reference to the same array.
         if (!_isProcessingMesh)
         {
+            _handMask.SnapshotMesh();
+            _depthReadback.HandMaskInflate = handMaskInflate;
             _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist, pixelStride,
                 _surfaceBuffer, OnDepthReady
             );
-            // Snapshot the hand mesh vertices at the same moment we issue the
-            // depth request. This keeps the mask aligned with the depth frame
-            // even though GPU readback introduces a frame latency.
-            _handMask.SnapshotMesh();
         }
     }
 
@@ -296,18 +288,17 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshBuffer?.Dispose();
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
-        _forearmModel?.Dispose();
     }
 
     /// <summary>
     /// Callback invoked on the main thread once the GPU readback completes.
-    /// Runs the full CPU-side pipeline: mask -> extract -> smooth -> freeze -> mesh.
+    /// Runs the CPU-side pipeline: extract -> smooth -> mesh.
     ///
     /// The job chain uses Unity's JobHandle dependency system: each stage receives
     /// the previous stage's handle and the Burst scheduler guarantees the earlier
     /// stage's NativeArray writes are visible before the next stage reads them.
-    /// SurfaceSmoother.Schedule() calls JobHandle.Complete() internally, making all
-    /// buffer data readable on the main thread for the occlusion scan that follows.
+    /// SurfaceSmoother.Schedule() calls JobHandle.Complete() internally so all
+    /// buffer data is readable on the main thread before mesh generation.
     /// </summary>
     /// <param name="sampleHandle">JobHandle for the completed depth unproject job.</param>
     /// <param name="rows">Number of grid rows in the current depth crop.</param>
@@ -327,56 +318,18 @@ public class ForearmDepthSurface : MonoBehaviour
         _rows = rows;
         _cols = cols;
 
-        // MASK: Flag cells inside the hand volume.
-        // Depends on sampleHandle so Hits is fully populated before the mask
-        // job reads world-space positions.
-        JobHandle maskHandle = _handMask.Schedule(_surfaceBuffer, sampleHandle);
-
         // EXTRACT: Seed cylinder + BFS flood to isolate the forearm patch.
-        // Depends on maskHandle so IsHandMasked is written before the seed job
-        // skips masked cells.
+        // Hand pixels already have HasDepth=false (rejected in MetaDepthCopy.shader),
+        // so seed+flood skips them naturally without a separate CPU masking job.
         JobHandle extractionHandle = _surfaceExtractor.Schedule(
             _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
-            maskHandle);
+            sampleHandle);
 
         // SMOOTH: Laplacian passes + boundary contour smoothing.
         // Calls Complete() internally; all arrays are readable on the main
         // thread after this returns.
         _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
-
-        // FREEZE: Scan the grid for any hand-masked cell.
-        // Any masked cell means the hand is touching the surface, which would
-        // corrupt the live reconstruction. Break on the first hit.
-        bool wasOccluded = _isOccluded;
-        _isOccluded = false;
-        int total = _rows * _cols;
-        for (int i = 0; i < total; i++)
-        {
-            if (_surfaceBuffer.IsHandMasked[i]) { _isOccluded = true; break; }
-        }
-
-        // Trigger Freeze/Unfreeze only on the leading and trailing edge of
-        // occlusion. Calling them every frame while _isOccluded is true would
-        // overwrite the frozen snapshot on each frame instead of holding it.
-        if (_isOccluded && !wasOccluded)
-            _forearmModel.Freeze();
-        else if (!_isOccluded && wasOccluded)
-            _forearmModel.Unfreeze();
-
-        if (_forearmModel.IsFrozen)
-            // Re-inject the wrist-local frozen surface back into SurfaceBuffer so
-            // the mesh generator sees stable geometry during touch interaction.
-            // Wrist-local storage lets the frozen surface track minor arm movement.
-            _forearmModel.Infill(
-                _surfaceBuffer, _rows, _cols,
-                _armFrame.WristPos, _armFrame.WristRotation);
-        else
-            // Capture the current smoothed surface into wrist-local space so a
-            // clean snapshot is ready if occlusion begins next frame.
-            _forearmModel.Capture(
-                _surfaceBuffer, _rows, _cols,
-                _armFrame.WristPos, _armFrame.WristRotation);
 
         // MESH: Convert final IsSurface hits to vertices, UVs, and triangles.
         // _projCenter is the mean lateral (AxisRight) projection of the surface,
@@ -458,9 +411,8 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // ------------------------------------------------------------------
     // PUBLIC API — HAND VERTICES
-    // Downsampled world-space hand positions baked from the SkinnedMeshRenderer
-    // each frame. Used by ForearmProjection.shader for the soft occlusion fade
-    // and by interaction code for proximity tests against the surface.
+    // Downsampled world-space hand positions baked each frame. Consumed by
+    // ForearmInteraction to iterate finger candidates for touch detection.
     // ------------------------------------------------------------------
     public Vector4[] HandVertices    => _handMask.Vertices;
     public int       HandVertexCount => _handMask.VertexCount;

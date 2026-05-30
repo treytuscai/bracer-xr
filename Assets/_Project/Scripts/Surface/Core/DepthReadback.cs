@@ -10,15 +10,17 @@ namespace Surface.Core
 {
     /// <summary>
     /// Manages the full GPU->CPU depth pipeline each frame:
-    ///   1. BLIT:     Run MetaDepthCopy.shader via Graphics.Blit to reconstruct a
-    ///                world-space position for every pixel into a full-screen RenderTexture.
-    ///   2. CROP:     Compute the screen-space bounding box of the forearm and request
-    ///                an async GPU readback of only that region.
-    ///   3. UNPROJECT:On readback completion, schedule a Burst job (DepthUnprojectionJob)
-    ///                that downsamples the crop at pixelStride intervals into the flat
-    ///                world-space hit grid stored in SurfaceBuffer.
-    ///   4. HAND-OFF: Invoke the caller's callback with a JobHandle the downstream
-    ///                pipeline (masking, extraction) can chain dependencies onto.
+    ///   1. HAND MASK: Render the hand mesh as a white silhouette into a half-res
+    ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP.
+    ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit. Hand pixels are
+    ///                 rejected in the shader (w=-1) so they arrive HasDepth=false.
+    ///   3. CROP:      Compute the screen-space bounding box of the forearm and request
+    ///                 an async GPU readback of only that region.
+    ///   4. UNPROJECT: On readback completion, schedule a Burst job (DepthUnprojectionJob)
+    ///                 that downsamples the crop at pixelStride intervals into the flat
+    ///                 world-space hit grid stored in SurfaceBuffer.
+    ///   5. HAND-OFF:  Invoke the caller's callback with a JobHandle the downstream
+    ///                 extraction pipeline can chain onto.
     ///
     /// DEPTH SOURCE
     /// Despite the name, Meta's environment depth API does not use a dedicated IR depth
@@ -65,11 +67,28 @@ namespace Surface.Core
         // exceptions in downstream processing don't permanently stall the pipeline.
         private bool _isReadbackPending;
 
+        // ------------------------------------------------------------------
+        // HAND MASK (GPU silhouette)
+        // ------------------------------------------------------------------
+        // HandMask provides the CPU-baked mesh and localToWorld each frame.
+        private HandMask _handMaskSource;
+        // World-space outward inflation applied to the hand silhouette to cover depth
+        // bleed-through during fast movement. Set from ForearmDepthSurface Inspector.
+        public float HandMaskInflate = 0.001f;
+        // Grayscale RenderTexture containing the hand silhouette in screen space.
+        // White = hand, black = clear. Sampled by MetaDepthCopy to reject hand pixels.
+        // Half-resolution: silhouette masking doesn't need full precision.
+        private RenderTexture _handMaskRT;
+        // CommandBuffer that clears and re-draws the hand mesh each frame.
+        private CommandBuffer _maskCmd;
+        // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
+        private Material _handMaskMat;
+
         /// <summary>
-        /// Loads the MetaDepthCopy shader and creates the blit material.
-        /// The shader must be present in the project and not stripped from builds.
+        /// Loads the MetaDepthCopy and HandMaskRender shaders and creates materials.
+        /// Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback()
+        public DepthReadback(HandMask handMaskSource)
         {
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
@@ -78,6 +97,15 @@ namespace Surface.Core
                 return;
             }
             _blitMaterial = new Material(shader);
+
+            _handMaskSource = handMaskSource;
+            _maskCmd        = new CommandBuffer { name = "HandMaskRender" };
+
+            Shader maskShader = Shader.Find("Hidden/HandMaskRender");
+            if (maskShader != null)
+                _handMaskMat = new Material(maskShader);
+            else
+                Debug.LogWarning("[Depth] HandMaskRender shader not found — hand masking disabled.");
         }
 
         /// <summary>
@@ -134,6 +162,11 @@ namespace Surface.Core
             // The shader uses this to go clip->world (steps 3–4 of the reconstruction).
             // depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
             _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
+
+            // Render the hand silhouette into _handMaskRT before the blit.
+            // Pass depthMatrices[0] so the silhouette aligns with the depth texture's UV space.
+            RenderHandMask(depthMatrices[0], screenW, screenH);
+
             // Blit runs MetaDepthCopy.shader over every screen pixel, executing the full
             // reconstruction pipeline (sample R -> build clip point -> inverse VP -> perspective
             // divide) and writing the resulting world position into each pixel of _worldPosRT
@@ -195,8 +228,54 @@ namespace Surface.Core
         /// </summary>
         public void Dispose()
         {
-            if (_worldPosRT != null) _worldPosRT.Release();
-            if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
+            if (_worldPosRT  != null) _worldPosRT.Release();
+            if (_handMaskRT  != null) _handMaskRT.Release();
+            if (_blitMaterial  != null) UnityEngine.Object.Destroy(_blitMaterial);
+            if (_handMaskMat   != null) UnityEngine.Object.Destroy(_handMaskMat);
+            _maskCmd?.Release();
+        }
+
+        // --------------------------------------------------------
+        // HAND MASK RENDER
+        // --------------------------------------------------------
+
+        /// <summary>
+        /// Renders the CPU-baked hand mesh as a white silhouette into _handMaskRT using
+        /// CommandBuffer.DrawMesh with Meta's depth VP. The silhouette aligns with the
+        /// depth texture's UV space so MetaDepthCopy can reject hand pixels with a single
+        /// texture sample. Half-resolution is sufficient for silhouette masking.
+        /// </summary>
+        private void RenderHandMask(Matrix4x4 depthVP, int screenW, int screenH)
+        {
+            if (_handMaskSource == null || _handMaskMat == null) return;
+
+            Mesh bakedMesh = _handMaskSource.BakedMesh;
+            if (bakedMesh == null || bakedMesh.vertexCount == 0) return;
+
+            int maskW = screenW / 2;
+            int maskH = screenH / 2;
+            if (_handMaskRT == null || _handMaskRT.width != maskW || _handMaskRT.height != maskH)
+            {
+                if (_handMaskRT != null) _handMaskRT.Release();
+                _handMaskRT = new RenderTexture(maskW, maskH, 0, RenderTextureFormat.R8);
+                _handMaskRT.Create();
+                _blitMaterial.SetTexture("_HandMaskTex", _handMaskRT);
+            }
+
+            // Pass Meta's depth camera VP so the shader projects hand vertices into the
+            // same UV space as the depth texture. HandMaskRender handles the Vulkan Y flip.
+            _handMaskMat.SetMatrix("_DepthVP", depthVP);
+            // Inflate the silhouette slightly to cover depth bleed-through during fast
+            // hand movement. Tune in Inspector via ForearmDepthSurface.handMaskInflate.
+            _handMaskMat.SetFloat("_InflateAmount", HandMaskInflate);
+
+            _maskCmd.Clear();
+            _maskCmd.SetRenderTarget(_handMaskRT);
+            _maskCmd.ClearRenderTarget(false, true, Color.black);
+            // DrawMesh with the CPU-baked mesh: vertex positions are already skinned.
+            // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call.
+            _maskCmd.DrawMesh(bakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
+            Graphics.ExecuteCommandBuffer(_maskCmd);
         }
 
         // --------------------------------------------------------

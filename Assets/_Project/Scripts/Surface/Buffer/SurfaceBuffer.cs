@@ -15,15 +15,12 @@ namespace Surface.Buffer
     ///
     /// FIELD OWNERSHIP — who writes each array:
     ///   Hits            — DepthUnprojectionJob (world positions), then SmoothSurfaceJob
-    ///                     (Laplacian pass output via ping-pong swap), then ForearmModel
-    ///                     (frozen surface re-injection)
+    ///                     (Laplacian pass output via ping-pong swap)
     ///   Smoothed        — SmoothSurfaceJob (ping-pong write target; swapped with Hits
     ///                     after each pass so the next pass reads the smoothed result)
-    ///   HasDepth        — DepthUnprojectionJob
+    ///   HasDepth        — DepthUnprojectionJob (false for hand pixels rejected by MetaDepthCopy)
     ///   IsSurface       — DepthUnprojectionJob (reset to false), SeedFromAxisJob +
-    ///                     FloodFromSeedsJob (set true for forearm cells), ForearmModel
-    ///                     (overwritten entirely when frozen)
-    ///   IsHandMasked    — HandMaskJob / ClearMaskJob
+    ///                     FloodFromSeedsJob (set true for forearm cells)
     ///   BFSQueue        — SeedFromAxisJob (enqueue), FloodFromSeedsJob (dequeue/enqueue)
     ///   BoundaryVisited — BoundarySmoother (reset and set per boundary pass)
     ///
@@ -61,8 +58,6 @@ namespace Surface.Buffer
         public NativeQueue<int> BFSQueue;
         /// <summary> Per-cell visited flag used by BoundarySmoother to trace contour chains. </summary>
         public NativeArray<bool> BoundaryVisited;
-        /// <summary> True if this cell falls within the hand mask radius of any hand vertex. </summary>
-        public NativeArray<bool> IsHandMasked;
 
         // Total cell count from the last allocation; -1 when unallocated.
         private int _currentSize = -1;
@@ -85,7 +80,6 @@ namespace Surface.Buffer
             HasDepth        = new NativeArray<bool>(total,    Allocator.Persistent);
             BFSQueue        = new NativeQueue<int>(Allocator.Persistent);
             BoundaryVisited = new NativeArray<bool>(total,    Allocator.Persistent);
-            IsHandMasked    = new NativeArray<bool>(total,    Allocator.Persistent);
 
             _currentSize = total;
         }
@@ -102,7 +96,6 @@ namespace Surface.Buffer
             if (HasDepth.IsCreated)        HasDepth.Dispose();
             if (BoundaryVisited.IsCreated) BoundaryVisited.Dispose();
             if (BFSQueue.IsCreated)        BFSQueue.Dispose();
-            if (IsHandMasked.IsCreated)    IsHandMasked.Dispose();
             _currentSize = -1;
         }
     }
