@@ -19,7 +19,7 @@ Shader "Custom/ForearmProjection"
         _Color      ("Tint", Color)                             = (1,1,1,1)
         // Set by ForearmInteraction each LateUpdate: xy = touch UV, z = active (1/0), w = unused.
         _TouchPoint ("Touch Debug Point (uv.xy, active, _)", Vector) = (0,0,0,0)
-        _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.02
+        _TouchRadius("Touch Debug Radius (UV)", Float)          = 0.03
     }
 
     SubShader
