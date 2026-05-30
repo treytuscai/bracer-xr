@@ -791,7 +791,7 @@ MonoBehaviour:
   maxFromElbow: 0.02
   connectivityThreshold: 0.01
   smoothPasses: 3
-  edgeSmoothPasses: 4
+  edgeSmoothPasses: 2
   edgeWindowRadius: 3
   maxQuadEdge: 0.014
   displayHeight: 0.4

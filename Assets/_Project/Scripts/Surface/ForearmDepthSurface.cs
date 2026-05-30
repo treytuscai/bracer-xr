@@ -105,7 +105,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
     [Range(0, 5)] public int smoothPasses = 3;
     [Tooltip("Smoothing passes over the boundary contour chains. 0 = no edge smoothing")]
-    [Range(0, 5)] public int edgeSmoothPasses = 4;
+    [Range(0, 5)] public int edgeSmoothPasses = 2;
     [Tooltip("Half-width of the moving average window along boundary chains")]
     [Range(1, 6)] public int edgeWindowRadius = 3;
 
