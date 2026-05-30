@@ -129,13 +129,15 @@ public class ForearmInteraction : MonoBehaviour
             float across = Vector3.Dot(toPos, _surface.AxisRight);
 
             // FAST PRE-REJECTION using physical arm-frame extents.
-            // Matches the U centering of ComputeMeshUV (ProjCenter applied) so there is no
-            // dead zone at the display edge when the visible arm patch is offset from the
-            // wrist axis origin. Pronation and orientation rotation are intentionally omitted
-            // — they are UV mapping adjustments, not physical position changes.
+            // Matches the U centering of ComputeMeshUV (ProjCenter applied). U lower bound is
+            // -0.5 (not 0) to cover the full pronation scroll range: at palm-up (scroll=0.5),
+            // the left edge of the visible display sits at u≈-0.25 before the scroll is added,
+            // so a 0f bound would silently reject valid touches on the left side of the palmar
+            // panel. Pronation and orientation rotation are intentionally omitted — they are
+            // UV mapping adjustments, not physical position changes.
             float u = ((across - _surface.ProjCenter) / _surface.displayWidth) + 0.25f;
             float v = (along  - displayStart)          / (displayEnd - displayStart);
-            if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
+            if (u < -0.5f || u > 1f || v < 0f || v > 1f) continue;
 
             // Find the nearest reconstructed surface cell in arm-frame 2D space.
             if (!TryGetNearestSurfaceHit(along, across, out Vector3 surfaceHit)) continue;
