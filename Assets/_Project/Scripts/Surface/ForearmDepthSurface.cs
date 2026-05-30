@@ -12,9 +12,9 @@ using Surface.Core;
 /// Pipeline (runs every LateUpdate, asynchronously via AsyncGPUReadback + Burst):
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up) and smooth pronation/orientation.
-///   2. DepthReadback: Project wrist+elbow into screen space to crop the depth texture,
-///                     blit through MetaDepthCopy.shader to recover world-space positions,
-///                     GPU-readback that crop, and unproject each sampled pixel into a
+///   2. DepthReadback: Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh),
+///                     blit through MetaDepthCopy.shader (hand pixels → w=-1 → HasDepth=false),
+///                     GPU-readback the forearm crop, and unproject each sampled pixel into a
 ///                     flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)
 ///                     into a screen-space mask texture before the depth blit. MetaDepthCopy

@@ -236,14 +236,15 @@ namespace Surface.Core
 
                         int nIdx = nr * Cols + nc;
 
+                        // Skip cells already kept or with no depth (incl. hand pixels masked by MetaDepthCopy).
                         if (Kept[nIdx] || !HasDepth[nIdx]) continue;
+
+                        Vector3 neighborHit = Hits[nIdx];
 
                         // CONNECTIVITY GATE — reject if the neighbor is too far in 3D.
                         // This prevents the flood from bridging depth discontinuities
                         // (e.g. the arm transitioning to a nearby table surface).
-                        if ((Hits[nIdx] - currentHit).sqrMagnitude > ConnSq) continue;
-
-                        Vector3 neighborHit = Hits[nIdx];
+                        if ((neighborHit - currentHit).sqrMagnitude > ConnSq) continue;
 
                         // CYLINDER RE-CHECK — the flood still enforces all three geometry
                         // constraints so it cannot grow outside the arm volume even when

@@ -122,9 +122,9 @@ namespace Surface.Core
         [BurstCompile]
         struct SmoothSurfaceJob : IJobParallelFor
         {
-            [ReadOnly] public NativeArray<Vector3> Hits;
-            [ReadOnly] public NativeArray<bool>    IsSurface;
-            public NativeArray<Vector3> Smoothed;
+            [ReadOnly]  public NativeArray<Vector3> Hits;
+            [ReadOnly]  public NativeArray<bool>    IsSurface;
+            [WriteOnly] public NativeArray<Vector3> Smoothed;
             public int GridHeight;
             public int GridWidth;
 

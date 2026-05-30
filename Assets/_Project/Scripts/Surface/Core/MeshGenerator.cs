@@ -77,9 +77,9 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Runs the full four-pass Burst pipeline and populates MeshBuffer with valid geometry.
+        /// Runs the full three-pass Burst pipeline and populates MeshBuffer with valid geometry.
         /// Blocks the main thread twice: after Pass 1 (to read finalProjCenter) and after
-        /// Pass 4 (to copy atomic counts into VertexCount/TriangleCount).
+        /// Pass 3 (to copy atomic counts into VertexCount/TriangleCount).
         /// </summary>
         public void Generate(
             MeshBuffer meshBuf,
@@ -144,7 +144,10 @@ namespace Surface.Core
                 Hits = surfBuf.Hits, IsSurface = surfBuf.IsSurface,
                 Cols = cols,
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
-                ProjCenter = finalProjCenter, Pronation = pronation, Orientation = orientation,
+                ProjCenter = finalProjCenter,
+                PronationScroll = pronation / (2f * Mathf.PI),
+                CosOrientation  = Mathf.Cos(orientation),
+                SinOrientation  = Mathf.Sin(orientation),
                 Offset = DisplayOffset, Width = DisplayWidth, Height = DisplayHeight,
                 WorldToLocal = worldToLocal,
                 OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs,
@@ -236,7 +239,10 @@ namespace Surface.Core
             [ReadOnly] public NativeArray<bool>    IsSurface;
             public int     Cols;
             public Vector3 WristPos, Axis, AxisRight;
-            public float   ProjCenter, Pronation, Orientation, Offset, Width, Height;
+            // Orientation and Pronation are pre-computed outside the job so CalculateUV
+            // does not call Mathf.Cos/Sin or divide on every surface cell.
+            public float   ProjCenter, PronationScroll, CosOrientation, SinOrientation;
+            public float   Offset, Width, Height;
             public Matrix4x4 WorldToLocal;
 
             // Non-sequential write indices (atomic slot allocation) require disabling
@@ -298,13 +304,12 @@ namespace Surface.Core
                 float projR = Vector3.Dot(fromWrist, AxisRight);
                 float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.25f;
 
-                u += Pronation / (2f * Mathf.PI);
+                u += PronationScroll;
 
                 // Rotate UV around the center point (0.5, 0.5).
                 float cu = u - 0.5f, cv = v - 0.5f;
-                float cosA = Mathf.Cos(Orientation), sinA = Mathf.Sin(Orientation);
-                return new Vector2(cu * cosA - cv * sinA + 0.5f,
-                                   cu * sinA + cv * cosA + 0.5f);
+                return new Vector2(cu * CosOrientation - cv * SinOrientation + 0.5f,
+                                   cu * SinOrientation + cv * CosOrientation + 0.5f);
             }
         }
 

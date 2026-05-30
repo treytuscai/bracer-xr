@@ -4,8 +4,11 @@
 // MetaDepthCopy blit. MetaDepthCopy samples this texture and rejects any depth pixel
 // covered by the hand, outputting w=-1 so downstream stages treat it as invalid depth.
 //
-// Rendered via CommandBuffer.DrawRenderer with SetViewProjectionMatrices so the
-// silhouette aligns with the current camera's screen space.
+// Rendered via CommandBuffer.DrawMesh with Meta's depth VP (_DepthVP = depthMatrices[0])
+// so the silhouette aligns with the depth texture's UV space, not Unity's camera space.
+// The depth sensor is physically different from Unity's render camera — using Unity's VP
+// would produce a fixed spatial offset in the mask. _ProjectionParams.x corrects the
+// Vulkan render target Y flip when using a custom projection matrix.
 
 Shader "Hidden/HandMaskRender"
 {
@@ -46,8 +49,9 @@ Shader "Hidden/HandMaskRender"
             Varyings vert(Attributes i)
             {
                 Varyings o;
-                // Push each vertex outward along its world-space normal before projecting.
-                float3 inflated    = i.positionOS.xyz + i.normalOS * _InflateAmount;
+                // Push each vertex outward along its object-space normal before projecting.
+                // Normalized to handle potential non-unit normals in the baked mesh.
+                float3 inflated    = i.positionOS.xyz + normalize(i.normalOS) * _InflateAmount;
                 float4 worldPos    = mul(UNITY_MATRIX_M, float4(inflated, 1.0));
                 float4 clipPos     = mul(_DepthVP, worldPos);
                 clipPos.y         *= _ProjectionParams.x;

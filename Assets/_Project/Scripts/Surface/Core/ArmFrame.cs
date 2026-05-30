@@ -183,7 +183,8 @@ namespace Surface.Core
             // Landscape (arm horizontal): target = -PI/2 — rotate UV frame 90° so the
             // display content reads left-to-right across the horizontal arm.
             float target = Mathf.Abs(screenX) > Mathf.Abs(screenY) ? -Mathf.PI * 0.5f : 0f;
-            _orientationAngle = Mathf.LerpAngle(_orientationAngle, target, 0.1f);
+            // Lerp (not LerpAngle) — values are in radians, range is [0, -PI/2], no wraparound needed.
+            _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
             Orientation = _orientationAngle;
 
             return true;
