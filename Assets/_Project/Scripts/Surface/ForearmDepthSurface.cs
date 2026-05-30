@@ -29,8 +29,8 @@ using Surface.Core;
 ///                     in wrist-local space and re-inject it each frame so the UI stays
 ///                     stable during touch interaction. Unfreeze when the hand leaves.
 ///   7. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
-///                     an edge-length rejection pass, compute cylindrical UVs corrected for
-///                     arm twist and orientation, and upload to the GPU mesh.
+///                     an edge-length rejection pass, compute UVs corrected for arm twist
+///                     and orientation, and upload to the GPU mesh.
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]

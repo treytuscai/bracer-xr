@@ -73,7 +73,7 @@ namespace Surface.Buffer
         /// </summary>
         public NativeArray<int> Counter;
 
-        /// <summary> Number of valid entries in Vertices/UVs/EdgeDists after the last Generate call. </summary>
+        /// <summary> Number of valid entries in Vertices/UVs after the last Generate call. </summary>
         public int VertexCount;
         /// <summary> Number of valid entries in Triangles after the last Generate call. </summary>
         public int TriangleCount;
