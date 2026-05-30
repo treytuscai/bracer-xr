@@ -70,10 +70,10 @@ namespace Surface.Core
         public Vector3    AxisRight     { get; private set; }
         // Camera-facing arm surface normal; completes the right-handed frame with Axis and AxisRight.
         public Vector3    AxisUp        { get; private set; }
-        // How far (radians) the forearm has twisted relative to the camera-fixed viewport.
+        // Forearm twist in radians: 0 = palm-down, PI = palm-up.
         // Added as a U scroll offset in MeshGenerator: rotating the wrist shifts which
         // column of the texture is visible, scrolling the display rather than spinning it.
-        // Positive = palm facing camera (supination), negative = palm facing down (pronation).
+        // Clamped to [0, PI] — values past palm-down in either direction are held at 0.
         public float      Pronation     { get; private set; }
         // Smoothed portrait/landscape angle: 0 = arm vertical (portrait), -PI/2 = arm horizontal (landscape).
         // Applied as a 2D UV rotation in MeshGenerator so display content is always readable.
