@@ -5,27 +5,27 @@ using Surface.Buffer;
 /// Detects finger contact with the forearm display surface and exposes the result
 /// as a UV coordinate and world point each frame.
 ///
-/// TOUCH DETECTION PIPELINE (per hand vertex, per frame)
-///   1. Physical pre-rejection: project the vertex onto the arm coordinate frame and
-///      check if it falls within the display region's physical extents. This is a fast,
-///      approximate filter — it does not apply ProjCenter or UV corrections, so it is
-///      conservative (no false negatives for typical arm positions).
+/// TOUCH DETECTION PIPELINE (per fingertip bone, per frame)
+///   1. Physical pre-rejection: project the bone position onto the arm coordinate frame
+///      and check if it falls within the display region's physical extents. Fast, approximate
+///      filter — omits ProjCenter and UV corrections, so it is conservative.
 ///   2. Nearest surface cell: scan the reconstructed SurfaceBuffer to find the cell
-///      whose (along, across) arm-frame position is closest to the hand vertex.
+///      whose (along, across) arm-frame position is closest to the bone.
 ///      O(rows × cols), acceptable at typical grid sizes (~2,000–4,000 cells).
-///   3. Above/below test: compute how far the vertex is above or below the nearest
-///      surface cell using AxisUp. Accept vertices within [-touchDepth, +touchHoverHeight].
-///   4. UV computation: mirror MeshGenerator.VertexJob.CalculateUV exactly so the touch
+///   3. Above/below test: compute how far the bone is above or below the nearest surface
+///      cell using AxisUp. The IndexTip joint center sits ~5-10mm above the skin surface
+///      (inside the finger), so `above` will read as a small positive value even during
+///      flat contact. touchHoverHeight should be set to accommodate this offset.
+///   4. UV computation: mirrors MeshGenerator.VertexJob.CalculateUV exactly so the touch
 ///      UV addresses the same texture region as the rendered mesh vertices.
-///   5. Best-candidate selection: among qualifying vertices, pick the one with the
-///      smallest `above` value — closest to or farthest into the surface, which
-///      corresponds to the most deliberate contact or deepest press.
+///   5. Best-candidate selection: among qualifying bones, pick the one with the smallest
+///      `above` value — the most deliberate contact or deepest press.
 ///
 /// WORLD POINT DERIVATION
-/// The returned TouchWorldPoint is pos - AxisUp * above (the hand vertex projected onto
-/// the surface plane) rather than the raw surfaceHit from depth reconstruction.
-/// Hand tracking is stereo-stable; the depth reconstruction is left-eye-only and carries
-/// more noise. Projecting the hand position is more accurate for render-layer alignment.
+/// The returned TouchWorldPoint is pos - AxisUp * above (the bone position projected onto
+/// the surface plane). Hand tracking is stereo-stable; the depth reconstruction is
+/// left-eye-only and carries more noise. Projecting the bone position is more accurate
+/// for render-layer alignment.
 ///
 /// Reads ForearmDepthSurface on the same GameObject for surface data. That component
 /// owns all reconstruction; this component owns only the interaction logic.
@@ -47,12 +47,12 @@ public class ForearmInteraction : MonoBehaviour
     // vertex lands at or slightly below it. Too large -> false touches through the arm.
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
-    // Maximum 2D arm-frame distance (along × across) from a hand vertex to the nearest
-    // surface cell for a touch to be considered valid. Roughly 2× touchHoverHeight so the
-    // lateral search radius matches the physical scale of intentional contact.
+    // Maximum 2D arm-frame distance (along × across) from the bone to the nearest surface
+    // cell. The GPU hand mask removes cells directly under the finger, so the nearest cell
+    // is at the mask boundary (~1-2cm from the bone center). Must exceed the mask radius.
     [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
-             "Prevents false touches when no surface cell exists beneath the finger (m)")]
-    [Range(0.005f, 0.05f)] public float maxCellSearchDist = 0.04f;
+             "Must exceed the GPU mask radius (~1-2cm) since masked cells are excluded (m)")]
+    [Range(0.005f, 0.15f)] public float maxCellSearchDist = 0.04f;
 
     [Header("Debug")]
     [Tooltip("Draw a green circle on the surface material at the active touch UV")]

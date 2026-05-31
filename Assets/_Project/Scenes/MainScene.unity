@@ -781,6 +781,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   bodySkeleton: {fileID: 2129304617}
   handMesh: {fileID: 2123695745}
+  handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
   handMaskInflate: 0.002
@@ -1261,6 +1262,18 @@ Transform:
     type: 3}
   m_PrefabInstance: {fileID: 2123695741}
   m_PrefabAsset: {fileID: 0}
+--- !u!114 &2123695743 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
+    type: 3}
+  m_PrefabInstance: {fileID: 2123695741}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2609c54f376cffc4da1ab9401cc1a36f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!137 &2123695745 stripped
 SkinnedMeshRenderer:
   m_CorrespondingSourceObject: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,

@@ -44,8 +44,10 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
     public OVRSkeleton bodySkeleton;
-    [Tooltip("Hand SkinnedMeshRenderer for GPU depth masking and touch detection")]
+    [Tooltip("Hand SkinnedMeshRenderer for GPU depth masking and silhouette rendering")]
     public SkinnedMeshRenderer handMesh;
+    [Tooltip("Hand skeleton for fingertip bone positions used in touch detection")]
+    public OVRSkeleton handSkeleton;
     [Tooltip("Camera transform used for screen-space projection and depth ray origin")]
     public Transform centerEyeAnchor;
     [Tooltip("Material for rendering the forearm surface. Falls back to transparent cyan if unset")]
@@ -193,7 +195,7 @@ public class ForearmDepthSurface : MonoBehaviour
     void Awake()
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
-        _handMask = new HandMask(handMesh);
+        _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
