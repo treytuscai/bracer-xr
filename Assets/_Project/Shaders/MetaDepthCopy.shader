@@ -74,6 +74,14 @@ Shader "Hidden/MetaDepthCopy"
                 // matrix for the depth frame's historical pose. Inverted once per frame on
                 // the CPU by DepthReadback.Schedule to convert clip->world in this shader.
                 float4x4 _DepthInverseVP;
+                // (1/width, 1/height, width, height) of _HandMaskTex, auto-populated by
+                // Unity when the texture is bound. Used to step the dilation kernel by texels.
+                float4 _HandMaskTex_TexelSize;
+                // Mask dilation radius in mask texels. The kernel samples a neighborhood and
+                // takes the max, growing the EFFECTIVE silhouette by this many texels without
+                // re-bloating the rendered mesh or lowering the 0.5 threshold. Compensates for
+                // the 1-2 frame readback latency (the depth hand lags the current mesh).
+                float _MaskDilateTexels;
             CBUFFER_END
 
             struct Attributes
@@ -132,10 +140,23 @@ Shader "Hidden/MetaDepthCopy"
 
                 // Hand mask: reject pixels covered by the hand silhouette.
                 // _HandMaskTex is a screen-space grayscale texture rendered each frame
-                // via CommandBuffer.DrawRenderer before this blit — white where the hand
-                // mesh covers the screen, black elsewhere. One texture sample replaces
-                // the per-pixel vertex loop, giving pixel-perfect masking at near-zero cost.
-                if (SAMPLE_TEXTURE2D(_HandMaskTex, sampler_HandMaskTex, input.uv).r > 0.5)
+                // via CommandBuffer.DrawMesh before this blit — white where the hand mesh
+                // covers the screen, black elsewhere.
+                //
+                // Rather than one tap, sample a 3x3 neighborhood and take the max — a cheap
+                // morphological dilation. This grows the effective mask by _MaskDilateTexels
+                // texels to cover the readback-latency gap (the depth hand trails the current
+                // mesh) WITHOUT fattening the rendered silhouette or dropping the 0.5 threshold,
+                // so a stationary hand keeps tight while a moving one stays covered.
+                float2 texelStep = _HandMaskTex_TexelSize.xy * _MaskDilateTexels;
+                float mask = 0.0;
+                UNITY_UNROLL
+                for (int dy = -1; dy <= 1; dy++)
+                    UNITY_UNROLL
+                    for (int dx = -1; dx <= 1; dx++)
+                        mask = max(mask, SAMPLE_TEXTURE2D(_HandMaskTex, sampler_HandMaskTex,
+                                                          input.uv + float2(dx, dy) * texelStep).r);
+                if (mask > 0.5)
                     return float4(0, 0, 0, -1.0);
 
                 // Return world position in xyz; w carries rawDepth so DepthReadback can

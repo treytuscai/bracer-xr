@@ -72,9 +72,10 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // HandMask provides the CPU-baked mesh and localToWorld each frame.
         private HandMask _handMaskSource;
-        // World-space outward inflation applied to the hand silhouette to cover depth
-        // bleed-through during fast movement. Set from ForearmDepthSurface Inspector.
-        public float HandMaskInflate = 0.001f;
+        // Mask dilation radius in mask texels, applied at sample time in MetaDepthCopy
+        // (3x3 max). Grows the effective mask to cover readback latency without fattening
+        // the rendered silhouette. Set from ForearmDepthSurface Inspector.
+        public float MaskDilateTexels = 1f;
         // Grayscale RenderTexture containing the hand silhouette in screen space.
         // White = hand, black = clear. Sampled by MetaDepthCopy to reject hand pixels.
         // Half-resolution: silhouette masking doesn't need full precision.
@@ -260,14 +261,17 @@ namespace Surface.Core
                 _handMaskRT = new RenderTexture(maskW, maskH, 0, RenderTextureFormat.R8);
                 _handMaskRT.Create();
                 _blitMaterial.SetTexture("_HandMaskTex", _handMaskRT);
+                // Set the texel size explicitly: Graphics.Blit binds the material outside the
+                // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
+                _blitMaterial.SetVector("_HandMaskTex_TexelSize",
+                    new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
             }
 
             // Pass Meta's depth camera VP so the shader projects hand vertices into the
             // same UV space as the depth texture. HandMaskRender handles the Vulkan Y flip.
             _handMaskMat.SetMatrix("_DepthVP", depthVP);
-            // Inflate the silhouette slightly to cover depth bleed-through during fast
-            // hand movement. Tune in Inspector via ForearmDepthSurface.handMaskInflate.
-            _handMaskMat.SetFloat("_InflateAmount", HandMaskInflate);
+            // Sample-time dilation radius (texels), applied in MetaDepthCopy's 3x3 max.
+            _blitMaterial.SetFloat("_MaskDilateTexels", MaskDilateTexels);
 
             _maskCmd.Clear();
             _maskCmd.SetRenderTarget(_handMaskRT);

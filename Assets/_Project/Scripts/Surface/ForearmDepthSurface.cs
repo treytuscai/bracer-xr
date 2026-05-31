@@ -60,9 +60,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // excluding them from surface reconstruction and touch detection.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Outward inflation of the GPU hand silhouette (m). Compensates for AsyncGPUReadback " +
-             "latency during fast hand movement — increase if depth bleeds through.")]
-    [Range(0f, 0.01f)] public float handMaskInflate = 0.001f;
+    [Tooltip("Mask dilation radius in mask texels, applied at sample time (3x3 max). Grows the " +
+             "effective hand mask to cover readback latency without bloating the rendered mesh.")]
+    [Range(0f, 4f)] public float maskDilateTexels = 1f;
 
     // ------------------------------------------------------------------
     // SAMPLING
@@ -269,7 +269,8 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _handMask.SnapshotMesh();
-            _depthReadback.HandMaskInflate = handMaskInflate;
+            _depthReadback.MaskDilateTexels = maskDilateTexels;
+
             _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist, pixelStride,
                 _surfaceBuffer, OnDepthReady
