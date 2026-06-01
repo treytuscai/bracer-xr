@@ -1,0 +1,531 @@
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using UnityEngine.UI;
+
+/// <summary>
+/// Main Scene only — adds a "Rotate" toggle button to the floating palette.
+///
+/// Workflow:
+///   1. Press the Rotate button  → rotate mode activates (button turns orange).
+///   2. Touch an item on the arm → selects it and shows a rotation handle:
+///        a thin white line from the item centre + a gold dot at the far end.
+///   3. Touch and hold the gold dot → drag around the item centre to spin it.
+///   4. Release → rotation is committed.
+///   5. Press the Rotate button again to deactivate and restore normal pick/place.
+///
+/// While rotate mode is active, ForearmTouchManager is disabled so normal
+/// pick-up / place gestures do not fire.
+/// </summary>
+[DefaultExecutionOrder(90)]   // must run BEFORE ForearmTouchManager (100) to suppress pickup
+public class ArmRotateController : MonoBehaviour
+{
+    // ── Constants ──────────────────────────────────────────────────────────────
+
+    const float HandleLineLength    = 55f;  // canvas units, item centre → dot
+    const float HandleLineThickness =  4f;  // canvas units
+    const float HandleDotDiameter   = 24f;  // canvas units
+    const float HandlePickRadius    = 28f;  // canvas units: grab radius for the dot
+    const float ItemPickPadding     = 18f;  // canvas units: added to item bounds when picking
+
+    // Palette placement — colour-wheel position shifted 4 in left and 4 in down.
+    const float PaletteForwardMeters  = 0.5f;    // unchanged
+    const float PaletteRightMeters    = 0.25f;   // 0.35 - 0.10 (≈4 in left)
+    const float PaletteHeightOffset   = -0.10f;  // 0  - 0.10 (≈4 in down)
+
+    // ── References ─────────────────────────────────────────────────────────────
+
+    ArmLayoutController          armLayout;
+    ForearmTouchManager          forearmTouch;
+    PossibleUIPaletteController  palette;
+    TouchInputManager            touchInput;
+    HandTrackingController       handTracking;
+
+    // ── Palette button ─────────────────────────────────────────────────────────
+
+    RectTransform _rotateBtn;
+    bool          _wasPressOnRotate;
+    bool          _rotateModeActive;
+
+    static readonly Color BtnDefault = new Color(0.22f, 0.45f, 0.82f, 1f);
+    static readonly Color BtnActive  = new Color(0.95f, 0.60f, 0.10f, 1f);
+
+    // ── Rotation state ─────────────────────────────────────────────────────────
+
+    RectTransform _selectedItem;
+    bool          _isDraggingDot;
+    bool          _wasArmPressHeld;
+
+    // ── Handle visuals (rendered via RT onto the arm cylinder) ─────────────────
+
+    GameObject    _handleRoot;  // pivot placed at item centre on arm canvas
+    RectTransform _handleLine;  // thin white bar
+    RectTransform _handleDot;   // gold grab circle
+
+    // ── Bootstrap ──────────────────────────────────────────────────────────────
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    static void RegisterSceneHook()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        TryEnsureForScene(SceneManager.GetActiveScene());
+    }
+
+    static void OnSceneLoaded(Scene scene, LoadSceneMode mode) => TryEnsureForScene(scene);
+
+    static void TryEnsureForScene(Scene scene)
+    {
+        if (!scene.IsValid() || scene.name != ExperimentScenes.Main) return;
+        if (FindObjectOfType<ArmRotateController>() != null) return;
+
+        var go = new GameObject("ArmRotateController");
+        go.AddComponent<ArmRotateController>();
+        Debug.Log("[MainScene] ArmRotateController bootstrapped.");
+    }
+
+    // ── MonoBehaviour ──────────────────────────────────────────────────────────
+
+    void Awake()
+    {
+        if (SceneManager.GetActiveScene().name != ExperimentScenes.Main)
+        { enabled = false; return; }
+    }
+
+    void Start()
+    {
+        if (SceneManager.GetActiveScene().name != ExperimentScenes.Main) return;
+
+        ResolveReferences();
+
+        // Match palette placement to the Experiment 2 colour-wheel position.
+        if (palette != null)
+        {
+            palette.distanceMeters      = PaletteForwardMeters;
+            palette.lateralOffsetMeters = PaletteRightMeters;
+            palette.heightOffsetMeters  = PaletteHeightOffset;
+        }
+
+        AddRotateButtonToPalette();
+    }
+
+    void LateUpdate()
+    {
+        if (SceneManager.GetActiveScene().name != ExperimentScenes.Main) return;
+
+        // Lazily re-resolve if something wasn't ready yet.
+        if (armLayout == null || touchInput == null) ResolveReferences();
+
+        // Guard against the selected item being destroyed externally.
+        if (_selectedItem == null && _isDraggingDot)
+        {
+            _isDraggingDot = false;
+            HideHandle();
+        }
+
+        CheckRotateButtonPress();
+
+        if (_rotateModeActive)
+        {
+            if (forearmTouch != null && forearmTouch.enabled)
+                forearmTouch.enabled = false;
+
+            ProcessRotateInput();
+        }
+        else
+        {
+            if (forearmTouch != null && !forearmTouch.enabled)
+                forearmTouch.enabled = true;
+        }
+    }
+
+    // ── Reference resolution ───────────────────────────────────────────────────
+
+    void ResolveReferences()
+    {
+        if (armLayout    == null) armLayout    = FindObjectOfType<ArmLayoutController>();
+        if (forearmTouch == null) forearmTouch = FindObjectOfType<ForearmTouchManager>();
+        if (palette      == null) palette      = FindObjectOfType<PossibleUIPaletteController>();
+        if (touchInput   == null) touchInput   = FindObjectOfType<TouchInputManager>();
+        if (handTracking == null) handTracking = FindObjectOfType<HandTrackingController>();
+    }
+
+    // ── Palette button setup ───────────────────────────────────────────────────
+
+    void AddRotateButtonToPalette()
+    {
+        if (palette == null || palette.paletteRect == null) return;
+
+        RectTransform paletteRect = palette.paletteRect;
+
+        var go = new GameObject("RotateBtn",
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(LayoutElement));
+        go.transform.SetParent(paletteRect, false);
+
+        _rotateBtn = (RectTransform)go.transform;
+        _rotateBtn.localScale = Vector3.one;
+
+        var le = go.GetComponent<LayoutElement>();
+        le.minWidth      = 80f;  le.preferredWidth  = 80f;  le.flexibleWidth  = 0f;
+        le.minHeight     = 50f;  le.preferredHeight = 50f;  le.flexibleHeight = 0f;
+
+        var bg = go.GetComponent<Image>();
+        bg.color = BtnDefault;
+        bg.raycastTarget = false;
+
+        // Label text.
+        var lblGo = new GameObject("Lbl",
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+        lblGo.transform.SetParent(go.transform, false);
+
+        var lr = (RectTransform)lblGo.transform;
+        lr.anchorMin = Vector2.zero;
+        lr.anchorMax = Vector2.one;
+        lr.offsetMin = lr.offsetMax = Vector2.zero;
+
+        var txt = lblGo.GetComponent<Text>();
+        txt.text      = "Select & Rotate Item";
+        txt.alignment = TextAnchor.MiddleCenter;
+        txt.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        txt.fontSize  = 16;
+        txt.color     = Color.white;
+        txt.raycastTarget = false;
+    }
+
+    // ── Palette button interaction ─────────────────────────────────────────────
+
+    void CheckRotateButtonPress()
+    {
+        if (_rotateBtn == null || palette == null) return;
+        if (handTracking == null || !handTracking.isRightHandTracked
+                                 || handTracking.rightIndexTip == null) return;
+
+        Vector3 finger   = handTracking.rightIndexTip.position;
+        bool    pressing = IsFingerPressingButton(_rotateBtn, finger);
+
+        if (pressing && !_wasPressOnRotate)
+            ToggleRotateMode();
+
+        _wasPressOnRotate = pressing;
+    }
+
+    void ToggleRotateMode()
+    {
+        _rotateModeActive = !_rotateModeActive;
+        SetBtnColor(_rotateBtn, _rotateModeActive ? BtnActive : BtnDefault);
+
+        if (_rotateModeActive)
+        {
+            // Abort any in-progress carry so we start with a clean slate.
+            if (armLayout != null && armLayout.IsCarrying)
+                armLayout.AbortCarryWithoutPlace();
+        }
+        else
+        {
+            DeselectItem();
+            if (forearmTouch != null) forearmTouch.enabled = true;
+        }
+
+        Debug.Log($"[MainScene] Rotate mode → {_rotateModeActive}");
+    }
+
+    // ── Core rotate input ──────────────────────────────────────────────────────
+
+    void ProcessRotateInput()
+    {
+        if (touchInput == null || armLayout == null) return;
+
+        bool pressHeld  = touchInput.touchState == TouchInputManager.TouchState.Press;
+        bool pressBegan = pressHeld && !_wasArmPressHeld;
+        bool pressEnded = !pressHeld && _wasArmPressHeld;
+        _wasArmPressHeld = pressHeld;
+
+        if (pressBegan)
+        {
+            Vector2 fp = armLayout.TapWorldToCanvasLocal(touchInput.contactPoint);
+
+            if (_selectedItem != null && IsNearHandleDot(fp))
+            {
+                // Start dragging the rotation handle.
+                _isDraggingDot = true;
+            }
+            else
+            {
+                // Try to select a different item (or deselect if miss).
+                DeselectItem();
+                _selectedItem = TryPickCanvasItem(fp);
+                _isDraggingDot = false;
+                RefreshHandle();
+            }
+        }
+
+        if (pressHeld && _isDraggingDot && _selectedItem != null)
+        {
+            Vector2 fp         = armLayout.TapWorldToCanvasLocal(touchInput.contactPoint);
+            Vector2 itemCentre = GetItemCanvasCentre();
+            float   angleDeg   = Mathf.Atan2(fp.y - itemCentre.y, fp.x - itemCentre.x)
+                                 * Mathf.Rad2Deg;
+
+            // Subtract 90° so "12 o'clock" on the handle = 0° item rotation.
+            ApplyItemRotation(angleDeg - 90f);
+            RefreshHandle();
+        }
+
+        if (pressEnded)
+            _isDraggingDot = false;
+    }
+
+    // ── Item selection ─────────────────────────────────────────────────────────
+
+    RectTransform TryPickCanvasItem(Vector2 fingerLocal)
+    {
+        if (armLayout?.canvasRect == null) return null;
+
+        RectTransform canvas  = armLayout.canvasRect;
+        RectTransform best    = null;
+        float         bestDist = float.MaxValue;
+
+        for (int i = 0; i < canvas.childCount; i++)
+        {
+            var child = canvas.GetChild(i) as RectTransform;
+            if (child == null || !child.gameObject.activeInHierarchy) continue;
+            if (IsHandleObject(child.gameObject)) continue;
+            if (child.name.StartsWith("__")) continue; // grid overlay, etc.
+
+            // Compute axis-aligned bounds in canvas-local space (handles rotation).
+            child.GetWorldCorners(_cornerBuf);
+            float mnX = float.MaxValue, mxX = float.MinValue;
+            float mnY = float.MaxValue, mxY = float.MinValue;
+            for (int j = 0; j < 4; j++)
+            {
+                Vector2 cl = canvas.InverseTransformPoint(_cornerBuf[j]);
+                if (cl.x < mnX) mnX = cl.x; if (cl.x > mxX) mxX = cl.x;
+                if (cl.y < mnY) mnY = cl.y; if (cl.y > mxY) mxY = cl.y;
+            }
+
+            bool inBounds =
+                fingerLocal.x >= mnX - ItemPickPadding && fingerLocal.x <= mxX + ItemPickPadding &&
+                fingerLocal.y >= mnY - ItemPickPadding && fingerLocal.y <= mxY + ItemPickPadding;
+
+            if (!inBounds) continue;
+
+            Vector2 centre = new Vector2((mnX + mxX) * 0.5f, (mnY + mxY) * 0.5f);
+            float   dist   = (fingerLocal - centre).magnitude;
+            if (dist < bestDist) { bestDist = dist; best = child; }
+        }
+
+        return best;
+    }
+
+    readonly Vector3[] _cornerBuf = new Vector3[4]; // avoid per-frame alloc
+
+    void DeselectItem()
+    {
+        _selectedItem  = null;
+        _isDraggingDot = false;
+        HideHandle();
+    }
+
+    // ── Handle visuals ─────────────────────────────────────────────────────────
+
+    void RefreshHandle()
+    {
+        if (_selectedItem == null) { HideHandle(); return; }
+
+        EnsureHandleExists();
+        if (_handleRoot == null) return;
+
+        RectTransform canvas  = armLayout.canvasRect;
+        Vector2       centre  = GetItemCanvasCentre();
+
+        // The handle dot sits in the direction of the item's local "up" (+Y axis
+        // after rotation), so the dot angle = item rotation + 90°.
+        float rotZ      = _selectedItem.localEulerAngles.z;
+        float handleDeg = rotZ + 90f;
+        float rad       = handleDeg * Mathf.Deg2Rad;
+        var   dir       = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
+        var   dotOffset = dir * HandleLineLength;
+
+        // Anchor the root at the item centre.
+        var rootRt = _handleRoot.GetComponent<RectTransform>();
+        rootRt.anchoredPosition = centre;
+
+        // Line: bar whose centre is the midpoint from root → dot; rotated toward dot.
+        _handleLine.anchoredPosition = dotOffset * 0.5f;
+        _handleLine.sizeDelta        = new Vector2(HandleLineLength, HandleLineThickness);
+        _handleLine.localRotation    = Quaternion.Euler(0f, 0f, handleDeg);
+
+        // Dot: at the far end of the line.
+        _handleDot.anchoredPosition = dotOffset;
+
+        _handleRoot.SetActive(true);
+    }
+
+    void HideHandle()
+    {
+        if (_handleRoot != null) _handleRoot.SetActive(false);
+    }
+
+    void EnsureHandleExists()
+    {
+        if (_handleRoot != null) return;
+        if (armLayout?.canvasRect == null) return;
+
+        int layer = armLayout.canvasRect.gameObject.layer;
+
+        // Root: invisible pivot anchored to its canvas position.
+        _handleRoot = new GameObject("__RotateHandle", typeof(RectTransform));
+        _handleRoot.layer = layer;
+        _handleRoot.transform.SetParent(armLayout.canvasRect, false);
+        var rootRt = _handleRoot.GetComponent<RectTransform>();
+        rootRt.anchorMin  = rootRt.anchorMax = new Vector2(0.5f, 0.5f);
+        rootRt.pivot      = new Vector2(0.5f, 0.5f);
+        rootRt.sizeDelta  = Vector2.zero;
+        rootRt.localScale = Vector3.one;
+
+        // Line bar.
+        var lineGo = new GameObject("Line",
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        lineGo.layer = layer;
+        lineGo.transform.SetParent(_handleRoot.transform, false);
+        _handleLine           = lineGo.GetComponent<RectTransform>();
+        _handleLine.anchorMin = _handleLine.anchorMax = new Vector2(0.5f, 0.5f);
+        _handleLine.pivot     = new Vector2(0.5f, 0.5f);
+        _handleLine.localScale = Vector3.one;
+        var lineImg           = lineGo.GetComponent<Image>();
+        lineImg.color         = new Color(1f, 1f, 1f, 0.90f);
+        lineImg.raycastTarget = false;
+
+        // Grab dot.
+        var dotGo = new GameObject("Dot",
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        dotGo.layer = layer;
+        dotGo.transform.SetParent(_handleRoot.transform, false);
+        _handleDot            = dotGo.GetComponent<RectTransform>();
+        _handleDot.anchorMin  = _handleDot.anchorMax = new Vector2(0.5f, 0.5f);
+        _handleDot.pivot      = new Vector2(0.5f, 0.5f);
+        _handleDot.sizeDelta  = Vector2.one * HandleDotDiameter;
+        _handleDot.localScale = Vector3.one;
+        var dotImg            = dotGo.GetComponent<Image>();
+        dotImg.sprite         = GetCircleSprite();
+        dotImg.type           = Image.Type.Simple;
+        dotImg.color          = new Color(1f, 0.85f, 0.10f, 1f); // gold
+        dotImg.raycastTarget  = false;
+
+        _handleRoot.SetActive(false);
+    }
+
+    bool IsHandleObject(GameObject go)
+    {
+        if (_handleRoot == null) return false;
+        return go == _handleRoot || go.transform.IsChildOf(_handleRoot.transform);
+    }
+
+    // ── Utilities ──────────────────────────────────────────────────────────────
+
+    bool IsNearHandleDot(Vector2 fingerLocal)
+    {
+        if (_handleDot == null || _handleRoot == null || !_handleRoot.activeSelf)
+            return false;
+
+        Vector2 dotPos = armLayout.canvasRect.InverseTransformPoint(_handleDot.position);
+        return (fingerLocal - dotPos).magnitude < HandlePickRadius;
+    }
+
+    Vector2 GetItemCanvasCentre()
+    {
+        if (_selectedItem == null || armLayout?.canvasRect == null) return Vector2.zero;
+
+        // Use the geometric centre of the item's rect, not just its pivot world position,
+        // so the handle is correctly centred even with non-centred pivots.
+        Vector3 worldCentre = _selectedItem.TransformPoint(new Vector3(
+            _selectedItem.rect.x + _selectedItem.rect.width  * 0.5f,
+            _selectedItem.rect.y + _selectedItem.rect.height * 0.5f,
+            0f));
+
+        return armLayout.canvasRect.InverseTransformPoint(worldCentre);
+    }
+
+    void ApplyItemRotation(float rotationZ)
+    {
+        if (_selectedItem == null) return;
+        var euler = _selectedItem.localEulerAngles;
+        euler.z   = rotationZ;
+        _selectedItem.localEulerAngles = euler;
+    }
+
+    bool IsFingerPressingButton(RectTransform btn, Vector3 fingerWorld)
+    {
+        if (btn == null || palette?.paletteRect == null) return false;
+
+        // Depth check: finger must be within pressDistanceMeters of the palette plane.
+        Vector3 towardUser = GetPaletteTowardUser();
+        float   depth      = Vector3.Dot(fingerWorld - palette.paletteRect.position, towardUser);
+        if (depth < 0f || depth > palette.pressDistanceMeters) return false;
+
+        // 2-D overlap in palette-local space.
+        Vector2 local = palette.paletteRect.InverseTransformPoint(fingerWorld);
+        btn.GetWorldCorners(_cornerBuf);
+        float mnX = float.MaxValue, mxX = float.MinValue;
+        float mnY = float.MaxValue, mxY = float.MinValue;
+        for (int i = 0; i < 4; i++)
+        {
+            Vector2 cl = palette.paletteRect.InverseTransformPoint(_cornerBuf[i]);
+            if (cl.x < mnX) mnX = cl.x; if (cl.x > mxX) mxX = cl.x;
+            if (cl.y < mnY) mnY = cl.y; if (cl.y > mxY) mxY = cl.y;
+        }
+        return local.x >= mnX && local.x <= mxX && local.y >= mnY && local.y <= mxY;
+    }
+
+    Vector3 GetPaletteTowardUser()
+    {
+        if (palette?.headAnchor != null)
+        {
+            var dir = palette.headAnchor.position - palette.paletteRect.position;
+            dir.y = 0f;
+            if (dir.sqrMagnitude > 1e-6f) return dir.normalized;
+        }
+        return -palette.paletteRect.forward;
+    }
+
+    static void SetBtnColor(RectTransform btn, Color c)
+    {
+        var img = btn?.GetComponent<Image>();
+        if (img != null) img.color = c;
+    }
+
+    // ── Circle sprite (same approach as Experiment1ABoundBoxController) ────────
+
+    static Sprite _circleSprite;
+
+    static Sprite GetCircleSprite()
+    {
+        if (_circleSprite != null) return _circleSprite;
+
+        const int size = 64;
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
+        {
+            wrapMode   = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear
+        };
+
+        float cx = (size - 1) * 0.5f;
+        float r  = cx - 0.5f;
+
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float dist  = Mathf.Sqrt((x - cx) * (x - cx) + (y - cx) * (y - cx));
+                float alpha = Mathf.Clamp01(r - dist + 1f);
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+            }
+        tex.Apply();
+
+        _circleSprite = Sprite.Create(
+            tex,
+            new Rect(0, 0, size, size),
+            new Vector2(0.5f, 0.5f),
+            size);
+
+        return _circleSprite;
+    }
+}

@@ -1,0 +1,916 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// Floating world-space palette of UI templates in front of the user.
+/// Picking a template clones it, attaches it to the fingertip via
+/// <see cref="ArmLayoutController.BeginCarryExternal"/>, and placement on the
+/// forearm adds it to ItemList. A delete icon on the far right removes carried items.
+/// </summary>
+[DefaultExecutionOrder(90)]
+public class PossibleUIPaletteController : MonoBehaviour
+{
+    public enum PaletteTouchState
+    {
+        None,
+        Hover,
+        Press
+    }
+
+    [Header("References")]
+    [Tooltip("Optional head anchor — only used when Follow Head is enabled.")]
+    public Transform headAnchor;
+
+    [Tooltip("Root rect whose children are the selectable UI templates.")]
+    public RectTransform paletteRect;
+
+    [Tooltip("ItemList controller — receives the carried clone and owns arm placement.")]
+    public ArmLayoutController itemListController;
+
+    [Header("Delete")]
+    [Tooltip("Optional trash-can sprite. If unset, a built-in X icon is shown at runtime.")]
+    public Sprite deleteIconSprite;
+
+    public Vector2 deleteIconSize = new Vector2(56f, 56f);
+
+    [Tooltip("Highlight color when hovering the delete icon while carrying an item.")]
+    public Color deleteHoverHighlightColor = new Color(1f, 0.35f, 0.35f, 1f);
+
+    [Tooltip("Label shown above the delete icon.")]
+    public string deleteLabelText = "Trash";
+
+    public int deleteTitleFontSize = 16;
+
+    [Tooltip("Space between the Trash label and delete icon.")]
+    [Min(0f)] public float deleteColumnSpacing = 4f;
+
+    [Tooltip("Width of the vertical separator bar beside the delete zone.")]
+    [Min(1f)] public float deleteSeparatorWidth = 2f;
+
+    public Color deleteSeparatorColor = new Color(1f, 1f, 1f, 0.85f);
+
+    [Tooltip("Space between the separator bar and delete column.")]
+    [Min(0f)] public float deleteSeparatorPadding = 8f;
+
+    [Header("Placement")]
+    [Tooltip("If true, the palette follows the head each frame. If false, it is anchored once in world space.")]
+    public bool followHead = false;
+
+    [Tooltip("Distance in meters in front of the head anchor.")]
+    [Min(0.2f)] public float distanceMeters = 0.55f;
+
+    [Tooltip("Vertical offset from the head anchor (meters). Use 0 for eye height.")]
+    public float heightOffsetMeters = 0f;
+
+    [Tooltip("Head world Y must reach this before the palette is anchored (avoids floor-level XR startup poses).")]
+    [Min(0.5f)] public float minHeadHeightToAnchor = 1.0f;
+
+    [Tooltip("Reject head poses above this Y when anchoring (avoids bad tracking spikes).")]
+    [Min(1f)] public float maxHeadHeightToAnchor = 2.2f;
+
+    [Tooltip("Frames to wait for head tracking before using fallback eye height.")]
+    [Min(1)] public int maxAnchorWaitFrames = 300;
+
+    [Tooltip("Fallback world Y (meters) if head tracking is not ready in time.")]
+    [Min(0.5f)] public float fallbackEyeHeightMeters = 1.45f;
+
+    [Tooltip("Lateral offset from the head anchor (meters). Positive moves the panel to the user's right.")]
+    public float lateralOffsetMeters = 0.18f;
+
+    [Tooltip("Yaw added after the panel faces the user. Negative angles the panel slightly to the user's left.")]
+    public float panelFaceYawDegrees = -12f;
+
+    [Tooltip("If true, the palette only follows head yaw when placement updates.")]
+    public bool yawOnlyBillboard = true;
+
+    [Tooltip("World width of the palette panel in meters.")]
+    [Min(0.05f)] public float panelWorldWidthMeters = 0.28f;
+
+    [Header("Grid")]
+    [Tooltip("If true, arranges template children in a grid at runtime.")]
+    public bool useGridLayout = true;
+
+    [Range(1, 8)] public int gridColumns = 3;
+
+    public Vector2 gridCellSize = new Vector2(70f, 70f);
+    public Vector2 gridSpacing = new Vector2(12f, 12f);
+
+    [Tooltip("Inner padding around the palette grid (canvas-local units).")]
+    [Min(0)] public int gridPaddingLeft = 12;
+    [Min(0)] public int gridPaddingRight = 12;
+    [Min(0)] public int gridPaddingTop = 12;
+    [Min(0)] public int gridPaddingBottom = 12;
+
+    [Tooltip("Space between the template grid and the delete icon.")]
+    [Min(0f)] public float deleteSeparatorSpacing = 16f;
+
+    [Header("Touch")]
+    [Tooltip("Finger within this distance (meters) of the palette plane counts as hovering.")]
+    [Min(0.001f)] public float hoverDistanceMeters = 0.035f;
+
+    [Tooltip("Finger within this distance (meters) of the palette plane counts as pressing.")]
+    [Min(0.001f)] public float pressDistanceMeters = 0.018f;
+
+    [Tooltip("Extra padding (canvas-local units) when picking a template.")]
+    [Min(0f)] public float pickPaddingLocal = 8f;
+
+    [Header("Hover highlight")]
+    [Tooltip("Show a green outline on the template under the fingertip before pickup.")]
+    public bool showHoverOutline = true;
+
+    public Color hoverOutlineColor = new Color(0.25f, 0.95f, 0.35f, 1f);
+    public Vector2 hoverOutlineDistance = new Vector2(5f, -5f);
+
+    [Header("Debug")]
+    public bool debugLogPalette = true;
+
+    [Tooltip("If true, world anchoring is skipped until cleared (experiment scenes may set this during setup).")]
+    public bool blockWorldAnchor;
+
+    public PaletteTouchState TouchState { get; private set; }
+    public bool IsFingerOverPalette => TouchState != PaletteTouchState.None;
+
+    RectTransform _templateContainer;
+    RectTransform _deleteZone;
+    RectTransform _deleteSeparator;
+    RectTransform _deleteTitle;
+    RectTransform _deleteTarget;
+    HorizontalLayoutGroup _rowLayout;
+    GridLayoutGroup _gridLayout;
+    ContentSizeFitter _templateSizeFitter;
+    ContentSizeFitter _paletteSizeFitter;
+    RectTransform _hoveredTemplate;
+    Outline _deleteOutline;
+    Vector3 _lastFingerWorld;
+    bool _worldAnchorApplied;
+    int _anchorWaitFrames;
+    int _stableHeadFrames;
+    float _lastMeasuredHeadY;
+
+    void Awake()
+    {
+        if (paletteRect == null)
+            paletteRect = transform as RectTransform;
+
+        ResolveHeadAnchor();
+        EnsurePaletteLayout();
+        ApplyPanelScale();
+    }
+
+    void LateUpdate()
+    {
+        ResolveHeadAnchor();
+
+        if (!followHead && !_worldAnchorApplied)
+            AnchorPaletteInWorldOnce();
+
+        if (followHead)
+            ApplyHeadPlacement();
+
+        EnsureRowChildOrder();
+        ApplyPanelScale();
+        LayoutDeleteZoneManual();
+        UpdateDeleteHighlight(_lastFingerWorld);
+    }
+
+    void ResolveHeadAnchor()
+    {
+        if (headAnchor != null)
+            return;
+
+        var rig = FindObjectOfType<OVRCameraRig>();
+        if (rig != null && rig.centerEyeAnchor != null)
+            headAnchor = rig.centerEyeAnchor;
+    }
+
+    void AnchorPaletteInWorldOnce()
+    {
+        if (blockWorldAnchor || _worldAnchorApplied || paletteRect == null || headAnchor == null)
+            return;
+
+        float measuredHeadY = headAnchor.position.y;
+        bool headHeightValid = measuredHeadY >= minHeadHeightToAnchor
+            && measuredHeadY <= maxHeadHeightToAnchor;
+
+        if (!headHeightValid)
+        {
+            _anchorWaitFrames++;
+            _stableHeadFrames = 0;
+            if (_anchorWaitFrames < maxAnchorWaitFrames)
+                return;
+
+            if (debugLogPalette)
+                Debug.LogWarning(
+                    $"[Palette] Head tracking not ready after {maxAnchorWaitFrames} frames; anchoring with fallback eye height {fallbackEyeHeightMeters:F2}m.");
+        }
+        else
+        {
+            if (Mathf.Abs(measuredHeadY - _lastMeasuredHeadY) > 0.04f)
+                _stableHeadFrames = 0;
+            else
+                _stableHeadFrames++;
+
+            _lastMeasuredHeadY = measuredHeadY;
+
+            // Wait for a few stable tracking frames so we do not lock a startup spike pose.
+            if (_stableHeadFrames < 5)
+                return;
+        }
+
+        _worldAnchorApplied = true;
+
+        if (paletteRect.parent != null)
+            paletteRect.SetParent(null, true);
+
+        ApplyHeadPlacement(useFallbackHeight: !headHeightValid);
+
+        if (debugLogPalette)
+            Debug.Log(
+                $"[Palette] Anchored in world space at {paletteRect.position} (head Y={measuredHeadY:F2}, stableFrames={_stableHeadFrames}).");
+    }
+
+    void ApplyHeadPlacement(bool useFallbackHeight = false)
+    {
+        if (headAnchor == null || paletteRect == null)
+            return;
+
+        Vector3 flatForward = headAnchor.forward;
+        flatForward.y = 0f;
+        if (flatForward.sqrMagnitude < 1e-6f)
+            flatForward = Vector3.forward;
+
+        flatForward.Normalize();
+        Vector3 flatRight = headAnchor.right;
+        flatRight.y = 0f;
+        if (flatRight.sqrMagnitude < 1e-6f)
+            flatRight = Vector3.Cross(Vector3.up, flatForward).normalized;
+        else
+            flatRight.Normalize();
+
+        Vector3 anchorPos = headAnchor.position;
+        Vector3 targetPos =
+            anchorPos
+            + flatForward * distanceMeters
+            + flatRight * lateralOffsetMeters;
+
+        targetPos.y = ResolveAnchorEyeHeight(anchorPos.y, useFallbackHeight) + heightOffsetMeters;
+        paletteRect.SetPositionAndRotation(targetPos, ComputeFacingRotation(anchorPos, targetPos, flatForward));
+    }
+
+    Quaternion ComputeFacingRotation(Vector3 anchorPos, Vector3 targetPos, Vector3 flatForward)
+    {
+        Vector3 faceDir = anchorPos - targetPos;
+        faceDir.y = 0f;
+        if (faceDir.sqrMagnitude < 1e-6f)
+            faceDir = -flatForward;
+
+        Quaternion faceUser = yawOnlyBillboard
+            ? Quaternion.LookRotation(faceDir.normalized, Vector3.up)
+            : Quaternion.LookRotation((anchorPos - targetPos).normalized, Vector3.up);
+
+        if (Mathf.Abs(panelFaceYawDegrees) > 0.01f)
+            faceUser = Quaternion.AngleAxis(panelFaceYawDegrees, Vector3.up) * faceUser;
+
+        return faceUser;
+    }
+
+    float ResolveAnchorEyeHeight(float measuredHeadY, bool useFallbackHeight)
+    {
+        if (useFallbackHeight)
+            return fallbackEyeHeightMeters;
+
+        if (measuredHeadY < minHeadHeightToAnchor || measuredHeadY > maxHeadHeightToAnchor)
+            return fallbackEyeHeightMeters;
+
+        return measuredHeadY;
+    }
+
+    void EnsurePaletteLayout()
+    {
+        if (paletteRect == null)
+            return;
+
+        _rowLayout = paletteRect.GetComponent<HorizontalLayoutGroup>();
+        if (_rowLayout == null)
+            _rowLayout = paletteRect.gameObject.AddComponent<HorizontalLayoutGroup>();
+        _rowLayout.spacing = deleteSeparatorSpacing;
+        _rowLayout.childAlignment = TextAnchor.MiddleLeft;
+        _rowLayout.childControlWidth = false;
+        _rowLayout.childControlHeight = false;
+        _rowLayout.childForceExpandWidth = false;
+        _rowLayout.childForceExpandHeight = false;
+        _rowLayout.reverseArrangement = false;
+        _rowLayout.padding = new RectOffset(0, 0, 0, 0);
+
+        _paletteSizeFitter = paletteRect.GetComponent<ContentSizeFitter>();
+        if (_paletteSizeFitter == null)
+            _paletteSizeFitter = paletteRect.gameObject.AddComponent<ContentSizeFitter>();
+        _paletteSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        _paletteSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        _templateContainer = paletteRect.Find("TemplateContainer") as RectTransform;
+        if (_templateContainer == null)
+        {
+            var containerGo = new GameObject("TemplateContainer",
+                typeof(RectTransform), typeof(GridLayoutGroup), typeof(ContentSizeFitter));
+            _templateContainer = containerGo.GetComponent<RectTransform>();
+            _templateContainer.SetParent(paletteRect, false);
+            _templateContainer.localScale = Vector3.one;
+        }
+
+        MigrateTemplatesIntoContainer();
+        EnsureGridLayout();
+        EnsureDeleteZone();
+        EnsureRowChildOrder();
+    }
+
+    void MigrateTemplatesIntoContainer()
+    {
+        for (int i = paletteRect.childCount - 1; i >= 0; i--)
+        {
+            Transform child = paletteRect.GetChild(i);
+            if (child == _templateContainer || child == _deleteZone || child == _deleteTarget)
+                continue;
+            if (child.GetComponent<PaletteDeleteTarget>() != null)
+                continue;
+
+            child.SetParent(_templateContainer, false);
+
+            if (child.GetComponent<Graphic>() != null && child.GetComponent<PaletteTemplateItem>() == null)
+                child.gameObject.AddComponent<PaletteTemplateItem>();
+        }
+    }
+
+    void EnsureGridLayout()
+    {
+        if (!useGridLayout || _templateContainer == null)
+            return;
+
+        _gridLayout = _templateContainer.GetComponent<GridLayoutGroup>();
+        if (_gridLayout == null)
+            _gridLayout = _templateContainer.gameObject.AddComponent<GridLayoutGroup>();
+
+        _gridLayout.cellSize = gridCellSize;
+        _gridLayout.spacing = gridSpacing;
+        _gridLayout.padding = new RectOffset(
+            gridPaddingLeft, gridPaddingRight, gridPaddingTop, gridPaddingBottom);
+        _gridLayout.startCorner = GridLayoutGroup.Corner.UpperLeft;
+        _gridLayout.startAxis = GridLayoutGroup.Axis.Horizontal;
+        _gridLayout.childAlignment = TextAnchor.UpperCenter;
+        _gridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        _gridLayout.constraintCount = Mathf.Max(1, gridColumns);
+
+        _templateSizeFitter = _templateContainer.GetComponent<ContentSizeFitter>();
+        if (_templateSizeFitter == null)
+            _templateSizeFitter = _templateContainer.gameObject.AddComponent<ContentSizeFitter>();
+        _templateSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        _templateSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+    }
+
+    void EnsureDeleteZone()
+    {
+        _deleteZone = paletteRect.Find("DeleteZone") as RectTransform;
+        if (_deleteZone == null)
+        {
+            var zoneGo = new GameObject("DeleteZone", typeof(RectTransform), typeof(LayoutElement));
+            _deleteZone = zoneGo.GetComponent<RectTransform>();
+            _deleteZone.SetParent(paletteRect, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(_deleteZone);
+
+        PaletteDeleteTarget zoneMarker = _deleteZone.GetComponent<PaletteDeleteTarget>();
+        if (zoneMarker != null)
+            Destroy(zoneMarker);
+
+        Transform legacyColumn = _deleteZone.Find("DeleteColumn");
+        if (legacyColumn != null)
+        {
+            for (int i = legacyColumn.childCount - 1; i >= 0; i--)
+                legacyColumn.GetChild(i).SetParent(_deleteZone, false);
+
+            Destroy(legacyColumn.gameObject);
+        }
+
+        EnsureDeleteSeparator();
+        EnsureDeleteTitle();
+        EnsureDeleteTarget();
+        LayoutDeleteZoneManual();
+    }
+
+    static void RemoveLegacyDeleteLayoutComponents(RectTransform root)
+    {
+        HorizontalLayoutGroup horizontal = root.GetComponent<HorizontalLayoutGroup>();
+        if (horizontal != null)
+            Destroy(horizontal);
+
+        VerticalLayoutGroup vertical = root.GetComponent<VerticalLayoutGroup>();
+        if (vertical != null)
+            Destroy(vertical);
+    }
+
+    void EnsureDeleteSeparator()
+    {
+        _deleteSeparator = _deleteZone.Find("DeleteSeparator") as RectTransform;
+        if (_deleteSeparator == null)
+        {
+            var separatorGo = new GameObject("DeleteSeparator",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            _deleteSeparator = separatorGo.GetComponent<RectTransform>();
+            _deleteSeparator.SetParent(_deleteZone, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(_deleteSeparator);
+
+        var separatorImage = _deleteSeparator.GetComponent<Image>();
+        separatorImage.sprite = null;
+        separatorImage.color = deleteSeparatorColor;
+        separatorImage.raycastTarget = false;
+    }
+
+    void EnsureDeleteTitle()
+    {
+        _deleteTitle = _deleteZone.Find("DeleteTitle") as RectTransform;
+        if (_deleteTitle == null)
+        {
+            var titleGo = new GameObject("DeleteTitle",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            _deleteTitle = titleGo.GetComponent<RectTransform>();
+            _deleteTitle.SetParent(_deleteZone, false);
+        }
+
+        var titleText = _deleteTitle.GetComponent<Text>();
+        titleText.text = deleteLabelText;
+        titleText.alignment = TextAnchor.MiddleCenter;
+        titleText.color = Color.white;
+        titleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        titleText.fontSize = deleteTitleFontSize;
+        titleText.raycastTarget = false;
+        titleText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        titleText.verticalOverflow = VerticalWrapMode.Overflow;
+        _deleteTitle.localScale = Vector3.one;
+    }
+
+    void LayoutDeleteZoneManual()
+    {
+        if (_deleteZone == null || _deleteSeparator == null || _deleteTitle == null || _deleteTarget == null)
+            return;
+
+        float columnWidth = Mathf.Max(deleteIconSize.x, 48f);
+        float titleHeight = deleteTitleFontSize + 4f;
+        float columnHeight = titleHeight + deleteColumnSpacing + deleteIconSize.y;
+        float zoneWidth = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth;
+        float columnCenterX = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth * 0.5f;
+
+        var zoneLayout = _deleteZone.GetComponent<LayoutElement>();
+        if (zoneLayout == null)
+            zoneLayout = _deleteZone.gameObject.AddComponent<LayoutElement>();
+        zoneLayout.minWidth = zoneWidth;
+        zoneLayout.preferredWidth = zoneWidth;
+        zoneLayout.minHeight = columnHeight;
+        zoneLayout.preferredHeight = columnHeight;
+        zoneLayout.flexibleWidth = 0f;
+        zoneLayout.flexibleHeight = 0f;
+
+        _deleteSeparator.SetAsFirstSibling();
+        _deleteTitle.SetSiblingIndex(1);
+        _deleteTarget.SetAsLastSibling();
+
+        _deleteSeparator.anchorMin = new Vector2(0f, 0f);
+        _deleteSeparator.anchorMax = new Vector2(0f, 1f);
+        _deleteSeparator.pivot = new Vector2(0f, 0.5f);
+        _deleteSeparator.sizeDelta = new Vector2(deleteSeparatorWidth, 0f);
+        _deleteSeparator.anchoredPosition = Vector2.zero;
+
+        _deleteTitle.anchorMin = new Vector2(0f, 1f);
+        _deleteTitle.anchorMax = new Vector2(0f, 1f);
+        _deleteTitle.pivot = new Vector2(0.5f, 1f);
+        _deleteTitle.sizeDelta = new Vector2(columnWidth, titleHeight);
+        _deleteTitle.anchoredPosition = new Vector2(columnCenterX, 0f);
+
+        _deleteTarget.anchorMin = new Vector2(0f, 1f);
+        _deleteTarget.anchorMax = new Vector2(0f, 1f);
+        _deleteTarget.pivot = new Vector2(0.5f, 1f);
+        _deleteTarget.sizeDelta = deleteIconSize;
+        _deleteTarget.anchoredPosition = new Vector2(columnCenterX, -(titleHeight + deleteColumnSpacing));
+    }
+
+    void EnsureDeleteTarget()
+    {
+        if (_deleteTarget == null)
+            _deleteTarget = paletteRect.Find("DeleteIcon") as RectTransform;
+        if (_deleteTarget == null && _deleteZone != null)
+            _deleteTarget = _deleteZone.Find("DeleteIcon") as RectTransform;
+
+        if (_deleteTarget == null)
+        {
+            var deleteGo = new GameObject("DeleteIcon",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            _deleteTarget = deleteGo.GetComponent<RectTransform>();
+            deleteGo.AddComponent<PaletteDeleteTarget>();
+        }
+
+        if (_deleteZone != null && _deleteTarget.parent != _deleteZone)
+            _deleteTarget.SetParent(_deleteZone, false);
+
+        if (_deleteTarget.GetComponent<PaletteDeleteTarget>() == null)
+            _deleteTarget.gameObject.AddComponent<PaletteDeleteTarget>();
+
+        var image = _deleteTarget.GetComponent<Image>();
+        if (image == null)
+            image = _deleteTarget.gameObject.AddComponent<Image>();
+        ApplyDeleteIconVisual(image);
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+
+        LayoutElement legacyLayout = _deleteTarget.GetComponent<LayoutElement>();
+        if (legacyLayout != null)
+            Destroy(legacyLayout);
+    }
+
+    void ApplyDeleteIconVisual(Image image)
+    {
+        var label = _deleteTarget.Find("DeleteIconLabel") as RectTransform;
+
+        if (deleteIconSprite != null)
+        {
+            if (label != null)
+                label.gameObject.SetActive(false);
+
+            image.sprite = deleteIconSprite;
+            image.color = Color.white;
+            return;
+        }
+
+        image.sprite = null;
+        image.color = new Color(0.85f, 0.2f, 0.2f, 0.85f);
+
+        if (label == null)
+        {
+            var labelGo = new GameObject("DeleteIconLabel",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            label = labelGo.GetComponent<RectTransform>();
+            label.SetParent(_deleteTarget, false);
+            label.anchorMin = Vector2.zero;
+            label.anchorMax = Vector2.one;
+            label.offsetMin = Vector2.zero;
+            label.offsetMax = Vector2.zero;
+        }
+        else
+        {
+            label.gameObject.SetActive(true);
+        }
+
+        var text = label.GetComponent<Text>();
+        text.text = "\u2715";
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = Color.white;
+        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.fontSize = Mathf.RoundToInt(Mathf.Min(deleteIconSize.x, deleteIconSize.y) * 0.65f);
+        text.raycastTarget = false;
+    }
+
+    void EnsureRowChildOrder()
+    {
+        if (_templateContainer == null || _deleteZone == null)
+            return;
+
+        _templateContainer.SetAsFirstSibling();
+        _deleteZone.SetAsLastSibling();
+    }
+
+    void ApplyPanelScale()
+    {
+        if (paletteRect == null || panelWorldWidthMeters <= 0f)
+            return;
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(paletteRect);
+
+        float rectWidth = paletteRect.rect.width;
+        if (rectWidth < 1f)
+            return;
+
+        float scale = panelWorldWidthMeters / rectWidth;
+        // Negative X un-mirrors world-space UI so layout, text, and lateral offsets match the user's view.
+        paletteRect.localScale = new Vector3(-scale, scale, scale);
+    }
+
+    /// <summary>
+    /// Clears the one-shot world anchor so placement runs again (e.g. after experiment-specific palette setup).
+    /// MainScene does not call this; experiment scenes may.
+    /// </summary>
+    public void RequestWorldReanchor()
+    {
+        _worldAnchorApplied = false;
+        _anchorWaitFrames = 0;
+        _stableHeadFrames = 0;
+    }
+
+    public bool IsWorldAnchored => _worldAnchorApplied;
+
+    /// <summary>
+    /// Anchor immediately at the current head pose (skips stable-frame wait).
+    /// Experiment scenes may call this; MainScene uses the default delayed anchor.
+    /// </summary>
+    public void ForceWorldAnchorNow()
+    {
+        if (paletteRect == null)
+            return;
+
+        ResolveHeadAnchor();
+        if (headAnchor == null)
+            return;
+
+        _worldAnchorApplied = true;
+
+        if (paletteRect.parent != null)
+            paletteRect.SetParent(null, true);
+
+        float headY = headAnchor.position.y;
+        bool useFallback = headY < minHeadHeightToAnchor || headY > maxHeadHeightToAnchor;
+        ApplyHeadPlacement(useFallbackHeight: useFallback);
+
+        if (debugLogPalette)
+            Debug.Log($"[Palette] Force-anchored at {paletteRect.position} (head Y={headY:F2}, fallback={useFallback}).");
+    }
+
+    /// <summary>Updates hover/press state from the index fingertip world position.</summary>
+    public void UpdateTouchFromFinger(Vector3 fingerWorld)
+    {
+        _lastFingerWorld = fingerWorld;
+
+        if (paletteRect == null)
+        {
+            TouchState = PaletteTouchState.None;
+            UpdateHoverHighlight(fingerWorld);
+            return;
+        }
+
+        if (!followHead && !_worldAnchorApplied)
+        {
+            TouchState = PaletteTouchState.None;
+            UpdateHoverHighlight(fingerWorld);
+            return;
+        }
+
+        float signedDistance = SignedDistanceToPalettePlane(fingerWorld);
+        if (signedDistance > hoverDistanceMeters)
+            TouchState = PaletteTouchState.None;
+        else if (signedDistance <= pressDistanceMeters)
+            TouchState = PaletteTouchState.Press;
+        else
+            TouchState = PaletteTouchState.Hover;
+
+        UpdateHoverHighlight(fingerWorld);
+    }
+
+    /// <summary>True when the fingertip is over the delete icon bounds.</summary>
+    public bool IsFingerOverDelete(Vector3 fingerWorld)
+    {
+        if (_deleteTarget == null || paletteRect == null)
+            return false;
+
+        if (SignedDistanceToPalettePlane(fingerWorld) > hoverDistanceMeters)
+            return false;
+
+        Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
+        float pad = pickPaddingLocal;
+
+        GetBoundsInPaletteLocal(_deleteTarget, out float iconMnX, out float iconMxX, out float iconMnY, out float iconMxY);
+        bool overIcon =
+            fingerLocal.x >= iconMnX - pad && fingerLocal.x <= iconMxX + pad &&
+            fingerLocal.y >= iconMnY - pad && fingerLocal.y <= iconMxY + pad;
+
+        if (overIcon)
+            return true;
+
+        if (_deleteTitle == null)
+            return false;
+
+        GetBoundsInPaletteLocal(_deleteTitle, out float titleMnX, out float titleMxX, out float titleMnY, out float titleMxY);
+        return fingerLocal.x >= titleMnX - pad && fingerLocal.x <= titleMxX + pad &&
+               fingerLocal.y >= titleMnY - pad && fingerLocal.y <= titleMxY + pad;
+    }
+
+    void UpdateHoverHighlight(Vector3 fingerWorld)
+    {
+        if (!showHoverOutline)
+        {
+            SetTemplateHoverOutline(_hoveredTemplate, false);
+            _hoveredTemplate = null;
+            return;
+        }
+
+        if (itemListController != null && itemListController.IsCarrying)
+        {
+            SetTemplateHoverOutline(_hoveredTemplate, false);
+            _hoveredTemplate = null;
+            return;
+        }
+
+        RectTransform next = null;
+        if (TouchState != PaletteTouchState.None)
+        {
+            Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
+            TryPickTemplate(fingerLocal, out next);
+        }
+
+        if (_hoveredTemplate == next)
+            return;
+
+        SetTemplateHoverOutline(_hoveredTemplate, false);
+        _hoveredTemplate = next;
+        SetTemplateHoverOutline(_hoveredTemplate, true);
+    }
+
+    void UpdateDeleteHighlight(Vector3 fingerWorld)
+    {
+        if (_deleteTarget == null)
+            return;
+
+        bool carrying = itemListController != null && itemListController.IsCarrying;
+        bool highlight = carrying && IsFingerOverDelete(fingerWorld);
+
+        if (_deleteOutline == null)
+            _deleteOutline = _deleteTarget.GetComponent<Outline>();
+
+        if (highlight)
+        {
+            if (_deleteOutline == null)
+            {
+                _deleteOutline = _deleteTarget.gameObject.AddComponent<Outline>();
+                _deleteOutline.useGraphicAlpha = true;
+            }
+
+            _deleteOutline.effectColor = deleteHoverHighlightColor;
+            _deleteOutline.effectDistance = hoverOutlineDistance;
+            _deleteOutline.enabled = true;
+        }
+        else if (_deleteOutline != null)
+        {
+            _deleteOutline.enabled = false;
+        }
+    }
+
+    void SetTemplateHoverOutline(RectTransform template, bool enabled)
+    {
+        if (template == null)
+            return;
+
+        Outline outline = template.GetComponent<Outline>();
+        if (outline == null)
+        {
+            if (!enabled)
+                return;
+
+            outline = template.gameObject.AddComponent<Outline>();
+            outline.effectColor = hoverOutlineColor;
+            outline.effectDistance = hoverOutlineDistance;
+            outline.useGraphicAlpha = true;
+        }
+
+        outline.effectColor = hoverOutlineColor;
+        outline.effectDistance = hoverOutlineDistance;
+        outline.enabled = enabled;
+    }
+
+    float SignedDistanceToPalettePlane(Vector3 worldPoint)
+    {
+        Vector3 towardUser = GetTowardUserNormal();
+        float signed = Vector3.Dot(worldPoint - paletteRect.position, towardUser);
+
+        // Ignore hits behind the panel (away from the user).
+        if (signed < 0f)
+            return float.MaxValue;
+
+        return signed;
+    }
+
+    Vector3 GetTowardUserNormal()
+    {
+        if (headAnchor != null)
+        {
+            Vector3 towardUser = headAnchor.position - paletteRect.position;
+            towardUser.y = 0f;
+            if (towardUser.sqrMagnitude > 1e-6f)
+                return towardUser.normalized;
+        }
+
+        return -paletteRect.forward;
+    }
+
+    Vector2 FingerLocalOnPalette(Vector3 fingerWorld)
+    {
+        Vector3 local = paletteRect.InverseTransformPoint(fingerWorld);
+        return new Vector2(local.x, local.y);
+    }
+
+    static bool IsSelectableTemplate(RectTransform childRt)
+    {
+        return childRt != null
+            && childRt.gameObject.activeInHierarchy
+            && childRt.GetComponent<PaletteDeleteTarget>() == null
+            && childRt.GetComponent<Graphic>() != null;
+    }
+
+    bool TryPickTemplate(Vector2 fingerLocal, out RectTransform hit)
+    {
+        hit = null;
+        if (_templateContainer == null)
+            return false;
+
+        RectTransform bestOverlap = null;
+        float bestOverlapDistSq = float.MaxValue;
+
+        for (int i = _templateContainer.childCount - 1; i >= 0; i--)
+        {
+            if (!(_templateContainer.GetChild(i) is RectTransform childRt))
+                continue;
+            if (!IsSelectableTemplate(childRt))
+                continue;
+
+            GetBoundsInPaletteLocal(childRt, out float mnX, out float mxX, out float mnY, out float mxY);
+
+            float paddedMnX = mnX - pickPaddingLocal;
+            float paddedMxX = mxX + pickPaddingLocal;
+            float paddedMnY = mnY - pickPaddingLocal;
+            float paddedMxY = mxY + pickPaddingLocal;
+
+            bool overlaps =
+                fingerLocal.x >= paddedMnX && fingerLocal.x <= paddedMxX &&
+                fingerLocal.y >= paddedMnY && fingerLocal.y <= paddedMxY;
+
+            if (!overlaps)
+                continue;
+
+            Vector2 center = new Vector2((mnX + mxX) * 0.5f, (mnY + mxY) * 0.5f);
+            float distSq = (fingerLocal - center).sqrMagnitude;
+            if (distSq < bestOverlapDistSq)
+            {
+                bestOverlapDistSq = distSq;
+                bestOverlap = childRt;
+            }
+        }
+
+        hit = bestOverlap;
+        return hit != null;
+    }
+
+    void GetBoundsInPaletteLocal(RectTransform child, out float mnX, out float mxX, out float mnY, out float mxY)
+    {
+        Vector3[] corners = new Vector3[4];
+        child.GetWorldCorners(corners);
+
+        mnX = mnY = float.MaxValue;
+        mxX = mxY = float.MinValue;
+
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 local = paletteRect.InverseTransformPoint(corners[i]);
+            if (local.x < mnX) mnX = local.x;
+            if (local.x > mxX) mxX = local.x;
+            if (local.y < mnY) mnY = local.y;
+            if (local.y > mxY) mxY = local.y;
+        }
+    }
+
+    /// <summary>
+    /// Clone the touched template and begin carrying it toward the arm via ItemList.
+    /// </summary>
+    public bool TryBeginCarryFromPalette(Transform indexTipWorld)
+    {
+        if (indexTipWorld == null || itemListController == null || paletteRect == null)
+            return false;
+
+        if (itemListController.IsCarrying)
+            return false;
+
+        if (IsFingerOverDelete(indexTipWorld.position))
+            return false;
+
+        Vector2 fingerLocal = FingerLocalOnPalette(indexTipWorld.position);
+        if (!TryPickTemplate(fingerLocal, out RectTransform template))
+            return false;
+
+        SetTemplateHoverOutline(_hoveredTemplate, false);
+        _hoveredTemplate = null;
+
+        RectTransform clone = Instantiate(template, template.position, template.rotation);
+        clone.name = template.name + "_Placed";
+
+        if (debugLogPalette)
+            Debug.Log($"[Palette] Picked template '{template.name}' at canvasLocal={fingerLocal:F1}");
+
+        return itemListController.BeginCarryExternal(clone, indexTipWorld, destroyOnAbort: true);
+    }
+}
+
+/// <summary>
+/// Marks a palette UI element as the delete drop zone.
+/// </summary>
+public class PaletteDeleteTarget : MonoBehaviour { }
+
+/// <summary>
+/// Marks a palette child as a selectable template that can be cloned onto the arm.
+/// </summary>
+public class PaletteTemplateItem : MonoBehaviour { }
