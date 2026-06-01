@@ -17,10 +17,7 @@ public class ExperimentSelectMenuController : MonoBehaviour
     }
 
     [Header("References")]
-    [Tooltip("Optional. Auto-finds CenterEyeAnchor when empty.")]
     public Transform headAnchor;
-
-    [Tooltip("Optional. Auto-finds HandTrackingController when empty.")]
     public HandTrackingController handController;
 
     [Header("Menu")]
@@ -74,45 +71,14 @@ public class ExperimentSelectMenuController : MonoBehaviour
 
     void Awake()
     {
-        ResolveReferences();
         BuildMenu();
         ApplyPanelScale();
     }
 
     void LateUpdate()
     {
-        // Retry finding handController every frame until found — guards against
-        // the case where HandTrackingController is created after our Awake runs.
-        if (handController == null)
-            ResolveReferences();
-
-        if (!_headFollowActive)
-            TryEnableHeadFollow();
-        else if (followHead)
-            ApplyMenuPlacement();
-
         ApplyPanelScale();
         UpdateButtonInteraction();
-    }
-
-    void ResolveReferences()
-    {
-        if (headAnchor == null)
-        {
-            var rig = FindObjectOfType<OVRCameraRig>();
-            if (rig != null && rig.centerEyeAnchor != null)
-                headAnchor = rig.centerEyeAnchor;
-        }
-
-        if (headAnchor == null)
-        {
-            GameObject centerEye = GameObject.Find("CenterEyeAnchor");
-            if (centerEye != null)
-                headAnchor = centerEye.transform;
-        }
-
-        if (handController == null)
-            handController = FindObjectOfType<HandTrackingController>(true);
     }
 
     void BuildMenu()
@@ -308,13 +274,8 @@ public class ExperimentSelectMenuController : MonoBehaviour
         int hoveredIndex = -1;
         int pressedIndex = -1;
 
-        if (handController != null)
-        {
-            if (handController.isLeftHandTracked)
-                TryUpdateButtonInteractionForFinger(handController.leftIndexTip, ref hoveredIndex, ref pressedIndex);
-
-            if (handController.isRightHandTracked)
-                TryUpdateButtonInteractionForFinger(handController.rightIndexTip, ref hoveredIndex, ref pressedIndex);
+        if (handController != null && handController.isRightHandTracked) {
+            TryUpdateButtonInteractionForFinger(handController.rightIndexTip, ref hoveredIndex, ref pressedIndex);
         }
 
         for (int i = 0; i < _buttons.Count; i++)

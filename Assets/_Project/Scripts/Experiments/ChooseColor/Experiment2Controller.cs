@@ -64,7 +64,7 @@ public class Experiment2Controller : MonoBehaviour
             return;
 
         var root = new GameObject("Experiment2");
-        root.AddComponent<Experiment2SceneBootstrap>();
+        //root.AddComponent<Experiment2SceneBootstrap>();
         root.AddComponent<Experiment2Controller>();
         Debug.Log("[Experiment2] Runtime bootstrap created controller.");
     }

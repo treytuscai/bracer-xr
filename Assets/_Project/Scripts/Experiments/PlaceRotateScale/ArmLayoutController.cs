@@ -274,9 +274,11 @@ public class ArmLayoutController : MonoBehaviour
     {
         if (canvasCamera == null || armSurface == null || canvasRect == null)
         {
-            Vector2 raw = armSurface != null
-                ? armSurface.ComputeLinearUv(tapWorld, lateralWidthMeters)
-                : Vector2.zero;
+            // BREAKING
+            // Vector2 raw = armSurface != null
+            //     ? armSurface.ComputeLinearUv(tapWorld, lateralWidthMeters)
+            //     : Vector2.zero;
+            Vector2 raw = Vector2.zero;
             return LayoutLocalFromSanitizedUv(SanitizedMeshUv(raw));
         }
 

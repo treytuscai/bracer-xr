@@ -115,7 +115,7 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         if (FindObjectOfType<Experiment1ABoundBoxController>() != null) return;
 
         var root = new GameObject("Experiment1A");
-        root.AddComponent<Experiment1ASceneBootstrap>();
+        //root.AddComponent<Experiment1ASceneBootstrap>();
         root.AddComponent<Experiment1ABoundBoxController>();
         Debug.Log("[Experiment1A] Runtime bootstrap created controller.");
     }
