@@ -256,30 +256,6 @@ Transform:
     type: 3}
   m_PrefabInstance: {fileID: 95318283}
   m_PrefabAsset: {fileID: 0}
---- !u!114 &95318285 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 95318283}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 2609c54f376cffc4da1ab9401cc1a36f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
---- !u!114 &95318286 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 95318283}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: cb7623a8f0b49cf4dbaa40aea4d4be64, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!1 &125572888
 GameObject:
   m_ObjectHideFlags: 0
@@ -564,30 +540,6 @@ Transform:
     type: 3}
   m_PrefabInstance: {fileID: 1150696680}
   m_PrefabAsset: {fileID: 0}
---- !u!114 &1150696682 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 1150696680}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 2609c54f376cffc4da1ab9401cc1a36f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
---- !u!114 &1150696683 stripped
-MonoBehaviour:
-  m_CorrespondingSourceObject: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-    type: 3}
-  m_PrefabInstance: {fileID: 1150696680}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: cb7623a8f0b49cf4dbaa40aea4d4be64, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!1 &1163492773
 GameObject:
   m_ObjectHideFlags: 0
@@ -1135,6 +1087,30 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1324589422}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1563460564 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
+    type: 3}
+  m_PrefabInstance: {fileID: 95318283}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2609c54f376cffc4da1ab9401cc1a36f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+--- !u!114 &1563460565 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+    type: 3}
+  m_PrefabInstance: {fileID: 95318283}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb7623a8f0b49cf4dbaa40aea4d4be64, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &1680047797
 GameObject:
   m_ObjectHideFlags: 0
@@ -1484,7 +1460,6 @@ GameObject:
   m_Component:
   - component: {fileID: 3847291051}
   - component: {fileID: 3847291052}
-  - component: {fileID: 3847291053}
   m_Layer: 0
   m_Name: ExperimentSelectMenu
   m_TagString: Untagged
@@ -1548,18 +1523,6 @@ MonoBehaviour:
   buttonColor: {r: 0.18, g: 0.42, b: 0.82, a: 1}
   buttonHoverColor: {r: 0.28, g: 0.58, b: 0.98, a: 1}
   buttonPressColor: {r: 0.12, g: 0.32, b: 0.68, a: 1}
---- !u!114 &3847291053
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 3847291050}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: d1e2f3a4b5c64789a1b2c3d4e5f67890, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!1 &3847291100
 GameObject:
   m_ObjectHideFlags: 0
@@ -1636,10 +1599,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 260e45a709f6b480aa5815c09322053f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  leftHand: {fileID: 95318286}
-  leftSkeleton: {fileID: 95318285}
-  rightHand: {fileID: 1150696683}
-  rightSkeleton: {fileID: 1150696682}
+  rightHand: {fileID: 1563460565}
+  rightSkeleton: {fileID: 1563460564}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

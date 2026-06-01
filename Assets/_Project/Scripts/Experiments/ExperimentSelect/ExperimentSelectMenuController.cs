@@ -77,6 +77,9 @@ public class ExperimentSelectMenuController : MonoBehaviour
 
     void LateUpdate()
     {
+        TryEnableHeadFollow();
+        if (_headFollowActive && followHead)
+            ApplyMenuPlacement();
         ApplyPanelScale();
         UpdateButtonInteraction();
     }
@@ -274,7 +277,7 @@ public class ExperimentSelectMenuController : MonoBehaviour
         int hoveredIndex = -1;
         int pressedIndex = -1;
 
-        if (handController != null && handController.isRightHandTracked) {
+        if (handController != null && handController.rightIndexTip != null) {
             TryUpdateButtonInteractionForFinger(handController.rightIndexTip, ref hoveredIndex, ref pressedIndex);
         }
 

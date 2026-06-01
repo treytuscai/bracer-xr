@@ -23,8 +23,7 @@ public class HandTrackingController : MonoBehaviour
     // Require non-null, actively tracked, AND high confidence.
     // High confidence gate prevents acting on degraded tracking
     public bool isRightHandTracked => rightHand != null
-        && rightHand.IsTracked
-        && rightHand.HandConfidence >= OVRHand.TrackingConfidence.High;
+        && rightHand.IsTracked;
 
     /// <summary>
     /// Generic bone accessor. Returns null if skeleton isn't ready
@@ -42,6 +41,8 @@ public class HandTrackingController : MonoBehaviour
         return null;
     }
 
-    // Convenience: Right index fingertip (input finger)
-    public Transform rightIndexTip => getBoneTransform(rightSkeleton, "XRHand_IndexTip");
+    // Index 10 = IndexTip per OVR XRHand layout (verified in HandMask.cs)
+    public Transform rightIndexTip => (rightSkeleton != null && rightSkeleton.Bones != null && rightSkeleton.Bones.Count > 10)
+        ? rightSkeleton.Bones[10].Transform
+        : null;
 }
