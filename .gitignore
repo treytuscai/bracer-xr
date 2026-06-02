@@ -20,6 +20,12 @@
 # They also could contain extremely sensitive data
 /[Mm]emoryCaptures/
 
+# Burst compiler debug output — build artifact, regenerated each build, not for distribution
+*_BurstDebugInformation_DoNotShip/
+
+# Crash reports
+mono_crash.*.json
+
 # Recordings can get excessive in size
 /[Rr]ecordings/
 
