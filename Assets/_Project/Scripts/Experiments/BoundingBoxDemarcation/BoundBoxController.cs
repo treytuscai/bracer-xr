@@ -29,7 +29,7 @@ public class Experiment1ABoundBoxController : MonoBehaviour
     public ArmLayoutController    armLayout;
     public ForearmTouchManager    forearmTouch;
     public PossibleUIPaletteController palette;
-    public TouchInputManager      touchInput;
+    public ForearmInteraction     forearmInteraction;
     public HandTrackingController handTracking;
 
     [Header("Dot visuals")]
@@ -171,7 +171,7 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         if (armLayout    == null) armLayout    = FindObjectOfType<ArmLayoutController>();
         if (forearmTouch == null) forearmTouch = FindObjectOfType<ForearmTouchManager>();
         if (palette      == null) palette      = FindObjectOfType<PossibleUIPaletteController>();
-        if (touchInput   == null) touchInput   = FindObjectOfType<TouchInputManager>();
+        if (forearmInteraction == null) forearmInteraction = FindObjectOfType<ForearmInteraction>();
         if (handTracking == null) handTracking = FindObjectOfType<HandTrackingController>();
     }
 
@@ -379,9 +379,9 @@ public class Experiment1ABoundBoxController : MonoBehaviour
 
     void ProcessDrawMode()
     {
-        if (touchInput == null) return;
+        if (forearmInteraction == null) return;
 
-        bool pressHeld  = touchInput.touchState == TouchInputManager.TouchState.Press;
+        bool pressHeld  = forearmInteraction.IsActive;
         bool pressBegan = pressHeld && !_wasArmPressHeld;
         _wasArmPressHeld = pressHeld;
 
@@ -390,9 +390,9 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         if (!pressBegan) return;
 
         // Find an existing dot to snap to, or place a brand-new one.
-        bool snapped = TryFindSnapDot(touchInput.contactPoint, out Experiment1ADotMarker target);
+        bool snapped = TryFindSnapDot(out Experiment1ADotMarker target);
         if (!snapped)
-            target = PlaceDotAtContact(touchInput.contactPoint);
+            target = PlaceDotAtContact();
 
         // Connect to the chain if we have a previous dot.
         if (_drawChainLast != null && target != _drawChainLast)
@@ -418,15 +418,15 @@ public class Experiment1ABoundBoxController : MonoBehaviour
     void UpdateElasticLine()
     {
         bool active = _drawChainLast != null
-                   && touchInput != null
-                   && touchInput.touchState != TouchInputManager.TouchState.None;
+                   && forearmInteraction != null
+                   && forearmInteraction.IsActive;
 
         if (_elasticSegment != null) _elasticSegment.gameObject.SetActive(active);
         if (_ghostDotGo     != null) _ghostDotGo.SetActive(active);
 
-        if (!active || touchInput == null) return;
+        if (!active) return;
 
-        Vector2 fp = armLayout.TapWorldToCanvasLocal(touchInput.contactPoint);
+        Vector2 fp = UVToCanvasLocal(CurrentTouchUV);
         if (_ghostMarker?.RectTransform != null)
             _ghostMarker.RectTransform.anchoredPosition = fp;
     }
@@ -471,9 +471,13 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         if (_ghostDotGo     != null) _ghostDotGo.SetActive(false);
     }
 
-    Experiment1ADotMarker PlaceDotAtContact(Vector3 contactWorld)
+    Experiment1ADotMarker PlaceDotAtContact()
     {
-        Vector2 local = armLayout.TapWorldToCanvasLocal(contactWorld);
+        Vector2 uv    = CurrentTouchUV;
+        Vector2 local = UVToCanvasLocal(uv);
+        RectTransform dbgCanvas = armLayout != null && armLayout.canvasRect != null
+            ? armLayout.canvasRect : null;
+        Debug.Log($"[BB] Place dot | touchUV={uv} | canvasLocal={local} | canvasRect={( dbgCanvas != null ? dbgCanvas.rect.ToString() : "null")}");
         int layer = ArmCanvasLayer();
 
         var go = new GameObject("Dot",
@@ -498,13 +502,13 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         return marker;
     }
 
-    bool TryFindSnapDot(Vector3 contactWorld, out Experiment1ADotMarker snapped)
+    bool TryFindSnapDot(out Experiment1ADotMarker snapped)
     {
         snapped = null;
         if (_dots.Count == 0) return false;
 
         RectTransform canvas = armLayout.canvasRect ?? armLayout.transform as RectTransform;
-        Vector2 fp = armLayout.TapWorldToCanvasLocal(contactWorld);
+        Vector2 fp = UVToCanvasLocal(CurrentTouchUV);
 
         float bestDist = float.MaxValue;
         foreach (var dot in _dots)
@@ -525,19 +529,19 @@ public class Experiment1ABoundBoxController : MonoBehaviour
 
     void ProcessResizeMode()
     {
-        if (touchInput == null) return;
+        if (forearmInteraction == null) return;
 
-        bool pressHeld  = touchInput.touchState == TouchInputManager.TouchState.Press;
+        bool pressHeld  = forearmInteraction.IsActive;
         bool pressBegan = pressHeld && !_wasArmPressHeld;
         bool pressEnded = !pressHeld && _wasArmPressHeld;
         _wasArmPressHeld = pressHeld;
 
         if (pressBegan)
-            TryPickDotAtContact(touchInput.contactPoint, out _resizeDragDot);
+            TryPickDotAtContact(out _resizeDragDot);
 
         if (pressHeld && _resizeDragDot?.RectTransform != null)
             _resizeDragDot.RectTransform.anchoredPosition =
-                armLayout.TapWorldToCanvasLocal(touchInput.contactPoint);
+                UVToCanvasLocal(CurrentTouchUV);
         // Experiment1ALineSegment.LateUpdate (order 98) refreshes geometry each frame.
 
         if (pressEnded)
@@ -551,18 +555,18 @@ public class Experiment1ABoundBoxController : MonoBehaviour
 
     void ProcessRemoveMode()
     {
-        if (touchInput == null) return;
+        if (forearmInteraction == null) return;
 
-        bool pressHeld  = touchInput.touchState == TouchInputManager.TouchState.Press;
+        bool pressHeld  = forearmInteraction.IsActive;
         bool pressBegan = pressHeld && !_wasArmPressHeld;
         _wasArmPressHeld = pressHeld;
 
         if (!pressBegan) return;
 
-        if (TryPickDotAtContact(touchInput.contactPoint, out Experiment1ADotMarker dot))
+        if (TryPickDotAtContact(out Experiment1ADotMarker dot))
             RemoveDot(dot);
         else
-            TryRemoveLineAtContact(touchInput.contactPoint);
+            TryRemoveLineAtContact();
     }
 
     void RemoveDot(Experiment1ADotMarker dot)
@@ -589,10 +593,10 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         InvalidateAndRebuildFills();
     }
 
-    void TryRemoveLineAtContact(Vector3 contactWorld)
+    void TryRemoveLineAtContact()
     {
         RectTransform canvas = armLayout.canvasRect ?? armLayout.transform as RectTransform;
-        Vector2 fp = armLayout.TapWorldToCanvasLocal(contactWorld);
+        Vector2 fp = UVToCanvasLocal(CurrentTouchUV);
 
         Experiment1ALineSegment nearest = null;
         float nearestDist = linePickRadiusLocal;
@@ -616,7 +620,7 @@ public class Experiment1ABoundBoxController : MonoBehaviour
 
     // ── Shared pick ────────────────────────────────────────────────────────────
 
-    bool TryPickDotAtContact(Vector3 contactWorld, out Experiment1ADotMarker picked)
+    bool TryPickDotAtContact(out Experiment1ADotMarker picked)
     {
         picked = null;
         if (armLayout == null || _dots.Count == 0) return false;
@@ -624,7 +628,7 @@ public class Experiment1ABoundBoxController : MonoBehaviour
         RectTransform canvas = armLayout.canvasRect ?? armLayout.transform as RectTransform;
         if (canvas == null) return false;
 
-        Vector2 fp   = armLayout.TapWorldToCanvasLocal(contactWorld);
+        Vector2 fp   = UVToCanvasLocal(CurrentTouchUV);
         float bestDist = float.MaxValue;
 
         foreach (var dot in _dots)
@@ -893,6 +897,28 @@ public class Experiment1ABoundBoxController : MonoBehaviour
             size);
 
         return _circleSprite;
+    }
+
+    /// <summary>
+    /// Maps a surface touch UV [0,1] to a canvas-local anchoredPosition on the
+    /// display canvas. The depth pipeline already produces the surface UV, so this
+    /// is a pure lerp over the canvas rect — no world-space projection and no
+    /// dependency on the old cylinder (armLayout.TapWorldToCanvasLocal).
+    ///
+    ///</summary>
+    Vector2 CurrentTouchUV => forearmInteraction != null ? forearmInteraction.TouchUV : Vector2.zero;
+
+    Vector2 UVToCanvasLocal(Vector2 uv)
+    {
+        if (armLayout == null) return Vector2.zero;
+        RectTransform canvas = armLayout.canvasRect != null
+            ? armLayout.canvasRect
+            : armLayout.transform as RectTransform;
+        if (canvas == null) return Vector2.zero;
+
+        Rect r = canvas.rect;
+        return new Vector2(Mathf.Lerp(r.xMin, r.xMax, uv.x),
+                           Mathf.Lerp(r.yMin, r.yMax, uv.y));
     }
 
     int ArmCanvasLayer()
