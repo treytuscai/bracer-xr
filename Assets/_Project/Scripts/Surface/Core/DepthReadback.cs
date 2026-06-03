@@ -56,13 +56,11 @@ namespace Surface.Core
         // STATE
         // ------------------------------------------------------------------
         // Material wrapping MetaDepthCopy.shader; reconstructs world positions
-        // from the depth texture into _worldPosRT during the blit step.
+        // from the depth texture into the grid-resolution blit target.
         private Material _blitMaterial;
-        // Full-screen ARGBFloat RenderTexture holding one world-space Vector4
-        // per pixel (xyz = world position, w = raw depth / -1 if invalid).
-        // Full-screen because the depth texture covers the full view; the crop
-        // is applied during AsyncGPUReadback.Request, not during the blit.
-        private RenderTexture _worldPosRT;
+        // World positions are written to a per-frame pooled RenderTexture sized to the forearm
+        // grid (RenderTexture.GetTemporary in Schedule), not a persistent full-screen RT — the
+        // blit runs at grid resolution (~cols×rows fragments) instead of over the whole screen.
         // Set to true when AsyncGPUReadback.Request is enqueued, false at the
         // start of its callback. Reset at callback start (not end) so that
         // exceptions in downstream processing don't permanently stall the pipeline.
@@ -95,6 +93,10 @@ namespace Surface.Core
         // rate (render frames per depth frame). Toggle from ForearmDepthSurface; set
         // false (default) for zero overhead. Remove this block once measured.
         public bool LogDiagnostics = false;
+        // When true, Schedule() logs diagnostics then early-returns, skipping ALL reconstruction
+        // GPU work (hand-mask render + full-screen blit + readback + downstream). Isolates whether
+        // this pipeline is the fps bottleneck: fps still logs, but the surface stops updating.
+        public bool SkipReconstruction = false;
         private Matrix4x4 _lastDepthMatrix;   // previous depth reprojection matrix (change = new depth frame)
         private int _depthFrameChanges;       // depth-matrix changes seen in the current window
         private int _diagRenderFrames;        // render frames (Schedule calls) in the current window
@@ -166,43 +168,55 @@ namespace Surface.Core
             // DIAGNOSTICS (temporary): characterize depth-buffer size vs pixelStride and update rate.
             if (LogDiagnostics) Diagnostics(cam, depthMatrices[0], cropX, cropY, cropW, cropH, pixelStride);
 
-            // Resize the world-position RenderTexture if the screen resolution changed.
+            // DIAGNOSTICS (temporary): bail before any reconstruction GPU work to test if this
+            // pipeline is the fps bottleneck. Returns false so the caller's in-flight guard stays clear.
+            if (SkipReconstruction) return false;
+
+            // Grid dimensions: one cell per pixelStride step across the crop. Computed here
+            // (previously in the readback callback) because the blit now renders at grid
+            // resolution. Minimum 2 per axis: a 1×N grid produces no quads and boundary
+            // smoothing needs at least 2 cells.
             int screenW = cam.pixelWidth;
             int screenH = cam.pixelHeight;
-            if (_worldPosRT == null || _worldPosRT.width != screenW || _worldPosRT.height != screenH)
-            {
-                if (_worldPosRT != null) _worldPosRT.Release();
-                // ARGBFloat = 4×32-bit floats per pixel, needed to store world-space XYZ + depth.
-                _worldPosRT = new RenderTexture(screenW, screenH, 0, RenderTextureFormat.ARGBFloat);
-                _worldPosRT.Create();
-            }
+            int cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
+            int rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
 
-            // Invert the depth frame's world->clip matrix once on the CPU.
-            // The shader uses this to go clip->world (steps 3–4 of the reconstruction).
-            // depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
+            // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
+            // shader). depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
             _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
 
-            // Render the hand silhouette into _handMaskRT before the blit.
-            // Pass depthMatrices[0] so the silhouette aligns with the depth texture's UV space.
+            // Remap the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect, so
+            // each output texel samples the depth texture at the correct screen position.
+            // Layout: (scaleX, scaleY, offsetX, offsetY); shader does depthUV = uv * scale + offset.
+            // NOTE: if the reconstructed surface comes out vertically mirrored, flip V here —
+            //   set scaleY = -(float)cropH / screenH and offsetY = (float)(cropY + cropH) / screenH.
+            _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(
+                (float)cropW / screenW, (float)cropH / screenH,
+                (float)cropX / screenW, (float)cropY / screenH));
+
+            // Render the hand silhouette before the blit. It stays in full screen-UV space; the
+            // blit samples it at the remapped crop UV. depthMatrices[0] aligns the silhouette
+            // with the depth texture's UV space.
             RenderHandMask(depthMatrices[0], screenW, screenH);
 
-            // Blit runs MetaDepthCopy.shader over every screen pixel, executing the full
-            // reconstruction pipeline (sample R -> build clip point -> inverse VP -> perspective
-            // divide) and writing the resulting world position into each pixel of _worldPosRT
-            // as a Vector4 (xyz = world pos, w = rawDepth, or w = -1 for invalid pixels).
-            // Null source: the shader reads _EnvironmentDepthTexture as a global directly.
-            Graphics.Blit(null, _worldPosRT, _blitMaterial);
+            // Blit MetaDepthCopy at GRID resolution (cols×rows) rather than full screen: it runs
+            // ~cols*rows fragments instead of the full ~9M, each doing sample R -> build clip ->
+            // inverse VP -> perspective divide, writing Vector4 (xyz = world pos, w = rawDepth, or
+            // w = -1 for invalid). A pooled temporary RT avoids per-frame allocation churn as the
+            // crop size changes; it is released in the readback callback.
+            RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
+            Graphics.Blit(null, rt, _blitMaterial);
 
-            // Request only the crop sub-region to minimize PCIe/memory transfer.
-            // Parameters: source, mip, startX, width, startY, height, startZ, depth, callback.
+            // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
             _isReadbackPending = true;
             AsyncGPUReadback.Request(
-                _worldPosRT, 0, cropX, cropW, cropY, cropH, 0, 1,
+                rt, 0,
                 request =>
                 {
-                    // Reset before any processing so exceptions downstream
-                    // don't permanently stall the pipeline.
+                    // Reset + release the pooled RT before any processing so exceptions downstream
+                    // don't permanently stall the pipeline or leak the temporary.
                     _isReadbackPending = false;
+                    RenderTexture.ReleaseTemporary(rt);
 
                     if (request.hasError)
                     {
@@ -218,20 +232,13 @@ namespace Surface.Core
                         return;
                     }
 
-                    // Compute grid dimensions from the crop size and stride.
-                    // Minimum of 2 in each dimension: a 1×N grid produces no quads,
-                    // and boundary smoothing downstream requires at least 2 cells.
-                    int cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
-                    int rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
                     buffer.ResizeIfNeeded(rows, cols);
 
+                    // WorldPositions is now the grid itself (row-major, width = cols): cell
+                    // (r, c) lives at index r*cols + c — no stride/crop remap needed.
                     var job = new DepthUnprojectionJob
                     {
                         WorldPositions = raw,
-                        DepthWidth     = cropW,
-                        DepthHeight    = cropH,
-                        PixelStride    = pixelStride,
-                        Cols           = cols,
                         Hits           = buffer.Hits,
                         HasDepth       = buffer.HasDepth,
                         IsSurface      = buffer.IsSurface
@@ -327,7 +334,6 @@ namespace Surface.Core
         /// </summary>
         public void Dispose()
         {
-            if (_worldPosRT  != null) _worldPosRT.Release();
             if (_handMaskRT  != null) _handMaskRT.Release();
             if (_blitMaterial  != null) UnityEngine.Object.Destroy(_blitMaterial);
             if (_handMaskMat   != null) UnityEngine.Object.Destroy(_handMaskMat);
@@ -490,9 +496,9 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Downsamples the readback crop at pixelStride intervals into the flat hit grid.
-        /// Each job element maps one grid cell (row, col) to a pixel in the crop and reads
-        /// the world position pre-computed by MetaDepthCopy.shader.
+        /// Copies the grid-resolution readback into the flat hit grid. The blit now renders at
+        /// grid resolution, so WorldPositions is the grid itself (row-major, width = Cols) and
+        /// each job element maps 1:1 to a cell — no crop/stride remap.
         ///
         /// The shader encodes validity in the Vector4 w component:
         ///   w >= 0 -> valid world position (w = rawDepth sampled from R channel, ∈ (0,1))
@@ -507,9 +513,6 @@ namespace Surface.Core
         private struct DepthUnprojectionJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<Vector4> WorldPositions;
-            // Dimensions of the crop in pixels (not the grid — grid = crop / stride).
-            // Must be public: Burst job structs are assigned via object initializer externally.
-            public int DepthWidth, DepthHeight, PixelStride, Cols;
 
             [WriteOnly] public NativeArray<Vector3> Hits;
             [WriteOnly] public NativeArray<bool>    HasDepth;
@@ -517,20 +520,7 @@ namespace Surface.Core
 
             public void Execute(int index)
             {
-                // Decode the flat grid index back to 2D grid coordinates, then to crop pixels.
-                int r = index / Cols;
-                int c = index % Cols;
-
-                int dx = c * PixelStride;
-                int dy = r * PixelStride;
-
-                // Clamp to the last valid pixel rather than skipping: the final row/column
-                // of the grid may overshoot the crop size by up to (PixelStride - 1) pixels.
-                if (dx >= DepthWidth)  dx = DepthWidth  - 1;
-                if (dy >= DepthHeight) dy = DepthHeight - 1;
-
-                // WorldPositions is the linearized crop: row-major, width = DepthWidth.
-                Vector4 sample = WorldPositions[dy * DepthWidth + dx];
+                Vector4 sample = WorldPositions[index];
 
                 // w < 0 is the sentinel written by MetaDepthCopy.shader for invalid pixels
                 // (sky, depth too close/far, or out of the sensor's range).

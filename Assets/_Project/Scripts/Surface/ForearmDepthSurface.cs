@@ -68,6 +68,10 @@ public class ForearmDepthSurface : MonoBehaviour
              "Leave off in normal use.")]
     public bool logDepthDiagnostics = false;
 
+    [Tooltip("TEMPORARY: skip all reconstruction GPU work (mask render + blit + readback) to test if " +
+             "this pipeline is the fps bottleneck. Surface stops updating; fps still logs. Leave off in normal use.")]
+    public bool skipReconstruction = false;
+
     // ------------------------------------------------------------------
     // SAMPLING
     // pixelStride trades mesh density for performance. Each stride step
@@ -273,8 +277,9 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _handMask.SnapshotMesh();
-            _depthReadback.MaskDilateTexels = maskDilateTexels;
-            _depthReadback.LogDiagnostics   = logDepthDiagnostics;
+            _depthReadback.MaskDilateTexels    = maskDilateTexels;
+            _depthReadback.LogDiagnostics      = logDepthDiagnostics;
+            _depthReadback.SkipReconstruction  = skipReconstruction;
 
             _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist, pixelStride,

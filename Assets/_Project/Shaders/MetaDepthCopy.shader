@@ -82,6 +82,11 @@ Shader "Hidden/MetaDepthCopy"
                 // re-bloating the rendered mesh or lowering the 0.5 threshold. Compensates for
                 // the 1-2 frame readback latency (the depth hand lags the current mesh).
                 float _MaskDilateTexels;
+                // Maps the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect:
+                //   depthUV = uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw
+                // Set per frame by DepthReadback.Schedule (scaleX, scaleY, offsetX, offsetY) so
+                // each output texel samples the depth texture at the correct screen position.
+                float4 _CropUVScaleOffset;
             CBUFFER_END
 
             struct Attributes
@@ -112,12 +117,17 @@ Shader "Hidden/MetaDepthCopy"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
+                // Remap this grid-resolution output texel's [0,1] UV onto the forearm's screen-UV
+                // sub-rect. duv is used for ALL screen-space sampling below (depth + hand mask) and
+                // as the depth-frame NDC xy — it replaces the old full-screen input.uv everywhere.
+                float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
+
                 // Step 1: sample the R channel of the left-eye depth slice (index 0).
                 // rawDepth is in Vulkan NDC [0,1]. Only R is used — Meta does not
                 // pack additional data into G/B/A.
                 float rawDepth = SAMPLE_TEXTURE2D_ARRAY(
                     _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture,
-                    input.uv, 0).r;
+                    duv, 0).r;
 
                 // Step 2: reject invalid depth. rawDepth must be strictly inside (0,1).
                 // Values at 0 (near plane) or 1 (far plane / sky) are meaningless.
@@ -129,7 +139,7 @@ Shader "Hidden/MetaDepthCopy"
                 // The UV becomes the XY of the clip-space point and rawDepth becomes Z.
                 // Skipping the Z remap would land every pixel near the camera — Vulkan NDC
                 // depth like 0.92 sits close to Z = 1.0 (far plane) without remapping.
-                float3 clipXYZ = float3(input.uv, rawDepth) * 2.0 - 1.0;
+                float3 clipXYZ = float3(duv, rawDepth) * 2.0 - 1.0;
                 float4 clipPos  = float4(clipXYZ, 1.0);
 
                 // Step 4: transform clip -> world using the depth frame's historical inverse VP.
@@ -155,7 +165,7 @@ Shader "Hidden/MetaDepthCopy"
                     UNITY_UNROLL
                     for (int dx = -1; dx <= 1; dx++)
                         mask = max(mask, SAMPLE_TEXTURE2D(_HandMaskTex, sampler_HandMaskTex,
-                                                          input.uv + float2(dx, dy) * texelStep).r);
+                                                          duv + float2(dx, dy) * texelStep).r);
                 if (mask > 0.5)
                     return float4(0, 0, 0, -1.0);
 
