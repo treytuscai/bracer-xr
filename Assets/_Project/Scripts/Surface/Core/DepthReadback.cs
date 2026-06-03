@@ -80,6 +80,10 @@ namespace Surface.Core
         // (3x3 max). Grows the effective mask to cover readback latency without fattening
         // the rendered silhouette. Set from ForearmDepthSurface Inspector.
         public float MaskDilateTexels = 1f;
+        // Edge-aware depth smoothing in MetaDepthCopy (set from ForearmDepthSurface Inspector).
+        // Radius 0 = off; Threshold = max LINEAR depth diff (metres) for a neighbor to be averaged in.
+        public int   DepthSmoothRadius    = 1;
+        public float DepthSmoothThreshold = 0.01f;
         // Grayscale RenderTexture containing the hand silhouette in screen space.
         // White = hand, black = clear. Sampled by MetaDepthCopy to reject hand pixels.
         // Half-resolution: silhouette masking doesn't need full precision.
@@ -207,6 +211,12 @@ namespace Surface.Core
             _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(
                 (float)cropW / screenW, (float)cropH / screenH,
                 (float)cropX / screenW, (float)cropY / screenH));
+
+            // Edge-aware depth-smoothing params for the bilateral pass in MetaDepthCopy.
+            _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
+            _blitMaterial.SetFloat("_DepthSmoothThreshold", DepthSmoothThreshold);
+            _blitMaterial.SetVector("_DepthTexelSize",
+                new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
 
             // Render the hand silhouette before the blit. It stays in full screen-UV space; the
             // blit samples it at the remapped crop UV. depthMatrices[0] aligns the silhouette

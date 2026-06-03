@@ -73,6 +73,19 @@ public class ForearmDepthSurface : MonoBehaviour
     public bool skipReconstruction = false;
 
     // ------------------------------------------------------------------
+    // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
+    // Edge-aware blur of the raw depth before unprojection: denoises the surface
+    // without crossing the arm/background depth discontinuity. Replaces the CPU
+    // Laplacian (set Smooth Passes below to 0 to disable that one).
+    // ------------------------------------------------------------------
+    [Header("Depth Smoothing")]
+    [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
+    [Range(0, 3)] public int depthSmoothRadius = 1;
+    [Tooltip("Max depth difference in METRES for a neighbor to be averaged in (~0.01 = 1 cm). " +
+             "Lower preserves detail/edges; higher is smoother but risks bridging arm to background.")]
+    public float depthSmoothThreshold = 0.01f;
+
+    // ------------------------------------------------------------------
     // SEED + FLOOD
     // seedRadialDist defines the tight inner cylinder: only cells very close
     // to the wrist->elbow axis are trusted as definite forearm and used as
@@ -267,9 +280,11 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _handMask.SnapshotMesh();
-            _depthReadback.MaskDilateTexels    = maskDilateTexels;
-            _depthReadback.LogDiagnostics      = logDepthDiagnostics;
-            _depthReadback.SkipReconstruction  = skipReconstruction;
+            _depthReadback.MaskDilateTexels     = maskDilateTexels;
+            _depthReadback.LogDiagnostics       = logDepthDiagnostics;
+            _depthReadback.SkipReconstruction   = skipReconstruction;
+            _depthReadback.DepthSmoothRadius    = depthSmoothRadius;
+            _depthReadback.DepthSmoothThreshold = depthSmoothThreshold;
 
             _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist,
@@ -329,9 +344,13 @@ public class ForearmDepthSurface : MonoBehaviour
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
             sampleHandle);
 
-        // SMOOTH: Laplacian passes + boundary contour smoothing.
-        // Calls Complete() internally; all arrays are readable on the main
-        // thread after this returns.
+        // SMOOTH: boundary contour smoothing (the interior is now smoothed on the GPU by the
+        // bilateral depth pass; Laplacian passes default off via smoothPasses=0).
+        // Push the params each frame so they can be tuned live (the smoother reads its public
+        // fields at Schedule time); calls Complete() internally.
+        _surfaceSmoother.SmoothPasses     = smoothPasses;
+        _surfaceSmoother.EdgeSmoothPasses = edgeSmoothPasses;
+        _surfaceSmoother.EdgeWindowRadius = edgeWindowRadius;
         _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
 
         // MESH: Convert final IsSurface hits to vertices, UVs, and triangles.
