@@ -73,16 +73,6 @@ public class ForearmDepthSurface : MonoBehaviour
     public bool skipReconstruction = false;
 
     // ------------------------------------------------------------------
-    // SAMPLING
-    // pixelStride trades mesh density for performance. Each stride step
-    // is one pixel sample through the depth texture; halving the stride
-    // quadruples sample count and Burst job time.
-    // ------------------------------------------------------------------
-    [Header("Sampling")]
-    [Tooltip("Screen-space step between depth samples (px). Lower = denser mesh, more raycasts")]
-    [Range(2, 20)] public int pixelStride = 6;
-
-    // ------------------------------------------------------------------
     // SEED + FLOOD
     // seedRadialDist defines the tight inner cylinder: only cells very close
     // to the wrist->elbow axis are trusted as definite forearm and used as
@@ -221,8 +211,8 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh = new Mesh
         {
             name = "ForearmDepth",
-            // UInt32 index format allows meshes to bypass the legacy 16-bit limit. 
-            // At small pixelStride values the depth grid easily exceeds the UInt16 limit.
+            // UInt32 index format allows meshes to bypass the legacy 16-bit limit.
+            // The depth-resolution grid (up to ~320×320 cells) can exceed the UInt16 vertex limit.
             indexFormat = UnityEngine.Rendering.IndexFormat.UInt32
         };
         // Tell Unity this mesh changes every frame so the GPU allocates its
@@ -282,7 +272,7 @@ public class ForearmDepthSurface : MonoBehaviour
             _depthReadback.SkipReconstruction  = skipReconstruction;
 
             _isProcessingMesh = _depthReadback.Schedule(
-                _armFrame, maxRadialDist, pixelStride,
+                _armFrame, maxRadialDist,
                 _surfaceBuffer, OnDepthReady
             );
         }

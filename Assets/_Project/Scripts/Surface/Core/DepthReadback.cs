@@ -13,13 +13,14 @@ namespace Surface.Core
     /// Manages the full GPU->CPU depth pipeline each frame:
     ///   1. HAND MASK: Render the hand mesh as a white silhouette into a half-res
     ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP.
-    ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit. Hand pixels are
-    ///                 rejected in the shader (w=-1) so they arrive HasDepth=false.
-    ///   3. CROP:      Compute the screen-space bounding box of the forearm and request
-    ///                 an async GPU readback of only that region.
+    ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit into a grid-resolution RT
+    ///                 (~one texel per forearm depth-texel). Hand pixels are rejected in the
+    ///                 shader (w=-1) so they arrive HasDepth=false.
+    ///   3. CROP:      Compute the forearm's screen-space bounding box; its depth-texel
+    ///                 footprint sizes the grid RT, which is read back whole (async GPU).
     ///   4. UNPROJECT: On readback completion, schedule a Burst job (DepthUnprojectionJob)
-    ///                 that downsamples the crop at pixelStride intervals into the flat
-    ///                 world-space hit grid stored in SurfaceBuffer.
+    ///                 that copies the grid readback 1:1 into the flat world-space hit grid
+    ///                 stored in SurfaceBuffer.
     ///   5. HAND-OFF:  Invoke the caller's callback with a JobHandle the downstream
     ///                 extraction pipeline can chain onto.
     ///
@@ -65,6 +66,10 @@ namespace Surface.Core
         // start of its callback. Reset at callback start (not end) so that
         // exceptions in downstream processing don't permanently stall the pipeline.
         private bool _isReadbackPending;
+
+        // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
+        // The forearm crop is sampled at ~1:1 with these texels (grid = crop's texel footprint).
+        private int _depthTexW, _depthTexH;
 
         // ------------------------------------------------------------------
         // HAND MASK (GPU silhouette)
@@ -135,7 +140,7 @@ namespace Surface.Core
         /// </summary>
         public bool Schedule(
             ArmFrame arm,
-            float maxRadialDist, int pixelStride,
+            float maxRadialDist,
             SurfaceBuffer buffer,
             Action<JobHandle, int, int> onComplete)
         {
@@ -159,27 +164,36 @@ namespace Surface.Core
             if (!CalculateArmBounds(
                 ref depthMatrices[0], ref wristPos, ref elbowPos, ref camPos,
                 cam.fieldOfView, cam.pixelWidth, cam.pixelHeight,
-                maxRadialDist, pixelStride,
+                maxRadialDist,
                 out int cropX, out int cropY, out int cropW, out int cropH))
             {
                 return false; // Arm behind camera or off-screen
             }
 
-            // DIAGNOSTICS (temporary): characterize depth-buffer size vs pixelStride and update rate.
-            if (LogDiagnostics) Diagnostics(cam, depthMatrices[0], cropX, cropY, cropW, cropH, pixelStride);
+            // Sample the forearm crop at the depth buffer's NATIVE resolution: one grid cell per
+            // real depth texel spanning the crop (no screen-pixel stride). The per-axis footprint
+            // handles the anisotropic screen->texel mapping — the render is double-wide while the
+            // depth texture is square. Depth dims are constant; cache them once.
+            if (_depthTexW == 0)
+            {
+                Texture depthTex = Shader.GetGlobalTexture("_EnvironmentDepthTexture");
+                if (depthTex == null) return false; // not bound yet; reconstruct next frame
+                _depthTexW = depthTex.width;
+                _depthTexH = depthTex.height;
+            }
+
+            int screenW = cam.pixelWidth;
+            int screenH = cam.pixelHeight;
+            // Minimum 2 per axis: a 1×N grid produces no quads and boundary smoothing needs ≥2 cells.
+            int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
+            int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
+
+            // DIAGNOSTICS (temporary): characterize depth-buffer size and update rate.
+            if (LogDiagnostics) Diagnostics(cam, depthMatrices[0], cropX, cropY, cropW, cropH, cols, rows);
 
             // DIAGNOSTICS (temporary): bail before any reconstruction GPU work to test if this
             // pipeline is the fps bottleneck. Returns false so the caller's in-flight guard stays clear.
             if (SkipReconstruction) return false;
-
-            // Grid dimensions: one cell per pixelStride step across the crop. Computed here
-            // (previously in the readback callback) because the blit now renders at grid
-            // resolution. Minimum 2 per axis: a 1×N grid produces no quads and boundary
-            // smoothing needs at least 2 cells.
-            int screenW = cam.pixelWidth;
-            int screenH = cam.pixelHeight;
-            int cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
-            int rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
 
             // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
             // shader). depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
@@ -263,7 +277,7 @@ namespace Surface.Core
         ///       we re-read the same texels (double-sample). Logged once. The px-per-texel
         ///       figure assumes the depth texture and render share the same FOV (approx).
         /// </summary>
-        private void Diagnostics(Camera cam, Matrix4x4 depthMatrix, int cropX, int cropY, int cropW, int cropH, int pixelStride)
+        private void Diagnostics(Camera cam, Matrix4x4 depthMatrix, int cropX, int cropY, int cropW, int cropH, int cols, int rows)
         {
             // (A) Depth update rate — count matrix changes over a window, summarize once per ~90 frames.
             _diagRenderFrames++;
@@ -283,48 +297,30 @@ namespace Surface.Core
                 _depthFrameChanges = 0;
             }
 
-            // (B) Size / oversampling — one-shot.
+            // (B) Size / sampling — one-shot. We now size the grid to the crop's depth-texel
+            // footprint, so this should report ~1:1. Empirical, assumption-free check: replicate
+            // each grid cell -> crop pixel -> screen UV -> depth texel and count DISTINCT texels.
             if (_loggedStaticInfo) return;
-            Texture depthTex = Shader.GetGlobalTexture("_EnvironmentDepthTexture");
-            if (depthTex == null) return; // not bound yet this frame; try again next call
 
-            int   dW = depthTex.width, dH = depthTex.height;
-            float pxPerTexelX = (float)cam.pixelWidth  / dW;  // screen px per real depth texel (assumes shared FOV)
-            float pxPerTexelY = (float)cam.pixelHeight / dH;
-            int   cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
-            int   rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
-            float texelsInCropX = cropW / pxPerTexelX;        // real depth texels spanning the forearm crop
-            float texelsInCropY = cropH / pxPerTexelY;
-            int   minStride = Mathf.CeilToInt(Mathf.Max(pxPerTexelX, pxPerTexelY));
-
-            Debug.Log(
-                $"[DepthDiag] depthTex={dW}x{dH} ({depthTex.GetType().Name})  render={cam.pixelWidth}x{cam.pixelHeight}\n" +
-                $"[DepthDiag] screen-px / depth-texel = {pxPerTexelX:F2} x {pxPerTexelY:F2}  ->  " +
-                $"pixelStride below ~{minStride} double-samples the depth buffer (current stride = {pixelStride})\n" +
-                $"[DepthDiag] crop={cropW}x{cropH}px -> grid {rows}x{cols} cells  vs  ~{texelsInCropY:F0}x{texelsInCropX:F0} real depth texels  " +
-                $"(~{cols / Mathf.Max(1f, texelsInCropX):F1}x oversample X, ~{rows / Mathf.Max(1f, texelsInCropY):F1}x Y)");
-
-            // Empirical, assumption-free double-sample check: replicate the job's
-            // grid-cell -> crop-pixel -> screen-UV -> depth-texel mapping (the shader samples
-            // _EnvironmentDepthTexture at screen UV, so this is exactly which texel each cell
-            // reads), and count DISTINCT texels hit. unique << gridCells => we re-read texels.
             int screenW = cam.pixelWidth, screenH = cam.pixelHeight;
             var hitTexels = new HashSet<long>();
             for (int r = 0; r < rows; r++)
             {
-                int dy = r * pixelStride; if (dy >= cropH) dy = cropH - 1;
-                int ty = Mathf.Clamp((int)(((cropY + dy) / (float)screenH) * dH), 0, dH - 1);
+                int dy = Mathf.Min(cropH - 1, (int)((r + 0.5f) / rows * cropH));
+                int ty = Mathf.Clamp((int)(((cropY + dy) / (float)screenH) * _depthTexH), 0, _depthTexH - 1);
                 for (int c = 0; c < cols; c++)
                 {
-                    int dx = c * pixelStride; if (dx >= cropW) dx = cropW - 1;
-                    int tx = Mathf.Clamp((int)(((cropX + dx) / (float)screenW) * dW), 0, dW - 1);
+                    int dx = Mathf.Min(cropW - 1, (int)((c + 0.5f) / cols * cropW));
+                    int tx = Mathf.Clamp((int)(((cropX + dx) / (float)screenW) * _depthTexW), 0, _depthTexW - 1);
                     hitTexels.Add(((long)ty << 32) | (uint)tx);
                 }
             }
             int gridCells = rows * cols, uniqueTexels = hitTexels.Count;
-            Debug.Log($"[DepthDiag] empirical: {gridCells} grid cells hit {uniqueTexels} distinct depth texels " +
-                      $"-> {(float)gridCells / Mathf.Max(1, uniqueTexels):F2}x sampling " +
-                      $"({(gridCells > uniqueTexels ? "OVERSAMPLING — raise pixelStride" : "ok, ~1:1 or sparser")})");
+            Debug.Log(
+                $"[DepthDiag] depthTex={_depthTexW}x{_depthTexH}  render={screenW}x{screenH}  crop={cropW}x{cropH}px -> grid {rows}x{cols}\n" +
+                $"[DepthDiag] {gridCells} grid cells hit {uniqueTexels} distinct depth texels " +
+                $"-> {(float)gridCells / Mathf.Max(1, uniqueTexels):F2}x sampling " +
+                $"({(gridCells > uniqueTexels + uniqueTexels / 20 ? "still oversampling" : "~1:1, native")})");
 
             _loggedStaticInfo = true;
         }
@@ -403,7 +399,7 @@ namespace Surface.Core
             ref Matrix4x4 depthVP,
             ref Vector3 wristPos, ref Vector3 elbowPos, ref Vector3 camPos,
             float fov, int pixelWidth, int pixelHeight,
-            float maxRadialDist, float pixelStride,
+            float maxRadialDist,
             out int xMin, out int yMin, out int width, out int height)
         {
             xMin = yMin = width = height = 0;
@@ -453,7 +449,8 @@ namespace Surface.Core
             fYMin = fYMin > 0f ? fYMin : 0f;
             fYMax = fYMax < pixelHeight ? fYMax : pixelHeight;
 
-            if (fXMax - fXMin < pixelStride || fYMax - fYMin < pixelStride) return false;
+            // Reject degenerate crops (a few screen pixels); the grid clamps to a 2×2 minimum.
+            if (fXMax - fXMin < 4f || fYMax - fYMin < 4f) return false;
 
             xMin   = (int)fXMin;
             yMin   = (int)fYMin;
