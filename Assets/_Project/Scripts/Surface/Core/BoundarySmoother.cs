@@ -31,12 +31,14 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Marks boundary cells, then runs Passes ping-pong smoothing passes, blocking until
-        /// complete (MeshGenerator reads buffer.Hits on the main thread next). Each pass reads
-        /// buffer.Hits and writes buffer.Smoothed, then the references are swapped — safe because
-        /// each job captured its NativeArray pointers at Schedule time.
+        /// Marks boundary cells, then schedules Passes ping-pong smoothing passes and returns the
+        /// final JobHandle (the caller completes it — deferred to the harvest step so the main
+        /// thread never blocks here). Each pass reads buffer.Hits and writes buffer.Smoothed, then
+        /// the references are swapped — safe because each job captured its NativeArray pointers at
+        /// Schedule time, and the swaps happen synchronously here so downstream jobs see the final
+        /// buffer.Hits.
         /// </summary>
-        public void Schedule(SurfaceBuffer buffer, int rows, int cols, JobHandle dependency)
+        public JobHandle Schedule(SurfaceBuffer buffer, int rows, int cols, JobHandle dependency)
         {
             JobHandle handle = dependency;
 
@@ -69,8 +71,7 @@ namespace Surface.Core
                 }
             }
 
-            // MeshGenerator reads buffer.Hits on the main thread next, so finish the chain.
-            handle.Complete();
+            return handle;
         }
 
         // ==================================================================

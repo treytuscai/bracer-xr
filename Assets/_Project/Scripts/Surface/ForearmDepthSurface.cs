@@ -155,6 +155,12 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
 
+    // Frame-pipelining: OnDepthReady schedules the extract->boundary->mesh chain but does NOT
+    // block on it. _pendingMesh is its final handle; LateUpdate harvests (instant Complete +
+    // upload) once it's done, so the main thread never stalls waiting for the CPU pipeline.
+    private JobHandle _pendingMesh;
+    private bool _harvestPending;
+
     // ------------------------------------------------------------------
     // PIPELINE STAGES
     // Constructed once in Awake with their config parameters and called
@@ -262,6 +268,19 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void LateUpdate()
     {
+        // HARVEST: once the deferred extract->boundary->mesh chain has finished on worker threads,
+        // complete it (instant — no stall) and upload the mesh. Done first so it still completes if
+        // tracking drops this frame. Frees _isProcessingMesh so a new cycle can dispatch below.
+        if (_harvestPending && _pendingMesh.IsCompleted)
+        {
+            _pendingMesh.Complete();
+            _meshGenerator.Finish(_meshBuffer, out _projCenter);
+            UpdateUnityMesh();
+            _hasFrame         = true;
+            _harvestPending   = false;
+            _isProcessingMesh = false;
+        }
+
         // Recompute the arm coordinate frame from the latest bone positions.
         // Returns false if bones are invalid or tracking is unavailable.
         if (!_armFrame.TryUpdate())
@@ -296,6 +315,8 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         // Signal the async readback callback to bail out if it fires after this point.
         _isDestroyed = true;
+        // Finish any in-flight deferred chain before disposing the buffers it reads/writes.
+        if (_harvestPending) _pendingMesh.Complete();
         _handMask?.Dispose();
         _depthReadback?.Dispose();
         _meshBuffer?.Dispose();
@@ -304,16 +325,14 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Callback invoked on the main thread once the GPU readback completes.
-    /// Runs the CPU-side pipeline: extract -> smooth -> mesh.
-    ///
-    /// The job chain uses Unity's JobHandle dependency system: each stage receives
-    /// the previous stage's handle and the Burst scheduler guarantees the earlier
-    /// stage's NativeArray writes are visible before the next stage reads them.
-    /// BoundarySmoother.Schedule() calls JobHandle.Complete() internally so all
-    /// buffer data is readable on the main thread before mesh generation.
+    /// Callback invoked on the main thread once the GPU readback completes. Completes the cheap
+    /// unproject job (it reads the readback NativeArray, which is only valid during this callback),
+    /// then SCHEDULES the extract -> boundary -> mesh chain WITHOUT blocking on it. The chain is
+    /// harvested a frame later in LateUpdate (frame-pipelined), so the main thread never stalls on
+    /// the CPU pipeline. Arm-frame values are copied into the jobs at schedule time, so deferring
+    /// the harvest by a frame is safe.
     /// </summary>
-    /// <param name="sampleHandle">JobHandle for the completed depth unproject job.</param>
+    /// <param name="sampleHandle">JobHandle for the scheduled depth unproject job (completed here).</param>
     /// <param name="rows">Number of grid rows in the current depth crop.</param>
     /// <param name="cols">Number of grid columns in the current depth crop.</param>
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
@@ -331,38 +350,32 @@ public class ForearmDepthSurface : MonoBehaviour
         _rows = rows;
         _cols = cols;
 
-        // EXTRACT: Seed cylinder + BFS flood to isolate the forearm patch.
-        // Hand pixels already have HasDepth=false (rejected in MetaDepthCopy.shader),
-        // so seed+flood skips them naturally without a separate CPU masking job.
-        JobHandle extractionHandle = _surfaceExtractor.Schedule(
+        // Complete the depth-unproject job NOW: it reads the AsyncGPUReadback NativeArray, which is
+        // only valid for the duration of this callback. It's cheap (a 1:1 grid copy); afterwards
+        // buffer.Hits is populated and the readback buffer can be safely released.
+        sampleHandle.Complete();
+
+        // Schedule extract -> boundary -> mesh as ONE deferred chain (no Complete here). Hand pixels
+        // already have HasDepth=false (rejected in MetaDepthCopy.shader), so seed+flood skips them.
+        JobHandle h = _surfaceExtractor.Schedule(
             _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
-            sampleHandle);
-
-        // SMOOTH: parallel boundary de-stepping (the interior is smoothed on the GPU by the
-        // bilateral depth pass)
-        _boundarySmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
-
-        // MESH: Convert final IsSurface hits to vertices, UVs, and triangles.
-        // _projCenter is the mean lateral (AxisRight) projection of the surface,
-        // used to center the UV window on the visible arm patch.
-        _meshGenerator.Generate(
-            _meshBuffer,
-            _surfaceBuffer,
-            _rows, _cols,
+            default);
+        h = _boundarySmoother.Schedule(_surfaceBuffer, _rows, _cols, h);
+        h = _meshGenerator.Schedule(
+            _meshBuffer, _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.Axis, _armFrame.AxisRight,
             _armFrame.Pronation, _armFrame.Orientation,
             transform.worldToLocalMatrix,
-            out _projCenter
-        );
+            h);
 
-        // GPU UPLOAD: Push NativeArrays to the Mesh object, then recompute
-        // normals and bounds for lighting and frustum culling.
-        UpdateUnityMesh();
+        // Flush the chain onto worker threads now so it progresses before the harvest check.
+        JobHandle.ScheduleBatchedJobs();
 
-        // Unlock so LateUpdate can request the next frame
-        _hasFrame = true;
-        _isProcessingMesh = false;
+        // Hand off to LateUpdate: it harvests (instant Complete + upload) once the chain finishes.
+        // _isProcessingMesh stays true until then, guarding the buffers from a new cycle.
+        _pendingMesh    = h;
+        _harvestPending = true;
     }
 
     /// <summary>

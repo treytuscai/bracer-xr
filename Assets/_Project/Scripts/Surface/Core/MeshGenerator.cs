@@ -11,8 +11,8 @@ namespace Surface.Core
 {
     /// <summary>
     /// Converts the segmented depth hits in SurfaceBuffer into a renderable mesh in MeshBuffer
-    /// via a Burst job chain. All jobs run on Burst worker threads; Generate() blocks the main
-    /// thread once, at the end, to read the result.
+    /// via a Burst job chain. Schedule() returns the chain's handle WITHOUT blocking; the caller
+    /// completes it later (frame-pipelined) and calls Finish() to read the results off it.
     ///
     /// JOB CHAIN
     ///   1. ComputeProjectedCenterJob — sums each batch's lateral projection along AxisRight.
@@ -81,20 +81,20 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Runs the Burst job chain (center reduction -> finalize -> vertices -> triangles) and
-        /// populates MeshBuffer with valid geometry. Blocks the main thread once, at the end,
-        /// to read the finalized center and copy the atomic counts into VertexCount/TriangleCount.
-        /// The center reduction now flows through the job graph (FinalizeCenterJob), so there is
-        /// no longer a mid-pipeline Complete().
+        /// Schedules the Burst job chain (center reduction -> finalize -> vertices -> triangles)
+        /// that populates MeshBuffer, and returns the final JobHandle WITHOUT completing it. The
+        /// caller completes it later (deferred to the harvest step, off the main thread) and then
+        /// calls Finish() to read the results. The center reduction flows through the job graph
+        /// (FinalizeCenterJob), so the whole chain is one schedulable unit with no main-thread sync.
         /// </summary>
-        public void Generate(
+        public JobHandle Schedule(
             MeshBuffer meshBuf,
             SurfaceBuffer surfBuf,
             int rows, int cols,
             Vector3 wristPos, Vector3 axis, Vector3 axisRight,
             float pronation, float orientation,
             Matrix4x4 worldToLocal,
-            out float finalProjCenter)
+            JobHandle dependency)
         {
             meshBuf.ResizeIfNeeded(rows, cols);
 
@@ -128,7 +128,7 @@ namespace Surface.Core
                 Sums = _partialSums, Counts = _partialCounts,
                 BatchSize = batchSize
             };
-            JobHandle handle = centerJob.ScheduleBatch(totalCells, batchSize);
+            JobHandle handle = centerJob.ScheduleBatch(totalCells, batchSize, dependency);
 
             // Aggregate the per-batch (sum, count) into the final center IN THE JOB GRAPH, so
             // VertexJob can depend on it without a main-thread Complete() mid-pipeline.
@@ -176,15 +176,20 @@ namespace Surface.Core
             };
             handle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
 
-            handle.Complete();
+            // Return without completing — the caller completes this at harvest time, then Finish().
+            return handle;
+        }
 
-            // Read the job-computed center for callers, now that the chain is complete.
-            finalProjCenter = _projCenter[0];
-
-            // Copy atomic counts from NativeArray to managed ints so UpdateUnityMesh
-            // can pass them to the Mesh API without touching the NativeArray again.
-            meshBuf.VertexCount    = meshBuf.Counter[0];
-            meshBuf.TriangleCount  = meshBuf.Counter[1];
+        /// <summary>
+        /// Reads the results after the Schedule() handle has completed: the finalized projected
+        /// center, and the atomic vertex/triangle counts copied from the NativeArray into managed
+        /// ints for the Mesh API. Call only once the returned handle is complete.
+        /// </summary>
+        public void Finish(MeshBuffer meshBuf, out float finalProjCenter)
+        {
+            finalProjCenter       = _projCenter[0];
+            meshBuf.VertexCount   = meshBuf.Counter[0];
+            meshBuf.TriangleCount = meshBuf.Counter[1];
         }
 
         /// <summary>
