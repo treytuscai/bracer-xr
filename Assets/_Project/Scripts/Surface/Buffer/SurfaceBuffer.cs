@@ -22,7 +22,7 @@ namespace Surface.Buffer
     ///   IsSurface       — DepthUnprojectionJob (reset to false), SeedFromAxisJob +
     ///                     FloodFromSeedsJob (set true for forearm cells)
     ///   BFSQueue        — SeedFromAxisJob (enqueue), FloodFromSeedsJob (dequeue/enqueue)
-    ///   BoundaryVisited — BoundarySmoother (reset and set per boundary pass)
+    ///   BoundaryMask    — BoundaryMaskJob (marks boundary cells), read by BoundarySmoothJob
     ///
     /// WHY PUBLIC FIELDS INSTEAD OF PROPERTIES?
     /// SurfaceSmoother ping-pongs Hits and Smoothed by directly swapping the references:
@@ -56,8 +56,9 @@ namespace Surface.Buffer
         /// grow dynamically as the flood expands to neighbours.
         /// </summary>
         public NativeQueue<int> BFSQueue;
-        /// <summary> Per-cell visited flag used by BoundarySmoother to trace contour chains. </summary>
-        public NativeArray<bool> BoundaryVisited;
+        /// <summary> Per-cell boundary flag: true if this is a surface cell on the patch edge.
+        /// Written by BoundaryMaskJob, read by BoundarySmoothJob. </summary>
+        public NativeArray<bool> BoundaryMask;
 
         // Total cell count from the last allocation; -1 when unallocated.
         private int _currentSize = -1;
@@ -79,7 +80,7 @@ namespace Surface.Buffer
             IsSurface       = new NativeArray<bool>(total,    Allocator.Persistent);
             HasDepth        = new NativeArray<bool>(total,    Allocator.Persistent);
             BFSQueue        = new NativeQueue<int>(Allocator.Persistent);
-            BoundaryVisited = new NativeArray<bool>(total,    Allocator.Persistent);
+            BoundaryMask    = new NativeArray<bool>(total,    Allocator.Persistent);
 
             _currentSize = total;
         }
@@ -94,7 +95,7 @@ namespace Surface.Buffer
             if (Smoothed.IsCreated)        Smoothed.Dispose();
             if (IsSurface.IsCreated)       IsSurface.Dispose();
             if (HasDepth.IsCreated)        HasDepth.Dispose();
-            if (BoundaryVisited.IsCreated) BoundaryVisited.Dispose();
+            if (BoundaryMask.IsCreated) BoundaryMask.Dispose();
             if (BFSQueue.IsCreated)        BFSQueue.Dispose();
             _currentSize = -1;
         }

@@ -2,51 +2,34 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
-using System.Collections.Generic;
 using Surface.Buffer;
 
 namespace Surface.Core
 {
     /// <summary>
-    /// Applies two complementary smoothing passes to the forearm surface each frame.
+    /// Smooths the reconstructed forearm surface each frame.
     ///
-    /// WHY TWO ALGORITHMS?
-    ///   Laplacian (Burst, parallel): replaces each interior surface cell with the
-    ///   weighted centroid of itself and its surface neighbors. Reduces depth sensor
-    ///   noise across the whole patch but treats every cell equally — it does not
-    ///   specifically target the staircase artifact that appears at the mesh boundary
-    ///   where the arm patch transitions to empty grid cells.
+    /// INTERIOR denoising now happens on the GPU (bilateral depth blur in MetaDepthCopy), so the
+    /// optional world-space Laplacian (SmoothSurfaceJob) defaults OFF via SmoothPasses = 0. It is
+    /// kept only as a quick A/B fallback.
     ///
-    ///   Boundary contour (main thread, sequential): finds the outer edge of the surface
-    ///   patch, traces it as ordered chains of cells, and applies a 1D moving average
-    ///   along each chain. Directly attacks the staircase without disturbing the interior.
-    ///
-    /// WHY BOUNDARY SMOOTHING IS MAIN-THREAD SEQUENTIAL
-    /// The chain tracer is a greedy walk: each step picks the next unvisited boundary
-    /// neighbor based on what was visited in the previous step. This is fundamentally
-    /// sequential and cannot be parallelised without a graph-connectivity pre-pass.
-    /// Running it on the main thread after Complete() avoids job overhead for a
-    /// workload that is already fast (O(boundary cells), not O(all cells)).
+    /// BOUNDARY smoothing reduces the staircase at the mesh edge. It is a parallel, Burst
+    /// IJobParallelFor pass — NOT the old sequential contour tracer, which fragmented the dense,
+    /// noisy edge into short chains and skipped them (leaving unsmoothed segments that flickered
+    /// frame to frame). Instead: one pass marks boundary cells, then each boundary cell is averaged
+    /// with nearby BOUNDARY cells only. Averaging boundary-with-boundary (not interior) smooths the
+    /// silhouette along the edge without pulling the patch inward (no shrink), and every boundary
+    /// cell is smoothed every frame (no fragmentation, no skips).
     /// </summary>
     public class SurfaceSmoother
     {
-        // ------------------------------------------------------------------
-        // CONFIGURATION
-        // ------------------------------------------------------------------
-        /// <summary> Number of Laplacian passes. 0 = raw depth, higher = smoother but more lag. </summary>
+        /// <summary> Legacy world-space Laplacian passes. 0 = off (the GPU bilateral pass denoises the interior). </summary>
         public int SmoothPasses;
-        /// <summary> Number of boundary contour smoothing passes. 0 = no edge smoothing. </summary>
+        /// <summary> Number of boundary smoothing passes. 0 = no edge smoothing. </summary>
         public int EdgeSmoothPasses;
-        /// <summary> Half-width of the 1D moving-average window along each boundary chain. </summary>
+        /// <summary> Neighborhood half-width (in cells) averaged per boundary pass. </summary>
         public int EdgeWindowRadius;
 
-        // Managed lists owned here and reused across frames to avoid per-frame allocation.
-        private readonly List<int>     _chain         = new List<int>(512);
-        private readonly List<Vector3> _chainSmoothed = new List<Vector3>(512);
-
-        /// <summary>
-        /// Stores smoothing parameters. Set once at construction from Inspector values.
-        /// </summary>
         public SurfaceSmoother(int smoothPasses, int edgeSmoothPasses, int edgeWindowRadius)
         {
             SmoothPasses     = smoothPasses;
@@ -55,21 +38,16 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Runs the full smoothing pipeline and blocks until complete.
-        /// After this returns, buffer.Hits holds the final smoothed world positions.
-        ///
-        /// Laplacian passes use a ping-pong pattern: SmoothSurfaceJob reads from
-        /// buffer.Hits and writes to buffer.Smoothed, then the two references are
-        /// swapped on the main thread. The swap is safe because the job captured its
-        /// NativeArray pointers at Schedule time — swapping the wrapper references
-        /// afterwards does not affect the scheduled job's memory access.
+        /// Runs the smoothing pipeline and blocks until complete. After this returns, buffer.Hits
+        /// holds the final positions. Passes ping-pong buffer.Hits and buffer.Smoothed and swap the
+        /// references after each pass; the swap is safe because each job captured its NativeArray
+        /// pointers at Schedule time.
         /// </summary>
-        public void Schedule(
-            SurfaceBuffer buffer,
-            int rows, int cols,
-            JobHandle dependency)
+        public void Schedule(SurfaceBuffer buffer, int rows, int cols, JobHandle dependency)
         {
-            JobHandle lastPass = dependency;
+            JobHandle handle = dependency;
+
+            // Optional legacy world-space Laplacian over all surface cells (off when SmoothPasses = 0).
             for (int i = 0; i < SmoothPasses; i++)
             {
                 var job = new SmoothSurfaceJob
@@ -80,44 +58,51 @@ namespace Surface.Core
                     GridHeight = rows,
                     GridWidth  = cols
                 };
-
-                lastPass = job.Schedule(rows * cols, 64, lastPass);
-
-                // Swap so the next pass reads this pass's output as its input.
-                // Safe to do immediately — the job already captured its pointers above.
-                var temp       = buffer.Hits;
-                buffer.Hits    = buffer.Smoothed;
-                buffer.Smoothed = temp;
+                handle = job.Schedule(rows * cols, 64, handle);
+                var t = buffer.Hits; buffer.Hits = buffer.Smoothed; buffer.Smoothed = t;
             }
 
-            // Boundary smoothing writes directly to buffer.Hits (a NativeArray),
-            // so all Burst jobs must be complete before the main thread touches it.
-            lastPass.Complete();
+            // Boundary smoothing (parallel, Burst): mark boundary cells once, then average each
+            // boundary cell with nearby boundary cells over EdgeSmoothPasses ping-pong passes.
+            if (EdgeSmoothPasses > 0 && EdgeWindowRadius > 0)
+            {
+                var maskJob = new BoundaryMaskJob
+                {
+                    IsSurface    = buffer.IsSurface,
+                    BoundaryMask = buffer.BoundaryMask,
+                    GridHeight   = rows,
+                    GridWidth    = cols
+                };
+                handle = maskJob.Schedule(rows * cols, 64, handle);
 
-            BoundarySmoother.ProcessBoundary(
-                EdgeSmoothPasses,
-                EdgeWindowRadius,
-                rows, cols,
-                buffer.Hits,
-                buffer.IsSurface,
-                buffer.BoundaryVisited,
-                _chain,
-                _chainSmoothed
-            );
+                for (int p = 0; p < EdgeSmoothPasses; p++)
+                {
+                    var job = new BoundarySmoothJob
+                    {
+                        Hits         = buffer.Hits,
+                        BoundaryMask = buffer.BoundaryMask,
+                        Smoothed     = buffer.Smoothed,
+                        GridHeight   = rows,
+                        GridWidth    = cols,
+                        Radius       = EdgeWindowRadius
+                    };
+                    handle = job.Schedule(rows * cols, 64, handle);
+                    var t = buffer.Hits; buffer.Hits = buffer.Smoothed; buffer.Smoothed = t;
+                }
+            }
+
+            // MeshGenerator reads buffer.Hits on the main thread next, so finish the chain.
+            handle.Complete();
         }
 
         // ==================================================================
-        // BURST JOB
+        // BURST JOBS
         // ==================================================================
 
         /// <summary>
-        /// One Laplacian smoothing pass: each surface cell is replaced by the centroid
-        /// of itself and all surface neighbors in the 3×3 Moore neighborhood.
-        /// The cell's own position is included with weight 1 (self-weight) to prevent
-        /// the mesh from shrinking inward with each pass.
-        /// Non-surface cells are copied verbatim to keep the ping-pong buffer consistent:
-        /// after the swap, the next pass reads these cells from the new Hits array and
-        /// must see correct values rather than stale data from a previous frame.
+        /// Legacy interior Laplacian: each surface cell is replaced by the centroid of itself and
+        /// its surface neighbors (self-weight 1). Off by default (SmoothPasses = 0). Non-surface
+        /// cells pass through verbatim to keep the ping-pong buffer consistent across the swap.
         /// </summary>
         [BurstCompile]
         struct SmoothSurfaceJob : IJobParallelFor
@@ -139,7 +124,6 @@ namespace Surface.Core
                 int row = flatIndex / GridWidth;
                 int col = flatIndex % GridWidth;
 
-                // Seed the accumulator with the cell's own position (self-weight = 1).
                 Vector3 positionSum = Hits[flatIndex];
                 float   totalWeight = 1f;
 
@@ -148,15 +132,11 @@ namespace Surface.Core
                     for (int dc = -1; dc <= 1; dc++)
                     {
                         if (dr == 0 && dc == 0) continue;
-
                         int nr = row + dr;
                         int nc = col + dc;
-
                         if (nr < 0 || nr >= GridHeight || nc < 0 || nc >= GridWidth) continue;
-
                         int nFlat = nr * GridWidth + nc;
                         if (!IsSurface[nFlat]) continue;
-
                         positionSum += Hits[nFlat];
                         totalWeight += 1f;
                     }
@@ -165,143 +145,97 @@ namespace Surface.Core
                 Smoothed[flatIndex] = positionSum / totalWeight;
             }
         }
-    }
-
-    /// <summary>
-    /// Traces the outer boundary of the surface patch as ordered contour chains and
-    /// applies a 1D moving average along each chain to reduce the staircase artifact
-    /// at the mesh edge. Runs on the main thread after all Burst jobs have completed.
-    /// </summary>
-    public static class BoundarySmoother
-    {
-        // 8-way connectivity offsets ordered: TL, T, TR, L, R, BL, B, BR.
-        // Indices 1(T), 3(L), 4(R), 6(B) are the 4-connected directions.
-        private static readonly int[] dRow = { -1, -1, -1,  0, 0,  1, 1, 1 };
-        private static readonly int[] dCol = { -1,  0,  1, -1, 1, -1, 0, 1 };
 
         /// <summary>
-        /// Runs <paramref name="passes"/> boundary smoothing passes over the surface patch.
-        /// Each pass: clears visited flags, scans for unvisited boundary cells, traces each
-        /// boundary cell into an ordered chain, applies a symmetric moving average of half-width
-        /// <paramref name="windowRadius"/> along the chain, then writes the result back to hits.
+        /// Marks each cell as a boundary cell: a surface cell with at least one 8-connected
+        /// neighbor that is off-surface or off-grid. Computed once (IsSurface is stable across the
+        /// smoothing passes) and reused by every BoundarySmoothJob pass.
         /// </summary>
-        public static void ProcessBoundary(
-            int passes, int windowRadius, int rows, int cols,
-            NativeArray<Vector3> hits, NativeArray<bool> isSurface, NativeArray<bool> visited,
-            List<int> chain, List<Vector3> chainSmoothed)
+        [BurstCompile]
+        struct BoundaryMaskJob : IJobParallelFor
         {
-            if (passes <= 0) return;
+            [ReadOnly]  public NativeArray<bool> IsSurface;
+            [WriteOnly] public NativeArray<bool> BoundaryMask;
+            public int GridHeight;
+            public int GridWidth;
 
-            for (int pass = 0; pass < passes; pass++)
+            public void Execute(int flatIndex)
             {
-                for (int i = 0; i < visited.Length; i++)
-                    visited[i] = false;
-
-                for (int r = 0; r < rows; r++)
+                if (!IsSurface[flatIndex])
                 {
-                    for (int c = 0; c < cols; c++)
+                    BoundaryMask[flatIndex] = false;
+                    return;
+                }
+
+                int row = flatIndex / GridWidth;
+                int col = flatIndex % GridWidth;
+
+                bool boundary = false;
+                for (int dr = -1; dr <= 1; dr++)
+                {
+                    for (int dc = -1; dc <= 1; dc++)
                     {
-                        int flatIdx = r * cols + c;
-                        if (visited[flatIdx] || !IsBoundaryCell(r, c, rows, cols, isSurface)) continue;
-
-                        TraceChain(r, c, rows, cols, isSurface, visited, chain);
-
-                        // Chains shorter than 3 can't benefit from a moving average —
-                        // the window would reduce to the single center cell anyway.
-                        if (chain.Count < 3) continue;
-
-                        // 1D symmetric moving average: each chain position is replaced by
-                        // the mean of its [i-windowRadius, i+windowRadius] window, clamped
-                        // to the chain ends.
-                        chainSmoothed.Clear();
-                        for (int i = 0; i < chain.Count; i++)
+                        if (dr == 0 && dc == 0) continue;
+                        int nr = row + dr;
+                        int nc = col + dc;
+                        if (nr < 0 || nr >= GridHeight || nc < 0 || nc >= GridWidth ||
+                            !IsSurface[nr * GridWidth + nc])
                         {
-                            Vector3 sum   = Vector3.zero;
-                            int     count = 0;
-                            int     lo    = Mathf.Max(0, i - windowRadius);
-                            int     hi    = Mathf.Min(chain.Count - 1, i + windowRadius);
-
-                            for (int j = lo; j <= hi; j++)
-                            {
-                                sum += hits[chain[j]];
-                                count++;
-                            }
-
-                            chainSmoothed.Add(sum / count);
+                            boundary = true;
                         }
-
-                        for (int i = 0; i < chain.Count; i++)
-                            hits[chain[i]] = chainSmoothed[i];
                     }
                 }
+
+                BoundaryMask[flatIndex] = boundary;
             }
         }
 
         /// <summary>
-        /// Returns true if the cell at (r, c) is on the surface but has at least one
-        /// 8-connected neighbor that is off the surface or outside the grid.
+        /// One boundary smoothing pass: each boundary cell becomes the average of itself and the
+        /// boundary cells within Radius. Averaging only boundary cells (not interior) smooths the
+        /// silhouette along the edge without pulling the patch inward. Non-boundary cells pass
+        /// through verbatim so the ping-pong buffer stays consistent across the swap.
         /// </summary>
-        private static bool IsBoundaryCell(int r, int c, int rows, int cols, NativeArray<bool> isSurface)
+        [BurstCompile]
+        struct BoundarySmoothJob : IJobParallelFor
         {
-            if (!isSurface[r * cols + c]) return false;
+            [ReadOnly]  public NativeArray<Vector3> Hits;
+            [ReadOnly]  public NativeArray<bool>    BoundaryMask;
+            [WriteOnly] public NativeArray<Vector3> Smoothed;
+            public int GridHeight;
+            public int GridWidth;
+            public int Radius;
 
-            for (int n = 0; n < 8; n++)
+            public void Execute(int flatIndex)
             {
-                int nr = r + dRow[n];
-                int nc = c + dCol[n];
-                if (nr < 0 || nc < 0 || nr >= rows || nc >= cols || !isSurface[nr * cols + nc])
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Greedily walks the boundary starting at (startR, startC), appending flat cell
-        /// indices to <paramref name="chain"/> in traversal order.
-        /// At each step, 4-connected neighbors (T, L, R, B) are preferred over diagonals
-        /// to produce straighter, less jagged chains. The walk ends when no unvisited
-        /// boundary neighbor remains.
-        /// </summary>
-        private static void TraceChain(
-            int startR, int startC, int rows, int cols,
-            NativeArray<bool> isSurface, NativeArray<bool> visited, List<int> chain)
-        {
-            chain.Clear();
-            int r = startR;
-            int c = startC;
-
-            while (true)
-            {
-                int flatIdx = r * cols + c;
-                visited[flatIdx] = true;
-                chain.Add(flatIdx);
-
-                int  bestR  = -1;
-                int  bestC  = -1;
-                bool found  = false;
-
-                for (int n = 0; n < 8; n++)
+                if (!BoundaryMask[flatIndex])
                 {
-                    int nr = r + dRow[n];
-                    int nc = c + dCol[n];
-
-                    if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
-
-                    int nIdx = nr * cols + nc;
-                    if (visited[nIdx] || !IsBoundaryCell(nr, nc, rows, cols, isSurface)) continue;
-
-                    bestR = nr;
-                    bestC = nc;
-                    found = true;
-
-                    // Prefer 4-connected (T=1, L=3, R=4, B=6) — break early if found to
-                    // avoid overwriting bestR/bestC with a diagonal candidate at n > 6.
-                    if (n == 1 || n == 3 || n == 4 || n == 6) break;
+                    Smoothed[flatIndex] = Hits[flatIndex];
+                    return;
                 }
 
-                if (!found) break;
-                r = bestR;
-                c = bestC;
+                int row = flatIndex / GridWidth;
+                int col = flatIndex % GridWidth;
+
+                Vector3 sum    = Hits[flatIndex];
+                float   weight = 1f;
+
+                for (int dr = -Radius; dr <= Radius; dr++)
+                {
+                    for (int dc = -Radius; dc <= Radius; dc++)
+                    {
+                        if (dr == 0 && dc == 0) continue;
+                        int nr = row + dr;
+                        int nc = col + dc;
+                        if (nr < 0 || nr >= GridHeight || nc < 0 || nc >= GridWidth) continue;
+                        int n = nr * GridWidth + nc;
+                        if (!BoundaryMask[n]) continue;   // average along the boundary only
+                        sum    += Hits[n];
+                        weight += 1f;
+                    }
+                }
+
+                Smoothed[flatIndex] = sum / weight;
             }
         }
     }
