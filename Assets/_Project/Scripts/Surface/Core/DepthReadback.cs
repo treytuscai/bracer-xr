@@ -97,7 +97,7 @@ namespace Surface.Core
         // DIAGNOSTICS (temporary — for the optimization pass)
         // ------------------------------------------------------------------
         // When true, TryDispatch() logs depth-buffer characterization: texture size vs
-        // render resolution (→ the pixelStride below which we double-sample the depth
+        // render resolution (-> the pixelStride below which we double-sample the depth
         // buffer), the forearm grid vs real depth-texel count, and the depth update
         // rate (render frames per depth frame). Toggle from ForearmDepthSurface; set
         // false (default) for zero overhead. Remove this block once measured.

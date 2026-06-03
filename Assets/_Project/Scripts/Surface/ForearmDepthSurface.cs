@@ -13,7 +13,7 @@ using Surface.Core;
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up) and smooth pronation/orientation.
 ///   2. DepthReadback: Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh),
-///                     blit through MetaDepthCopy.shader (hand pixels → w=-1 → HasDepth=false),
+///                     blit through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
 ///                     GPU-readback the forearm crop, and unproject each sampled pixel into a
 ///                     flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)

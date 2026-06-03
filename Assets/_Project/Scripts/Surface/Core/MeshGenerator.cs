@@ -11,18 +11,18 @@ namespace Surface.Core
 {
     /// <summary>
     /// Converts the segmented depth hits in SurfaceBuffer into a renderable mesh in MeshBuffer
-    /// via a four-pass Burst pipeline. All passes run on Burst worker threads; Generate()
-    /// blocks on the main thread only at the two necessary sync points.
+    /// via a Burst job chain. All jobs run on Burst worker threads; Generate() blocks the main
+    /// thread once, at the end, to read the result.
     ///
-    /// PASS OVERVIEW
-    ///   1. ComputeProjectedCenterJob — finds the mean lateral position of all surface hits
-    ///      along AxisRight. This "projected center" keeps the UV window centered on the
-    ///      visible arm patch rather than on the wrist origin. Must complete synchronously
-    ///      before Pass 2 because VertexJob needs the scalar result.
-    ///   2. VertexJob — for each surface cell, atomically claims a dense vertex slot and
-    ///      computes the local-space position and UV0.
-    ///   3. TriangleJob — for each 2×2 grid block, emits a quad (2 tris) or triangle if
-    ///      3 of 4 corners are present, rejecting faces whose edges exceed MaxQuadEdgeSq.
+    /// JOB CHAIN
+    ///   1. ComputeProjectedCenterJob — sums each batch's lateral projection along AxisRight.
+    ///   2. FinalizeCenterJob — aggregates the per-batch sums into the mean "projected center"
+    ///      (written to a NativeArray), which keeps the UV window centered on the visible arm
+    ///      patch. In the job graph so VertexJob can depend on it without a mid-pipeline Complete.
+    ///   3. VertexJob — for each surface cell, atomically claims a dense vertex slot and
+    ///      computes the local-space position and UV0 (reading the finalized center).
+    ///   4. TriangleJob — for each 2×2 grid block, emits up to two triangles, each edge-tested
+    ///      independently against MaxQuadEdgeSq so a single far corner drops only its triangle.
     ///
     /// UV DESIGN (see ArmFrame.cs for full rationale)
     /// U is a linear projection along camera-fixed AxisRight, normalized by DisplayWidth
@@ -59,6 +59,10 @@ namespace Surface.Core
         // when the grid temporarily shrinks between frames.
         private NativeArray<float> _partialSums;
         private NativeArray<int>   _partialCounts;
+        // Single-element result of the center reduction, written by FinalizeCenterJob and read by
+        // VertexJob — keeps the reduction in the job graph so no main-thread Complete() is needed
+        // mid-pipeline. Persistent (size 1).
+        private NativeArray<float> _projCenter;
 
         /// <summary>
         /// Stores configuration. maxQuadEdge is squared immediately so edge checks
@@ -77,9 +81,11 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Runs the full three-pass Burst pipeline and populates MeshBuffer with valid geometry.
-        /// Blocks the main thread twice: after Pass 1 (to read finalProjCenter) and after
-        /// Pass 3 (to copy atomic counts into VertexCount/TriangleCount).
+        /// Runs the Burst job chain (center reduction -> finalize -> vertices -> triangles) and
+        /// populates MeshBuffer with valid geometry. Blocks the main thread once, at the end,
+        /// to read the finalized center and copy the atomic counts into VertexCount/TriangleCount.
+        /// The center reduction now flows through the job graph (FinalizeCenterJob), so there is
+        /// no longer a mid-pipeline Complete().
         /// </summary>
         public void Generate(
             MeshBuffer meshBuf,
@@ -102,7 +108,7 @@ namespace Surface.Core
             // PASS 1: Projected center reduction
             // Uses IJobParallelForBatch so each thread sums a local chunk of cells
             // and writes exactly one (sum, count) pair — no per-element atomics needed.
-            // The result is aggregated on the main thread after Complete().
+            // FinalizeCenterJob aggregates the pairs in the job graph (no main-thread Complete).
             // ------------------------------------------------------------------
             int batchSize  = 64;
             int numBatches = (totalCells + batchSize - 1) / batchSize;
@@ -113,6 +119,7 @@ namespace Surface.Core
                 _partialSums   = new NativeArray<float>(numBatches, Allocator.Persistent);
                 _partialCounts = new NativeArray<int>(numBatches,   Allocator.Persistent);
             }
+            if (!_projCenter.IsCreated) _projCenter = new NativeArray<float>(1, Allocator.Persistent);
 
             var centerJob = new ComputeProjectedCenterJob
             {
@@ -121,20 +128,18 @@ namespace Surface.Core
                 Sums = _partialSums, Counts = _partialCounts,
                 BatchSize = batchSize
             };
-            // Must complete synchronously: VertexJob needs finalProjCenter as a scalar
-            // input and there is no way to pass a NativeArray reduction result to a
-            // downstream job without first reading it on the main thread.
             JobHandle handle = centerJob.ScheduleBatch(totalCells, batchSize);
-            handle.Complete();
 
-            float totalSum   = 0;
-            int   totalCount = 0;
-            for (int i = 0; i < numBatches; i++)
+            // Aggregate the per-batch (sum, count) into the final center IN THE JOB GRAPH, so
+            // VertexJob can depend on it without a main-thread Complete() mid-pipeline.
+            var finalizeJob = new FinalizeCenterJob
             {
-                totalSum   += _partialSums[i];
-                totalCount += _partialCounts[i];
-            }
-            finalProjCenter = totalCount > 0 ? totalSum / totalCount : 0f;
+                Sums       = _partialSums,
+                Counts     = _partialCounts,
+                NumBatches = numBatches,
+                ProjCenter = _projCenter
+            };
+            handle = finalizeJob.Schedule(handle);
 
             // ------------------------------------------------------------------
             // PASS 2: Vertex and UV generation
@@ -144,7 +149,7 @@ namespace Surface.Core
                 Hits = surfBuf.Hits, IsSurface = surfBuf.IsSurface,
                 Cols = cols,
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
-                ProjCenter = finalProjCenter,
+                ProjCenter = _projCenter,
                 PronationScroll = pronation / (2f * Mathf.PI),
                 CosOrientation  = Mathf.Cos(orientation),
                 SinOrientation  = Mathf.Sin(orientation),
@@ -154,7 +159,7 @@ namespace Surface.Core
                 CellToVert = meshBuf.CellToVert,
                 Counter = meshBuf.Counter
             };
-            handle = vertJob.Schedule(totalCells, 64);
+            handle = vertJob.Schedule(totalCells, 64, handle);
 
             // ------------------------------------------------------------------
             // PASS 3: Triangle generation
@@ -173,6 +178,9 @@ namespace Surface.Core
 
             handle.Complete();
 
+            // Read the job-computed center for callers, now that the chain is complete.
+            finalProjCenter = _projCenter[0];
+
             // Copy atomic counts from NativeArray to managed ints so UpdateUnityMesh
             // can pass them to the Mesh API without touching the NativeArray again.
             meshBuf.VertexCount    = meshBuf.Counter[0];
@@ -186,6 +194,7 @@ namespace Surface.Core
         {
             if (_partialSums.IsCreated)   _partialSums.Dispose();
             if (_partialCounts.IsCreated) _partialCounts.Dispose();
+            if (_projCenter.IsCreated)    _projCenter.Dispose();
         }
 
         // =======================================================================================
@@ -195,8 +204,8 @@ namespace Surface.Core
         /// <summary>
         /// Computes the mean lateral projection of all surface hits along AxisRight.
         /// Each batch element sums its chunk locally and writes one (sum, count) pair,
-        /// avoiding per-element atomic accumulation. The main thread aggregates batches
-        /// after Complete() to produce finalProjCenter.
+        /// avoiding per-element atomic accumulation. FinalizeCenterJob then aggregates those
+        /// pairs in the job graph (no main-thread Complete) to produce the center.
         /// </summary>
         [BurstCompile]
         struct ComputeProjectedCenterJob : IJobParallelForBatch
@@ -229,6 +238,33 @@ namespace Surface.Core
         }
 
         /// <summary>
+        /// Aggregates the per-batch (sum, count) pairs from ComputeProjectedCenterJob into the
+        /// final mean center and writes it to ProjCenter[0]. Single-threaded but tiny (numBatches
+        /// entries). Runs in the job graph so VertexJob can depend on it without the main thread
+        /// blocking mid-pipeline.
+        /// </summary>
+        [BurstCompile]
+        struct FinalizeCenterJob : IJob
+        {
+            [ReadOnly] public NativeArray<float> Sums;
+            [ReadOnly] public NativeArray<int>   Counts;
+            public int NumBatches;
+            [WriteOnly] public NativeArray<float> ProjCenter;
+
+            public void Execute()
+            {
+                float sum   = 0f;
+                int   count = 0;
+                for (int i = 0; i < NumBatches; i++)
+                {
+                    sum   += Sums[i];
+                    count += Counts[i];
+                }
+                ProjCenter[0] = count > 0 ? sum / count : 0f;
+            }
+        }
+
+        /// <summary>
         /// Converts each surface grid cell into a dense vertex with position and UV.
         /// Non-surface cells write CellToVert = -1 so TriangleJob skips them.
         /// </summary>
@@ -241,7 +277,9 @@ namespace Surface.Core
             public Vector3 WristPos, Axis, AxisRight;
             // Orientation and Pronation are pre-computed outside the job so CalculateUV
             // does not call Mathf.Cos/Sin or divide on every surface cell.
-            public float   ProjCenter, PronationScroll, CosOrientation, SinOrientation;
+            // [0] = finalized projected center (written by FinalizeCenterJob in the job graph).
+            [ReadOnly] public NativeArray<float> ProjCenter;
+            public float   PronationScroll, CosOrientation, SinOrientation;
             public float   Offset, Width, Height;
             public Matrix4x4 WorldToLocal;
 
@@ -294,7 +332,7 @@ namespace Surface.Core
             ///   Landscape (Orientation ≈ -PI/2): U and V swap so the display reads
             ///   left-to-right across the horizontally-held arm.
             /// </summary>
-            private readonly Vector2 CalculateUV(Vector3 pt)
+            private Vector2 CalculateUV(Vector3 pt)
             {
                 Vector3 fromWrist = pt - WristPos;
 
@@ -302,7 +340,7 @@ namespace Surface.Core
                 float v = 1f - (((distAlong - Offset) / Mathf.Max(Height, 1e-4f)) + 0.5f);
 
                 float projR = Vector3.Dot(fromWrist, AxisRight);
-                float u = ((projR - ProjCenter) / Mathf.Max(Width, 1e-4f)) + 0.25f;
+                float u = ((projR - ProjCenter[0]) / Mathf.Max(Width, 1e-4f)) + 0.25f;
 
                 u += PronationScroll;
 
