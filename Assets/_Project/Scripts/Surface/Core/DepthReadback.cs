@@ -10,8 +10,10 @@ namespace Surface.Core
 {
     /// <summary>
     /// Manages the full GPU->CPU depth pipeline each frame:
-    ///   1. HAND MASK: Render the hand mesh as a white silhouette into a half-res
-    ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP.
+    ///   1. HAND MASK: Render the hand mesh as a white silhouette into a grid-resolution
+    ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP,
+    ///                 with the forearm crop remapped to fill the target so the silhouette
+    ///                 is sampled 1:1 with the grid (no full-screen oversampling).
     ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit into a grid-resolution RT
     ///                 (~one texel per forearm depth-texel). Hand pixels are rejected in the
     ///                 shader (w=-1) so they arrive HasDepth=false.
@@ -83,10 +85,6 @@ namespace Surface.Core
         public float MaskDilateTexels     = 1f;
         public int   DepthSmoothRadius    = 1;
         public float DepthSmoothThreshold = 0.01f;
-        // Grayscale RenderTexture containing the hand silhouette in screen space.
-        // White = hand, black = clear. Sampled by MetaDepthCopy to reject hand pixels.
-        // Half-resolution: silhouette masking doesn't need full precision.
-        private RenderTexture _handMaskRT;
         // CommandBuffer that clears and re-draws the hand mesh each frame.
         private CommandBuffer _maskCmd;
         // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
@@ -177,18 +175,20 @@ namespace Surface.Core
             int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
             int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
 
+            // Forearm crop expressed as a screen-UV sub-rect: (scaleX, scaleY, offsetX, offsetY).
+            float scaleX  = (float)cropW / screenW;
+            float scaleY  = (float)cropH / screenH;
+            float offsetX = (float)cropX / screenW;
+            float offsetY = (float)cropY / screenH;
+
             // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
             // shader). depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
             _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
 
             // Remap the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect, so
             // each output texel samples the depth texture at the correct screen position.
-            // Layout: (scaleX, scaleY, offsetX, offsetY); shader does depthUV = uv * scale + offset.
-            // NOTE: if the reconstructed surface comes out vertically mirrored, flip V here —
-            //   set scaleY = -(float)cropH / screenH and offsetY = (float)(cropY + cropH) / screenH.
-            _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(
-                (float)cropW / screenW, (float)cropH / screenH,
-                (float)cropX / screenW, (float)cropY / screenH));
+            // Shader does depthUV = uv * scale + offset.
+            _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(scaleX, scaleY, offsetX, offsetY));
 
             // Edge-aware depth-smoothing params for the bilateral pass in MetaDepthCopy.
             _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
@@ -196,10 +196,9 @@ namespace Surface.Core
             _blitMaterial.SetVector("_DepthTexelSize",
                 new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
 
-            // Render the hand silhouette before the blit. It stays in full screen-UV space; the
-            // blit samples it at the remapped crop UV. depthMatrices[0] aligns the silhouette
-            // with the depth texture's UV space.
-            RenderHandMask(depthMatrices[0], screenW, screenH);
+            // Render the hand silhouette before the blit, at grid resolution with the crop
+            // remapped to fill the target — so the blit samples it 1:1 at its own UV.
+            RenderTexture maskRT = RenderHandMask(depthMatrices[0], scaleX, scaleY, offsetX, offsetY, cols, rows);
 
             // Blit MetaDepthCopy at GRID resolution (cols×rows) rather than full screen: it runs
             // ~cols*rows fragments instead of the full ~9M, each doing sample R -> build clip ->
@@ -208,6 +207,10 @@ namespace Surface.Core
             // crop size changes; it is released in the readback callback.
             RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
             Graphics.Blit(null, rt, _blitMaterial);
+
+            // The blit has sampled the mask; return it to the pool now (the async readback below
+            // reads only the world-position RT, not the mask).
+            if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
 
             // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
             _isReadbackPending = true;
@@ -252,13 +255,14 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Releases the RenderTexture and blit material. Call when the component is destroyed.
+        /// Releases the blit material, mask material, and command buffer. Call when the
+        /// component is destroyed. The mask RenderTexture is pooled (GetTemporary) and
+        /// released each frame, so there is nothing persistent to free here.
         /// </summary>
         public void Dispose()
         {
-            if (_handMaskRT  != null) _handMaskRT.Release();
-            if (_blitMaterial  != null) UnityEngine.Object.Destroy(_blitMaterial);
-            if (_handMaskMat   != null) UnityEngine.Object.Destroy(_handMaskMat);
+            if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
+            if (_handMaskMat  != null) UnityEngine.Object.Destroy(_handMaskMat);
             _maskCmd?.Release();
         }
 
@@ -267,45 +271,57 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Renders the CPU-baked hand mesh as a white silhouette into _handMaskRT using
-        /// CommandBuffer.DrawMesh with Meta's depth VP. The silhouette aligns with the
-        /// depth texture's UV space so MetaDepthCopy can reject hand pixels with a single
-        /// texture sample. Half-resolution is sufficient for silhouette masking.
+        /// Renders the CPU-baked hand mesh as a white silhouette into a pooled grid-resolution
+        /// (cols×rows) RenderTexture using CommandBuffer.DrawMesh with Meta's depth VP. A crop
+        /// remap matrix maps the forearm's NDC sub-rect onto the full target, so the silhouette
+        /// fills the mask at ~one texel per depth texel and MetaDepthCopy can sample it 1:1 at
+        /// the blit's own UV (no full-screen oversampling, no screen-space crop remap).
+        ///
+        /// Returns the pooled RenderTexture (caller releases it after the blit), or null when
+        /// there is no hand to draw — in which case _HandMaskTex is bound to black so the blit
+        /// rejects nothing.
         /// </summary>
-        private void RenderHandMask(Matrix4x4 depthVP, int screenW, int screenH)
+        private RenderTexture RenderHandMask(
+            Matrix4x4 depthVP,
+            float scaleX, float scaleY, float offsetX, float offsetY,
+            int maskW, int maskH)
         {
-            if (_handMaskSource == null || _handMaskMat == null) return;
-
-            Mesh bakedMesh = _handMaskSource.BakedMesh;
-            if (bakedMesh == null || bakedMesh.vertexCount == 0) return;
-
-            int maskW = screenW / 2;
-            int maskH = screenH / 2;
-            if (_handMaskRT == null || _handMaskRT.width != maskW || _handMaskRT.height != maskH)
+            if (_handMaskSource == null || _handMaskMat == null ||
+                _handMaskSource.BakedMesh == null || _handMaskSource.BakedMesh.vertexCount == 0)
             {
-                if (_handMaskRT != null) _handMaskRT.Release();
-                _handMaskRT = new RenderTexture(maskW, maskH, 0, RenderTextureFormat.R8);
-                _handMaskRT.Create();
-                _blitMaterial.SetTexture("_HandMaskTex", _handMaskRT);
-                // Set the texel size explicitly: Graphics.Blit binds the material outside the
-                // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
-                _blitMaterial.SetVector("_HandMaskTex_TexelSize",
-                    new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
+                _blitMaterial.SetTexture("_HandMaskTex", Texture2D.blackTexture);
+                return null;
             }
 
-            // Pass Meta's depth camera VP so the shader projects hand vertices into the
-            // same UV space as the depth texture. HandMaskRender handles the Vulkan Y flip.
-            _handMaskMat.SetMatrix("_DepthVP", depthVP);
-            // Sample-time dilation radius (texels), applied in MetaDepthCopy's 3x3 max.
+            // Crop remap: maps the forearm crop's NDC sub-rect to full NDC so the silhouette
+            // fills the grid-resolution target. Derived from the inverse of the blit's
+            // depthUV = uv*scale + offset, expressed in clip space (x' = x/scale + b*w):
+            //   ndc' = ndc/scale + (1 - 2*offset - scale)/scale.
+            // Folded into the depth VP, then HandMaskRender applies the Vulkan Y flip last.
+            Matrix4x4 crop = Matrix4x4.identity;
+            crop.m00 = 1f / scaleX; crop.m03 = (1f - 2f * offsetX - scaleX) / scaleX;
+            crop.m11 = 1f / scaleY; crop.m13 = (1f - 2f * offsetY - scaleY) / scaleY;
+            Matrix4x4 maskVP = crop * depthVP;
+
+            RenderTexture maskRT = RenderTexture.GetTemporary(maskW, maskH, 0, RenderTextureFormat.R8);
+            _blitMaterial.SetTexture("_HandMaskTex", maskRT);
+            // Set the texel size explicitly: Graphics.Blit binds the material outside the
+            // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
+            _blitMaterial.SetVector("_HandMaskTex_TexelSize",
+                new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
+
+            _handMaskMat.SetMatrix("_DepthVP", maskVP);
+            // Sample-time dilation radius (now in grid/depth-texel units), applied in MetaDepthCopy's 3x3 max.
             _blitMaterial.SetFloat("_MaskDilateTexels", MaskDilateTexels);
 
             _maskCmd.Clear();
-            _maskCmd.SetRenderTarget(_handMaskRT);
+            _maskCmd.SetRenderTarget(maskRT);
             _maskCmd.ClearRenderTarget(false, true, Color.black);
             // DrawMesh with the CPU-baked mesh: vertex positions are already skinned.
             // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call.
-            _maskCmd.DrawMesh(bakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
+            _maskCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
             Graphics.ExecuteCommandBuffer(_maskCmd);
+            return maskRT;
         }
 
         // --------------------------------------------------------

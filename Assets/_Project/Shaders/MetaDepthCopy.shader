@@ -198,15 +198,18 @@ Shader "Hidden/MetaDepthCopy"
                 float3 worldPos = worldH.xyz / worldH.w;
 
                 // Hand mask: reject pixels covered by the hand silhouette.
-                // _HandMaskTex is a screen-space grayscale texture rendered each frame
-                // via CommandBuffer.DrawMesh before this blit — white where the hand mesh
-                // covers the screen, black elsewhere.
+                // _HandMaskTex is rendered each frame via CommandBuffer.DrawMesh before this
+                // blit at GRID resolution with the crop remapped to fill [0,1] — so it is
+                // sampled at this fragment's own uv (1:1 with the grid), NOT the screen-space
+                // crop duv. White where the hand mesh covers the forearm crop, black elsewhere.
                 //
                 // Rather than one tap, sample a 3x3 neighborhood and take the max — a cheap
                 // morphological dilation. This grows the effective mask by _MaskDilateTexels
                 // texels to cover the readback-latency gap (the depth hand trails the current
                 // mesh) WITHOUT fattening the rendered silhouette or dropping the 0.5 threshold,
                 // so a stationary hand keeps tight while a moving one stays covered.
+                // NOTE: a mask texel now equals a grid cell (~one depth texel), so dilation is
+                // in grid/depth-texel units, not the old half-screen-pixel units.
                 float2 texelStep = _HandMaskTex_TexelSize.xy * _MaskDilateTexels;
                 float mask = 0.0;
                 UNITY_UNROLL
@@ -214,7 +217,7 @@ Shader "Hidden/MetaDepthCopy"
                     UNITY_UNROLL
                     for (int dx = -1; dx <= 1; dx++)
                         mask = max(mask, SAMPLE_TEXTURE2D(_HandMaskTex, sampler_HandMaskTex,
-                                                          duv + float2(dx, dy) * texelStep).r);
+                                                          input.uv + float2(dx, dy) * texelStep).r);
                 if (mask > 0.5)
                     return float4(0, 0, 0, -1.0);
 
