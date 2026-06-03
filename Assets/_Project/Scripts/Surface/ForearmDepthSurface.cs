@@ -382,6 +382,10 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.SetVertices(_meshBuffer.Vertices, 0, _meshBuffer.VertexCount);
         _mesh.SetUVs(0, _meshBuffer.UVs, 0, _meshBuffer.VertexCount);
 
+        // Normals are precomputed off the main thread by NormalsJob — upload directly instead of
+        // the single-threaded Mesh.RecalculateNormals().
+        _mesh.SetNormals(_meshBuffer.Normals, 0, _meshBuffer.VertexCount);
+
         // SetIndices with NativeArray<int> avoids the managed array allocation
         // that SetTriangles(List<int>) would require.
         _mesh.SetIndices(
@@ -392,7 +396,6 @@ public class ForearmDepthSurface : MonoBehaviour
             0
         );
 
-        _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
     }
 

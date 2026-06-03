@@ -174,10 +174,28 @@ namespace Surface.Core
                 Cols = cols, MaxSq = MaxQuadEdgeSq,
                 OutTris = meshBuf.Triangles, Counter = meshBuf.Counter
             };
-            handle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
+            JobHandle triHandle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
 
-            // Return without completing — the caller completes this at harvest time, then Finish().
-            return handle;
+            // ------------------------------------------------------------------
+            // PASS 4: Per-vertex normals from grid neighbors (parallel). Independent of triangles
+            // (both only depend on VertexJob's CellToVert + dense slots), so it runs alongside
+            // PASS 3 — replacing the main-thread Mesh.RecalculateNormals().
+            // ------------------------------------------------------------------
+            var normalsJob = new NormalsJob
+            {
+                Hits         = surfBuf.Hits,
+                IsSurface    = surfBuf.IsSurface,
+                CellToVert   = meshBuf.CellToVert,
+                Cols         = cols,
+                Rows         = rows,
+                WorldToLocal = worldToLocal,
+                OutNormals   = meshBuf.Normals
+            };
+            JobHandle normHandle = normalsJob.Schedule(totalCells, 64, handle);
+
+            // Return the combined handle (triangles + normals) without completing — the caller
+            // completes it at harvest time, then Finish().
+            return JobHandle.CombineDependencies(triHandle, normHandle);
         }
 
         /// <summary>
@@ -426,6 +444,49 @@ namespace Surface.Core
                 (a - b).sqrMagnitude < MaxSq &&
                 (b - c).sqrMagnitude < MaxSq &&
                 (a - c).sqrMagnitude < MaxSq;
+        }
+
+        /// <summary>
+        /// Computes a per-vertex normal for each surface cell from its grid neighbors (central
+        /// difference of the world hits along the row/col directions), transforms it to local
+        /// space, and writes it to the cell's dense vertex slot. Parallel and scatter-free — the
+        /// regular grid hands each cell its neighbors directly, so no adjacency build or atomics
+        /// are needed (unlike Mesh.RecalculateNormals, which is single-threaded on the main thread).
+        /// </summary>
+        [BurstCompile]
+        struct NormalsJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<Vector3> Hits;
+            [ReadOnly] public NativeArray<bool>    IsSurface;
+            [ReadOnly] public NativeArray<int>     CellToVert;
+            public int Cols;
+            public int Rows;
+            public Matrix4x4 WorldToLocal;
+
+            [NativeDisableParallelForRestriction] public NativeArray<Vector3> OutNormals;
+
+            public void Execute(int i)
+            {
+                int v = CellToVert[i];
+                if (v < 0) return;   // non-surface cell has no vertex
+
+                int row = i / Cols;
+                int col = i % Cols;
+                Vector3 p = Hits[i];
+
+                // Neighbor hits along each grid axis, falling back to the cell itself when a
+                // neighbor is off-surface or off-grid (one-sided difference at the patch edge).
+                Vector3 right = (col + 1 < Cols && IsSurface[i + 1])    ? Hits[i + 1]    : p;
+                Vector3 left  = (col - 1 >= 0   && IsSurface[i - 1])    ? Hits[i - 1]    : p;
+                Vector3 down  = (row + 1 < Rows && IsSurface[i + Cols]) ? Hits[i + Cols] : p;
+                Vector3 up    = (row - 1 >= 0   && IsSurface[i - Cols]) ? Hits[i - Cols] : p;
+
+                // Surface normal = cross of the two grid tangents, transformed to local space.
+                Vector3 nLocal = WorldToLocal.MultiplyVector(Vector3.Cross(down - up, right - left));
+
+                float m = nLocal.magnitude;
+                OutNormals[v] = m > 1e-6f ? nLocal / m : Vector3.up;
+            }
         }
     }
 }
