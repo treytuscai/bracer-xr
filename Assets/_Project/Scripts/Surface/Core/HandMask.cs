@@ -16,7 +16,7 @@ namespace Surface.Core
     /// this offset — a value of ~0.02m covers both the bone offset and intentional hover.
     ///
     /// Add indices to ActiveFingerTips to extend detection to additional fingers.
-    /// SnapshotMesh() is called once per LateUpdate before DepthReadback.Schedule() so
+    /// SnapshotMesh() is called once per LateUpdate before DepthReadback.TryDispatch() so
     /// both the GPU silhouette and touch candidates use the same frame's hand pose.
     /// </summary>
     public class HandMask : IDisposable
@@ -70,7 +70,7 @@ namespace Surface.Core
         /// <summary>
         /// Bakes the full hand mesh (for the GPU silhouette) and records the world-space
         /// joint position of each active fingertip bone (for touch detection).
-        /// Call from LateUpdate before DepthReadback.Schedule().
+        /// Call from LateUpdate before DepthReadback.TryDispatch().
         /// </summary>
         public void SnapshotMesh()
         {

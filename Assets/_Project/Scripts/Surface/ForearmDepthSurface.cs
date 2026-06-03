@@ -64,14 +64,6 @@ public class ForearmDepthSurface : MonoBehaviour
              "effective hand mask to cover readback latency without bloating the rendered mesh.")]
     [Range(0f, 4f)] public float maskDilateTexels = 1f;
 
-    [Tooltip("TEMPORARY: log depth-buffer size, oversampling vs pixelStride, and update rate to the console. " +
-             "Leave off in normal use.")]
-    public bool logDepthDiagnostics = false;
-
-    [Tooltip("TEMPORARY: skip all reconstruction GPU work (mask render + blit + readback) to test if " +
-             "this pipeline is the fps bottleneck. Surface stops updating; fps still logs. Leave off in normal use.")]
-    public bool skipReconstruction = false;
-
     // ------------------------------------------------------------------
     // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
     // Edge-aware blur of the raw depth before unprojection: denoises the surface
@@ -296,10 +288,6 @@ public class ForearmDepthSurface : MonoBehaviour
         if (!_isProcessingMesh)
         {
             _handMask.SnapshotMesh();
-            // TEMP diagnostics (removed before final). Real tuning params are set in the constructor.
-            _depthReadback.LogDiagnostics     = logDepthDiagnostics;
-            _depthReadback.SkipReconstruction = skipReconstruction;
-
             _isProcessingMesh = _depthReadback.TryDispatch(
                 _armFrame, maxRadialDist,
                 _surfaceBuffer, OnDepthReady
