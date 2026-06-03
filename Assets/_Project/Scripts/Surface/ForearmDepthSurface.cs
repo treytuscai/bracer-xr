@@ -64,6 +64,10 @@ public class ForearmDepthSurface : MonoBehaviour
              "effective hand mask to cover readback latency without bloating the rendered mesh.")]
     [Range(0f, 4f)] public float maskDilateTexels = 1f;
 
+    [Tooltip("TEMPORARY: log depth-buffer size, oversampling vs pixelStride, and update rate to the console. " +
+             "Leave off in normal use.")]
+    public bool logDepthDiagnostics = false;
+
     // ------------------------------------------------------------------
     // SAMPLING
     // pixelStride trades mesh density for performance. Each stride step
@@ -270,6 +274,7 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _handMask.SnapshotMesh();
             _depthReadback.MaskDilateTexels = maskDilateTexels;
+            _depthReadback.LogDiagnostics   = logDepthDiagnostics;
 
             _isProcessingMesh = _depthReadback.Schedule(
                 _armFrame, maxRadialDist, pixelStride,
