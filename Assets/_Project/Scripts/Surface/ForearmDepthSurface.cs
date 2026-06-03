@@ -24,9 +24,9 @@ using Surface.Core;
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
 ///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
-///   5. Smoothing:     Laplacian passes pull each surface vertex toward its neighbors,
-///                     then boundary contour smoothing applies a 1D moving average along
-///                     the mesh edge to reduce the staircase from the pixel grid.
+///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
+///                     MetaDepthCopy); a parallel boundary smoother then de-steps the mesh
+///                     edge by averaging each boundary cell with its boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
@@ -75,8 +75,7 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
     // Edge-aware blur of the raw depth before unprojection: denoises the surface
-    // without crossing the arm/background depth discontinuity. Replaces the CPU
-    // Laplacian (set Smooth Passes below to 0 to disable that one).
+    // interior without crossing the arm/background depth discontinuity.
     // ------------------------------------------------------------------
     [Header("Depth Smoothing")]
     [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
@@ -108,19 +107,17 @@ public class ForearmDepthSurface : MonoBehaviour
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.010f;
 
     // ------------------------------------------------------------------
-    // SMOOTHING
-    // smoothPasses runs Laplacian averaging (each cell -> centroid of its
-    // surface neighbors). edgeSmoothPasses runs a 1D moving average along
-    // boundary chains to reduce the staircase from the pixel grid.
-    // edgeWindowRadius controls the half-width of that moving-average window.
+    // BOUNDARY SMOOTHING
+    // The interior is denoised on the GPU (bilateral depth blur in MetaDepthCopy).
+    // These tune the parallel boundary smoother that de-steps the mesh edge:
+    // each boundary cell is averaged with nearby boundary cells, edgeSmoothPasses
+    // times, over a (2*edgeWindowRadius+1) neighborhood per pass.
     // ------------------------------------------------------------------
-    [Header("Smoothing")]
-    [Tooltip("Spatial smoothing passes on depth hits. 0 = raw depth")]
-    [Range(0, 5)] public int smoothPasses = 3;
-    [Tooltip("Smoothing passes over the boundary contour chains. 0 = no edge smoothing")]
+    [Header("Boundary Smoothing")]
+    [Tooltip("Boundary smoothing passes. 0 = no edge smoothing. Prefer more passes over a large radius.")]
     [Range(0, 5)] public int edgeSmoothPasses = 2;
-    [Tooltip("Half-width of the moving average window along boundary chains")]
-    [Range(1, 6)] public int edgeWindowRadius = 3;
+    [Tooltip("Neighborhood half-width (cells) averaged per boundary pass. >2 starts rounding the arm's real shape.")]
+    [Range(1, 6)] public int edgeWindowRadius = 2;
 
     // ------------------------------------------------------------------
     // MESH
@@ -168,7 +165,7 @@ public class ForearmDepthSurface : MonoBehaviour
     private SurfaceExtractor _surfaceExtractor; // Seed cylinder + BFS flood
     private DepthReadback _depthReadback;       // GPU crop, readback, and world-space unproject
     private MeshGenerator _meshGenerator;       // Vertex/UV/triangle generation
-    private SurfaceSmoother _surfaceSmoother;   // Laplacian + boundary contour smoothing
+    private BoundarySmoother _boundarySmoother; // parallel edge de-stepping (interior is GPU-smoothed)
 
     // ------------------------------------------------------------------
     // UNITY RENDERING
@@ -209,7 +206,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
-        _surfaceSmoother  = new SurfaceSmoother(smoothPasses, edgeSmoothPasses, edgeWindowRadius);
+        _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
     }
 
@@ -315,7 +312,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// The job chain uses Unity's JobHandle dependency system: each stage receives
     /// the previous stage's handle and the Burst scheduler guarantees the earlier
     /// stage's NativeArray writes are visible before the next stage reads them.
-    /// SurfaceSmoother.Schedule() calls JobHandle.Complete() internally so all
+    /// BoundarySmoother.Schedule() calls JobHandle.Complete() internally so all
     /// buffer data is readable on the main thread before mesh generation.
     /// </summary>
     /// <param name="sampleHandle">JobHandle for the completed depth unproject job.</param>
@@ -344,14 +341,9 @@ public class ForearmDepthSurface : MonoBehaviour
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
             sampleHandle);
 
-        // SMOOTH: boundary contour smoothing (the interior is now smoothed on the GPU by the
-        // bilateral depth pass; Laplacian passes default off via smoothPasses=0).
-        // Push the params each frame so they can be tuned live (the smoother reads its public
-        // fields at Schedule time); calls Complete() internally.
-        _surfaceSmoother.SmoothPasses     = smoothPasses;
-        _surfaceSmoother.EdgeSmoothPasses = edgeSmoothPasses;
-        _surfaceSmoother.EdgeWindowRadius = edgeWindowRadius;
-        _surfaceSmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
+        // SMOOTH: parallel boundary de-stepping (the interior is smoothed on the GPU by the
+        // bilateral depth pass)
+        _boundarySmoother.Schedule(_surfaceBuffer, _rows, _cols, extractionHandle);
 
         // MESH: Convert final IsSurface hits to vertices, UVs, and triangles.
         // _projCenter is the mean lateral (AxisRight) projection of the surface,
