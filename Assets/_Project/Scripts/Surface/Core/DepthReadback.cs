@@ -60,7 +60,7 @@ namespace Surface.Core
         // from the depth texture into the grid-resolution blit target.
         private Material _blitMaterial;
         // World positions are written to a per-frame pooled RenderTexture sized to the forearm
-        // grid (RenderTexture.GetTemporary in Schedule), not a persistent full-screen RT — the
+        // grid (RenderTexture.GetTemporary in TryDispatch), not a persistent full-screen RT — the
         // blit runs at grid resolution (~cols×rows fragments) instead of over the whole screen.
         // Set to true when AsyncGPUReadback.Request is enqueued, false at the
         // start of its callback. Reset at callback start (not end) so that
@@ -76,12 +76,12 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // HandMask provides the CPU-baked mesh and localToWorld each frame.
         private HandMask _handMaskSource;
-        // Mask dilation radius in mask texels, applied at sample time in MetaDepthCopy
-        // (3x3 max). Grows the effective mask to cover readback latency without fattening
-        // the rendered silhouette. Set from ForearmDepthSurface Inspector.
-        public float MaskDilateTexels = 1f;
-        // Edge-aware depth smoothing in MetaDepthCopy (set from ForearmDepthSurface Inspector).
-        // Radius 0 = off; Threshold = max LINEAR depth diff (metres) for a neighbor to be averaged in.
+        // Tuning, set once via the constructor from ForearmDepthSurface Inspector values:
+        //   MaskDilateTexels     — mask dilation radius in mask texels, applied at sample time in
+        //                          MetaDepthCopy (3x3 max) to cover readback latency.
+        //   DepthSmoothRadius    — edge-aware depth blur radius (0 = off).
+        //   DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to be averaged in.
+        public float MaskDilateTexels     = 1f;
         public int   DepthSmoothRadius    = 1;
         public float DepthSmoothThreshold = 0.01f;
         // Grayscale RenderTexture containing the hand silhouette in screen space.
@@ -96,27 +96,31 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // DIAGNOSTICS (temporary — for the optimization pass)
         // ------------------------------------------------------------------
-        // When true, Schedule() logs depth-buffer characterization: texture size vs
+        // When true, TryDispatch() logs depth-buffer characterization: texture size vs
         // render resolution (→ the pixelStride below which we double-sample the depth
         // buffer), the forearm grid vs real depth-texel count, and the depth update
         // rate (render frames per depth frame). Toggle from ForearmDepthSurface; set
         // false (default) for zero overhead. Remove this block once measured.
         public bool LogDiagnostics = false;
-        // When true, Schedule() logs diagnostics then early-returns, skipping ALL reconstruction
+        // When true, TryDispatch() logs diagnostics then early-returns, skipping ALL reconstruction
         // GPU work (hand-mask render + full-screen blit + readback + downstream). Isolates whether
         // this pipeline is the fps bottleneck: fps still logs, but the surface stops updating.
         public bool SkipReconstruction = false;
         private Matrix4x4 _lastDepthMatrix;   // previous depth reprojection matrix (change = new depth frame)
         private int _depthFrameChanges;       // depth-matrix changes seen in the current window
-        private int _diagRenderFrames;        // render frames (Schedule calls) in the current window
+        private int _diagRenderFrames;        // render frames (TryDispatch calls) in the current window
         private bool _loggedStaticInfo;       // one-shot guard for the size/oversampling log
 
         /// <summary>
-        /// Loads the MetaDepthCopy and HandMaskRender shaders and creates materials.
-        /// Shaders must be present in the project and not stripped from builds.
+        /// Loads the MetaDepthCopy and HandMaskRender shaders, creates materials, and stores the
+        /// tuning parameters. Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback(HandMask handMaskSource)
+        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold)
         {
+            MaskDilateTexels     = maskDilateTexels;
+            DepthSmoothRadius    = depthSmoothRadius;
+            DepthSmoothThreshold = depthSmoothThreshold;
+
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
             {
@@ -142,7 +146,7 @@ namespace Surface.Core
         /// early-out (readback in flight, no depth matrices, arm off-screen, shader missing).
         /// Callers must only arm their in-flight guard when this returns true.
         /// </summary>
-        public bool Schedule(
+        public bool TryDispatch(
             ArmFrame arm,
             float maxRadialDist,
             SurfaceBuffer buffer,

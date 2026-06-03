@@ -63,7 +63,9 @@ namespace Surface.Core
                         Radius       = WindowRadius
                     };
                     handle = job.Schedule(rows * cols, 64, handle);
-                    var t = buffer.Hits; buffer.Hits = buffer.Smoothed; buffer.Smoothed = t;
+                    // Swap so the next pass reads this pass's output (safe: the job already
+                    // captured its NativeArray pointers at Schedule time).
+                    (buffer.Hits, buffer.Smoothed) = (buffer.Smoothed, buffer.Hits);
                 }
             }
 

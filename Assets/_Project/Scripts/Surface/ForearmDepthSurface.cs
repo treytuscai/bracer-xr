@@ -204,7 +204,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask);
+        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
@@ -271,19 +271,17 @@ public class ForearmDepthSurface : MonoBehaviour
         }
 
         // Only request a new GPU readback if the previous frame's pipeline has finished.
-        // The flag is set to Schedule()'s return value: Schedule has several silent
+        // The flag is set to TryDispatch()'s return value: TryDispatch has several silent
         // early-return paths (no depth matrices, arm off-screen) that never call
         // OnDepthReady, so arming unconditionally would permanently deadlock the pipeline.
         if (!_isProcessingMesh)
         {
             _handMask.SnapshotMesh();
-            _depthReadback.MaskDilateTexels     = maskDilateTexels;
-            _depthReadback.LogDiagnostics       = logDepthDiagnostics;
-            _depthReadback.SkipReconstruction   = skipReconstruction;
-            _depthReadback.DepthSmoothRadius    = depthSmoothRadius;
-            _depthReadback.DepthSmoothThreshold = depthSmoothThreshold;
+            // TEMP diagnostics (removed before final). Real tuning params are set in the constructor.
+            _depthReadback.LogDiagnostics     = logDepthDiagnostics;
+            _depthReadback.SkipReconstruction = skipReconstruction;
 
-            _isProcessingMesh = _depthReadback.Schedule(
+            _isProcessingMesh = _depthReadback.TryDispatch(
                 _armFrame, maxRadialDist,
                 _surfaceBuffer, OnDepthReady
             );
