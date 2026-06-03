@@ -131,7 +131,7 @@ namespace Surface.Core
             SurfaceBuffer buffer,
             Action<JobHandle, int, int> onComplete)
         {
-            // Abort if the shader failed to load at construction.
+            // Abort if the shader failed to load at construction, or a readback is still in flight.
             if (_blitMaterial == null) return false;
             if (_isReadbackPending) return false;
 
@@ -140,6 +140,9 @@ namespace Surface.Core
             // at the time that depth frame was captured (not the current render pose).
             Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
             if (depthMatrices == null || depthMatrices.Length == 0) return false;
+
+            // Depth texture dimensions are needed to size the grid; bail until it's bound.
+            if (!TryCacheDepthDims()) return false;
 
             Camera cam = arm.Cam;
             Vector3 wristPos = arm.WristPos;
@@ -160,21 +163,57 @@ namespace Surface.Core
             // Sample the forearm crop at the depth buffer's NATIVE resolution: one grid cell per
             // real depth texel spanning the crop (no screen-pixel stride). The per-axis footprint
             // handles the anisotropic screen->texel mapping — the render is double-wide while the
-            // depth texture is square. Depth dims are constant; cache them once.
-            if (_depthTexW == 0)
-            {
-                Texture depthTex = Shader.GetGlobalTexture("_EnvironmentDepthTexture");
-                if (depthTex == null) return false; // not bound yet; reconstruct next frame
-                _depthTexW = depthTex.width;
-                _depthTexH = depthTex.height;
-            }
-
+            // depth texture is square.
             int screenW = cam.pixelWidth;
             int screenH = cam.pixelHeight;
             // Minimum 2 per axis: a 1×N grid produces no quads and boundary smoothing needs ≥2 cells.
             int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
             int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
 
+            // Render the hand mask + world-position blit at grid resolution; returns the pooled
+            // world-position RT to read back (released in the readback callback).
+            RenderTexture rt = DispatchReconstruction(
+                depthMatrices[0], cropX, cropY, cropW, cropH, screenW, screenH, cols, rows);
+
+            // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
+            _isReadbackPending = true;
+            AsyncGPUReadback.Request(
+                rt, 0,
+                request => HandleReadback(request, rt, buffer, rows, cols, onComplete));
+            return true;
+        }
+
+        /// <summary>
+        /// Caches the native depth texture dimensions (e.g. 320×320) on first success. They are
+        /// constant for the session. Returns false until _EnvironmentDepthTexture is bound by
+        /// Meta's EnvironmentDepthManager, signalling the caller to retry next frame.
+        /// </summary>
+        private bool TryCacheDepthDims()
+        {
+            if (_depthTexW != 0) return true;
+
+            Texture depthTex = Shader.GetGlobalTexture("_EnvironmentDepthTexture");
+            if (depthTex == null) return false;
+
+            _depthTexW = depthTex.width;
+            _depthTexH = depthTex.height;
+            return true;
+        }
+
+        /// <summary>
+        /// Sets the blit material parameters, renders the hand silhouette, and runs the
+        /// MetaDepthCopy blit at GRID resolution (cols×rows) rather than full screen: each of the
+        /// ~cols*rows fragments samples R -> builds clip -> inverse VP -> perspective divide,
+        /// writing Vector4 (xyz = world pos, w = rawDepth, or w = -1 for invalid). Returns the
+        /// pooled world-position RenderTexture for readback; the mask RT is released here since
+        /// the blit has already sampled it.
+        /// </summary>
+        private RenderTexture DispatchReconstruction(
+            Matrix4x4 depthVP,
+            int cropX, int cropY, int cropW, int cropH,
+            int screenW, int screenH,
+            int cols, int rows)
+        {
             // Forearm crop expressed as a screen-UV sub-rect: (scaleX, scaleY, offsetX, offsetY).
             float scaleX  = (float)cropW / screenW;
             float scaleY  = (float)cropH / screenH;
@@ -182,8 +221,8 @@ namespace Surface.Core
             float offsetY = (float)cropY / screenH;
 
             // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
-            // shader). depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
-            _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
+            // shader). depthVP is the left-eye VP for the pose at depth-capture time.
+            _blitMaterial.SetMatrix("_DepthInverseVP", depthVP.inverse);
 
             // Remap the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect, so
             // each output texel samples the depth texture at the correct screen position.
@@ -198,60 +237,63 @@ namespace Surface.Core
 
             // Render the hand silhouette before the blit, at grid resolution with the crop
             // remapped to fill the target — so the blit samples it 1:1 at its own UV.
-            RenderTexture maskRT = RenderHandMask(depthMatrices[0], scaleX, scaleY, offsetX, offsetY, cols, rows);
+            RenderTexture maskRT = RenderHandMask(depthVP, scaleX, scaleY, offsetX, offsetY, cols, rows);
 
-            // Blit MetaDepthCopy at GRID resolution (cols×rows) rather than full screen: it runs
-            // ~cols*rows fragments instead of the full ~9M, each doing sample R -> build clip ->
-            // inverse VP -> perspective divide, writing Vector4 (xyz = world pos, w = rawDepth, or
-            // w = -1 for invalid). A pooled temporary RT avoids per-frame allocation churn as the
-            // crop size changes; it is released in the readback callback.
+            // A pooled temporary RT avoids per-frame allocation churn as the crop size changes.
             RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
             Graphics.Blit(null, rt, _blitMaterial);
 
-            // The blit has sampled the mask; return it to the pool now (the async readback below
-            // reads only the world-position RT, not the mask).
+            // The blit has sampled the mask; return it to the pool now (the readback reads only
+            // the world-position RT, not the mask).
             if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
 
-            // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
-            _isReadbackPending = true;
-            AsyncGPUReadback.Request(
-                rt, 0,
-                request =>
-                {
-                    // Reset + release the pooled RT before any processing so exceptions downstream
-                    // don't permanently stall the pipeline or leak the temporary.
-                    _isReadbackPending = false;
-                    RenderTexture.ReleaseTemporary(rt);
+            return rt;
+        }
 
-                    if (request.hasError)
-                    {
-                        Debug.LogError("[Depth] GPU Readback Error!");
-                        onComplete?.Invoke(default, 0, 0);
-                        return;
-                    }
+        /// <summary>
+        /// AsyncGPUReadback completion handler: releases the pooled RT, then schedules the Burst
+        /// unproject job and hands its JobHandle (plus grid dimensions) to onComplete. Invokes
+        /// onComplete with a default handle on error or empty readback so the caller's pipeline
+        /// can still advance. Runs on the main thread during Unity's readback callback.
+        /// </summary>
+        private void HandleReadback(
+            AsyncGPUReadbackRequest request,
+            RenderTexture rt,
+            SurfaceBuffer buffer,
+            int rows, int cols,
+            Action<JobHandle, int, int> onComplete)
+        {
+            // Reset + release the pooled RT before any processing so exceptions downstream
+            // don't permanently stall the pipeline or leak the temporary.
+            _isReadbackPending = false;
+            RenderTexture.ReleaseTemporary(rt);
 
-                    NativeArray<Vector4> raw = request.GetData<Vector4>();
-                    if (!raw.IsCreated || raw.Length == 0)
-                    {
-                        onComplete?.Invoke(default, 0, 0);
-                        return;
-                    }
+            if (request.hasError)
+            {
+                onComplete?.Invoke(default, 0, 0);
+                return;
+            }
 
-                    buffer.ResizeIfNeeded(rows, cols);
+            NativeArray<Vector4> raw = request.GetData<Vector4>();
+            if (!raw.IsCreated || raw.Length == 0)
+            {
+                onComplete?.Invoke(default, 0, 0);
+                return;
+            }
 
-                    // WorldPositions is now the grid itself (row-major, width = cols): cell
-                    // (r, c) lives at index r*cols + c — no stride/crop remap needed.
-                    var job = new DepthUnprojectionJob
-                    {
-                        WorldPositions = raw,
-                        Hits           = buffer.Hits,
-                        HasDepth       = buffer.HasDepth,
-                        IsSurface      = buffer.IsSurface
-                    };
+            buffer.ResizeIfNeeded(rows, cols);
 
-                    onComplete?.Invoke(job.Schedule(rows * cols, 64), rows, cols);
-                });
-            return true;
+            // WorldPositions is the grid itself (row-major, width = cols): cell
+            // (r, c) lives at index r*cols + c — no stride/crop remap needed.
+            var job = new DepthUnprojectionJob
+            {
+                WorldPositions = raw,
+                Hits           = buffer.Hits,
+                HasDepth       = buffer.HasDepth,
+                IsSurface      = buffer.IsSurface
+            };
+
+            onComplete?.Invoke(job.Schedule(rows * cols, 64), rows, cols);
         }
 
         /// <summary>
