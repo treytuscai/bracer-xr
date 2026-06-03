@@ -158,10 +158,10 @@ namespace Surface.Core
 
             // ------------------------------------------------------------------
             // PASS 3: Triangle generation
-            // Each job element is one 2×2 grid block. Emits a full quad (2 tris)
-            // when all 4 corners are present, or a single triangle when exactly 3
-            // are present. Faces whose world-space edges exceed MaxQuadEdgeSq are
-            // discarded to prevent connecting depth discontinuities.
+            // Each job element is one 2×2 grid block, emitting up to two triangles. Every candidate
+            // triangle is tested independently against MaxQuadEdgeSq, so a single far corner drops
+            // only its triangle (the rest still fill) rather than discarding the whole block — while
+            // still rejecting any triangle that would span a real depth discontinuity.
             // ------------------------------------------------------------------
             var triJob = new TriangleJob
             {
@@ -352,16 +352,14 @@ namespace Surface.Core
 
                 if (vCount == 4)
                 {
-                    // All 4 corners: emit two CCW triangles forming a quad.
-                    // CheckQuad tests all 4 perimeter edges; by triangle inequality the
-                    // diagonals are bounded to ≤ 2×MaxSq, sufficient for depth grid data.
-                    if (CheckQuad(Hits[idxTL], Hits[idxTR], Hits[idxBL], Hits[idxBR]))
-                    {
-                        // Atomically claim 6 consecutive index slots.
-                        int start = Interlocked.Add(ref ((int*)Counter.GetUnsafePtr())[1], 6) - 6;
-                        OutTris[start]     = tl; OutTris[start + 1] = bl; OutTris[start + 2] = tr;
-                        OutTris[start + 3] = tr; OutTris[start + 4] = bl; OutTris[start + 5] = br;
-                    }
+                    // All 4 corners present: split into two CCW triangles and test each
+                    // independently. A single far corner (e.g. the grazing corner at a step edge)
+                    // then drops only its own triangle, so the near triangle still bridges the gap
+                    // instead of the whole quad being rejected. The per-triangle edge check still
+                    // rejects a face spanning a real depth discontinuity, so this won't bridge
+                    // arm->background — it's strictly less aggressive than the old all-or-nothing quad.
+                    if (CheckTri(Hits[idxTL], Hits[idxBL], Hits[idxTR])) WriteTri(tl, bl, tr);
+                    if (CheckTri(Hits[idxTR], Hits[idxBL], Hits[idxBR])) WriteTri(tr, bl, br);
                 }
                 else
                 {
@@ -379,16 +377,6 @@ namespace Surface.Core
                 int start = Interlocked.Add(ref ((int*)Counter.GetUnsafePtr())[1], 3) - 3;
                 OutTris[start] = a; OutTris[start + 1] = b; OutTris[start + 2] = c;
             }
-
-            /// <summary>
-            /// Returns true if all 4 perimeter edges of the quad are within MaxSq.
-            /// Parameters: a=TL, b=TR, c=BL, d=BR.
-            /// </summary>
-            bool CheckQuad(Vector3 a, Vector3 b, Vector3 c, Vector3 d) =>
-                (a - b).sqrMagnitude < MaxSq &&
-                (a - c).sqrMagnitude < MaxSq &&
-                (c - d).sqrMagnitude < MaxSq &&
-                (b - d).sqrMagnitude < MaxSq;
 
             /// <summary> Returns true if all 3 edges of the triangle are within MaxSq. </summary>
             bool CheckTri(Vector3 a, Vector3 b, Vector3 c) =>
