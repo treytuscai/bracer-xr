@@ -85,8 +85,6 @@ Assets/_Project/
 
 Primary tuning surface, on the `ForearmDepthSurface` component:
 
-The grid is sized to the forearm crop's native depth-texel footprint, so there is no sample-stride/density knob — sampling self-tunes to the depth resolution.
-
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `maskDilateTexels` | 0.5 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
