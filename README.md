@@ -6,7 +6,7 @@ On-body interaction for Extended Reality. Ink & Interface renders an interactive
 
 ## How It Works
 
-The forearm surface is reconstructed every frame from the Quest 3's environment depth API (stereo-camera computed depth). The pipeline runs on the GPU and Burst-compiled worker threads. It is **frame-pipelined**: the depth/extraction/mesh jobs scheduled from one depth frame are harvested on the *next* `LateUpdate`, by which point they are already complete — so the main thread never blocks waiting on them. The only main-thread work is the unavoidable mesh upload to Unity.
+The forearm surface is continuously reconstructed from the Quest 3's environment depth API (stereo-camera computed depth). The pipeline runs on the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled and run asynchronously, and the main thread uploads the finished mesh only once they are complete.
 
 _(An earlier prototype approximated the forearm as a geometric cylinder fit to the arm bones; it was dropped in favor of live depth reconstruction.)_
 
