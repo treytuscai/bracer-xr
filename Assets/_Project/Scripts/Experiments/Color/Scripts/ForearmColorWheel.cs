@@ -2,83 +2,90 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Events;
 
-/// <summary>
-/// Self-contained world-space color picker poked with the index fingertip. Builds its own
-/// UI at runtime — an HSV wheel (hue = angle, saturation = radius), a vertical opacity
-/// slider, and a preview swatch — so no canvas/RenderTexture or art assets are needed.
-///
-/// Output goes to a ColorExperimentController (Text or Background channel) and/or a
-/// UnityEvent, every frame the fingertip is pressing a control.
-///
-/// Place the widget GameObject where you want the picker; it builds its UI as children and
-/// scales to panelWorldWidthMeters. For Step 2 of the study, drop two of these — one set to
-/// Channel.Text, one to Channel.Background.
-/// </summary>
 [System.Serializable] public class ColorChangedEvent : UnityEvent<Color> { }
 
+/// <summary>
+/// World-space HSL color picker built from four vertical sliders:
+///   1. Hue        — 0 → 360°  (rainbow gradient)
+///   2. Saturation — grey → full hue color
+///   3. Lightness  — black → white
+///   4. Opacity    — transparent → opaque
+///
+/// A panel header label reads "Text Color Settings" or "Canvas Color Settings"
+/// depending on the Channel setting, so each instance is self-identifying.
+/// </summary>
 [DefaultExecutionOrder(60)]
 public class ForearmColorWheel : MonoBehaviour
 {
     public enum Channel { Text, Background }
 
+    // ── Inspector ─────────────────────────────────────────────────────────────
+
     [Header("Output")]
-    [Tooltip("Controller to drive. Assign in Inspector.")]
     public ColorExperimentController target;
-    [Tooltip("Which material layer this wheel controls.")]
     public Channel channel = Channel.Text;
-    [Tooltip("Optional extra hookup; fires with the full RGBA each change.")]
     public ColorChangedEvent onColorChanged;
 
     [Header("Input")]
-    [Tooltip("Right hand skeleton — the index fingertip (bone 10) is the picker cursor.")]
     public OVRSkeleton rightHandSkeleton;
-    [Tooltip("How close to the panel plane the fingertip must be to register (m).")]
     [Min(0.001f)] public float pressDistanceMeters = 0.02f;
 
-    // XRHand IndexTip bone index, verified against runtime bone names in HandMask.
-    const int IndexTipBone = 10;
-
     [Header("Layout")]
-    [Min(64)] public int wheelPixels = 256;
     [Min(0.05f)] public float panelWorldWidthMeters = 0.18f;
 
-    [Header("Initial")]
-    [Range(0f, 1f)] public float startValue   = 1f; // brightness (V); wheel covers H and S
-    [Range(0f, 1f)] public float startOpacity = 1f;
+    [Header("Initial HSL + Opacity")]
+    [Range(0f, 1f)] public float startHue        = 0f;
+    [Range(0f, 1f)] public float startSaturation = 1f;
+    [Range(0f, 1f)] public float startLightness  = 0.5f;
+    [Range(0f, 1f)] public float startOpacity    = 1f;
 
-    // Current selection.
-    float _hue, _sat, _value, _opacity;
+    // ── Canvas layout constants ───────────────────────────────────────────────
 
-    // UI refs.
-    RectTransform _root, _wheelRect, _sliderRect, _sliderHandle, _swatch;
-    Image _swatchImg;
+    const int PanelW  = 340;   // wider to fit 4 tracks
+    const int PanelH  = 330;   // taller to fit panel header + track titles
+    const int TopPad  = 64;    // reserved for panel header + column titles
+    const int BotPad  = 52;    // reserved for swatch
+
+    const int TrackW  = 14;
+    const int HandleW = 30;
+    const int HandleH = 12;
+
+    // Four track centres (panel origin = centre).
+    const int HueX  = -114;
+    const int SatX  =  -38;
+    const int LitX  =  +38;
+    const int OpxX  = +114;
+
+    // Column dividers (midpoints between adjacent tracks).
+    const float ColDiv1 = (HueX + SatX) / 2f;   // -76
+    const float ColDiv2 = (SatX + LitX) / 2f;   //   0
+    const float ColDiv3 = (LitX + OpxX) / 2f;   // +76
+
+    const int IndexTipBone = 10;
+
+    // ── Runtime state ─────────────────────────────────────────────────────────
+
+    float _hue, _sat, _lightness, _opacity;
+
+    RectTransform _root;
+    RectTransform _hueHandle, _satHandle, _litHandle, _opxHandle;
+    RawImage      _satTrackImg;
+    Image         _swatchImg;
+
+    Texture2D _satGradTex;
+    float     _lastHueForSatGrad = -1f;
+
+    // ── Unity lifecycle ───────────────────────────────────────────────────────
 
     void Awake()
     {
-        _value   = startValue;
-        _opacity = startOpacity;
-        BuildUI();
-        // Reflect the start state in the swatch/handle, but DON'T push to the material yet —
-        // the controller's defaults (white text, transparent background) define the Step 1
-        // "text on skin" start. The material only changes once the user touches a control.
-        RefreshIndicators();
-    }
+        _hue       = startHue;
+        _sat       = startSaturation;
+        _lightness = startLightness;
+        _opacity   = startOpacity;
 
-    /// <summary>
-    /// World-space index-fingertip transform from the hand skeleton (bone 10), or null when
-    /// the skeleton data isn't valid yet. Bones stay allocated but stale when IsDataValid is
-    /// false, so that flag is checked explicitly.
-    /// </summary>
-    Transform FingerTip
-    {
-        get
-        {
-            OVRSkeleton skel = rightHandSkeleton;
-            if (skel == null || !skel.IsInitialized || !skel.IsDataValid) return null;
-            var bones = skel.Bones;
-            if (bones == null || bones.Count <= IndexTipBone) return null;
-            return bones[IndexTipBone].Transform;
-        }
+        BuildUI();
+        RefreshIndicators();
     }
 
     void LateUpdate()
@@ -86,40 +93,58 @@ public class ForearmColorWheel : MonoBehaviour
         Transform tip = FingerTip;
         if (tip == null || _root == null) return;
 
-        // Gate on distance to the panel plane (same idea as the palette buttons).
-        Vector3 fw = tip.position;
-        float planeDist = Mathf.Abs(Vector3.Dot(fw - _root.position, _root.forward));
+        float planeDist = Mathf.Abs(
+            Vector3.Dot(tip.position - _root.position, _root.forward));
         if (planeDist > pressDistanceMeters) return;
 
-        // Wheel hit test (polar in the wheel's local space, centered at its pivot).
-        Vector2 wLocal = _wheelRect.InverseTransformPoint(fw);
-        float wheelR = _wheelRect.rect.width * 0.5f;
-        if (wLocal.magnitude <= wheelR)
+        Vector2 local = _root.InverseTransformPoint(tip.position);
+        if (Mathf.Abs(local.x) > PanelW * 0.5f) return;
+
+        float trackBottom = -(PanelH * 0.5f) + BotPad;
+        float trackTop    =  (PanelH * 0.5f) - TopPad;
+        if (local.y < trackBottom - 12f || local.y > trackTop + 12f) return;
+
+        float t = Mathf.Clamp01(Mathf.InverseLerp(trackBottom, trackTop, local.y));
+
+        bool changed = false;
+
+        if (local.x < ColDiv1)
         {
-            Vector2 p = wLocal / wheelR;          // unit disc
-            float hue = Mathf.Atan2(p.y, p.x) / (2f * Mathf.PI);
-            if (hue < 0f) hue += 1f;
-            _hue = hue;
-            _sat = Mathf.Clamp01(p.magnitude);
-            Emit();
-            return;
+            if (!Mathf.Approximately(_hue, t))       { _hue       = t; changed = true; }
+        }
+        else if (local.x < ColDiv2)
+        {
+            if (!Mathf.Approximately(_sat, t))       { _sat       = t; changed = true; }
+        }
+        else if (local.x < ColDiv3)
+        {
+            if (!Mathf.Approximately(_lightness, t)) { _lightness = t; changed = true; }
+        }
+        else
+        {
+            if (!Mathf.Approximately(_opacity, t))   { _opacity   = t; changed = true; }
         }
 
-        // Opacity slider hit test (1D along local Y).
-        Vector2 sLocal = _sliderRect.InverseTransformPoint(fw);
-        Rect sr = _sliderRect.rect;
-        if (sLocal.x >= sr.xMin && sLocal.x <= sr.xMax &&
-            sLocal.y >= sr.yMin && sLocal.y <= sr.yMax)
+        if (changed) Emit();
+    }
+
+    // ── Color output ─────────────────────────────────────────────────────────
+
+    public Color CurrentColor
+    {
+        get
         {
-            _opacity = Mathf.InverseLerp(sr.yMin, sr.yMax, sLocal.y);
-            Emit();
+            Color c = HSLToRGB(_hue, _sat, _lightness);
+            c.a = _opacity;
+            return c;
         }
     }
 
-    /// <summary>Current selection as RGBA: RGB from the wheel + value, A from the slider.</summary>
-    public Color CurrentColor
+    static Color HSLToRGB(float h, float s, float l)
     {
-        get { Color c = Color.HSVToRGB(_hue, _sat, _value); c.a = _opacity; return c; }
+        float v  = l + s * Mathf.Min(l, 1f - l);
+        float sv = v < 0.0001f ? 0f : 2f * (1f - l / v);
+        return Color.HSVToRGB(h, sv, v);
     }
 
     void Emit()
@@ -144,120 +169,241 @@ public class ForearmColorWheel : MonoBehaviour
         RefreshIndicators();
     }
 
-    /// <summary>Updates the preview swatch (opaque hue) and the slider handle position.</summary>
+    // ── Visual refresh ────────────────────────────────────────────────────────
+
     void RefreshIndicators()
     {
-        Color c = CurrentColor;
-        if (_swatchImg != null) _swatchImg.color = new Color(c.r, c.g, c.b, 1f);
-        if (_sliderHandle != null && _sliderRect != null)
+        float trackBottom = -(PanelH * 0.5f) + BotPad;
+        float trackTop    =  (PanelH * 0.5f) - TopPad;
+
+        MoveHandle(_hueHandle, HueX, _hue,       trackBottom, trackTop);
+        MoveHandle(_satHandle, SatX, _sat,       trackBottom, trackTop);
+        MoveHandle(_litHandle, LitX, _lightness, trackBottom, trackTop);
+        MoveHandle(_opxHandle, OpxX, _opacity,   trackBottom, trackTop);
+
+        if (!Mathf.Approximately(_lastHueForSatGrad, _hue))
         {
-            Rect sr = _sliderRect.rect;
-            _sliderHandle.anchoredPosition = new Vector2(0f, Mathf.Lerp(sr.yMin, sr.yMax, _opacity));
+            RebuildSatGradient();
+            _lastHueForSatGrad = _hue;
+        }
+
+        if (_swatchImg != null)
+        {
+            Color c = CurrentColor;
+            _swatchImg.color = new Color(c.r, c.g, c.b, 1f);
         }
     }
 
-    // ── UI construction ──────────────────────────────────────────────────────────
+    static void MoveHandle(RectTransform h, float trackX, float t, float bottom, float top)
+    {
+        if (h == null) return;
+        h.anchoredPosition = new Vector2(trackX, Mathf.Lerp(bottom, top, t));
+    }
+
+    void RebuildSatGradient()
+    {
+        if (_satTrackImg == null) return;
+        const int H = 64;
+        if (_satGradTex == null)
+            _satGradTex = new Texture2D(1, H, TextureFormat.RGBA32, false)
+                { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+
+        Color full = Color.HSVToRGB(_hue, 1f, 1f);
+        for (int y = 0; y < H; y++)
+        {
+            float t = (float)y / (H - 1);
+            _satGradTex.SetPixel(0, y, Color.Lerp(new Color(0.30f, 0.30f, 0.32f), full, t));
+        }
+        _satGradTex.Apply();
+        _satTrackImg.texture = _satGradTex;
+    }
+
+    // ── Finger tip ───────────────────────────────────────────────────────────
+
+    Transform FingerTip
+    {
+        get
+        {
+            OVRSkeleton skel = rightHandSkeleton;
+            if (skel == null || !skel.IsInitialized || !skel.IsDataValid) return null;
+            var bones = skel.Bones;
+            if (bones == null || bones.Count <= IndexTipBone) return null;
+            return bones[IndexTipBone].Transform;
+        }
+    }
+
+    // ── UI construction ───────────────────────────────────────────────────────
 
     void BuildUI()
     {
-        float slider = wheelPixels * 0.16f;   // slider bar width
-        float gap    = wheelPixels * 0.10f;
-        float swatch = wheelPixels * 0.22f;
-        float totalW = wheelPixels + gap + slider;
-        float totalH = wheelPixels + gap + swatch;
-
-        var canvasGo = new GameObject("ColorWheelCanvas",
+        var canvasGo = new GameObject("ColorSlidersCanvas",
             typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
         canvasGo.transform.SetParent(transform, false);
         canvasGo.GetComponent<Canvas>().renderMode = RenderMode.WorldSpace;
 
-        _root = canvasGo.GetComponent<RectTransform>();
-        _root.sizeDelta = new Vector2(totalW, totalH);
-        _root.pivot = new Vector2(0.5f, 0.5f);
-        // Scale the whole panel to the requested physical width.
-        float s = panelWorldWidthMeters / Mathf.Max(totalW, 1f);
-        _root.localScale = new Vector3(s, s, s);
+        _root           = canvasGo.GetComponent<RectTransform>();
+        _root.sizeDelta = new Vector2(PanelW, PanelH);
+        _root.pivot     = new Vector2(0.5f, 0.5f);
+        float s         = panelWorldWidthMeters / PanelW;
+        _root.localScale    = new Vector3(s, s, s);
         _root.localPosition = Vector3.zero;
         _root.localRotation = Quaternion.identity;
 
-        // Opaque backing card — added first so it renders BEHIND the wheel/slider/swatch.
-        // Without it the transparent UI blends into passthrough and washes out; the dark
-        // card gives the colors something to pop against.
-        var bgRect = MakeChild("Background", _root, new Vector2(wheelPixels, wheelPixels));
-        bgRect.anchoredPosition = new Vector2(-(totalW - wheelPixels) * 0.5f,
-                                                   (totalH - wheelPixels) * 0.5f);
-        var bgImg = bgRect.gameObject.AddComponent<Image>();
-        bgImg.color = new Color(0.10f, 0.10f, 0.12f, 1f);
-        bgImg.raycastTarget = false;
+        float trackBottom = -(PanelH * 0.5f) + BotPad;
+        float trackTop    =  (PanelH * 0.5f) - TopPad;
+        float trackH      = trackTop - trackBottom;
+        float trackMidY   = (trackBottom + trackTop) * 0.5f;
 
-        // Wheel (top-left), pivot center for clean polar math.
-        _wheelRect = MakeChild("Wheel", _root, new Vector2(wheelPixels, wheelPixels));
-        _wheelRect.anchoredPosition = new Vector2(-(totalW - wheelPixels) * 0.5f,
-                                                   (totalH - wheelPixels) * 0.5f);
-        var wheelImg = _wheelRect.gameObject.AddComponent<RawImage>();
-        wheelImg.texture = BuildWheelTexture(wheelPixels);
-        wheelImg.raycastTarget = false;
+        // Backing card.
+        var bg = MakeRect("Background", _root, new Vector2(PanelW, PanelH));
+        bg.anchoredPosition = Vector2.zero;
+        AddSolidImage(bg, new Color(0.10f, 0.10f, 0.12f, 1f));
 
-        // Opacity slider (top-right): dark bar + handle.
-        _sliderRect = MakeChild("OpacitySlider", _root, new Vector2(slider, wheelPixels));
-        _sliderRect.anchoredPosition = new Vector2((totalW - slider) * 0.5f,
-                                                   (totalH - wheelPixels) * 0.5f);
-        var barImg = _sliderRect.gameObject.AddComponent<Image>();
-        barImg.color = new Color(0.15f, 0.15f, 0.15f, 1f);
-        barImg.raycastTarget = false;
+        // Panel header label ("Text Color Settings" / "Canvas Color Settings").
+        string headerText = channel == Channel.Text ? "Text Color Settings" : "Canvas Color Settings";
+        var headerR = MakeRect("PanelHeader", _root, new Vector2(PanelW - 16, 22));
+        headerR.anchoredPosition = new Vector2(0f, (PanelH * 0.5f) - 18f);
+        MakeText(headerR, headerText, 15, TextAnchor.MiddleCenter, new Color(0.90f, 0.90f, 0.90f, 1f));
 
-        _sliderHandle = MakeChild("Handle", _sliderRect, new Vector2(slider, slider * 0.35f));
-        _sliderHandle.anchorMin = _sliderHandle.anchorMax = new Vector2(0.5f, 0.5f);
-        var handleImg = _sliderHandle.gameObject.AddComponent<Image>();
-        handleImg.color = Color.white;
-        handleImg.raycastTarget = false;
+        // Thin separator line under the header.
+        var sep = MakeRect("HeaderSep", _root, new Vector2(PanelW - 20, 1f));
+        sep.anchoredPosition = new Vector2(0f, (PanelH * 0.5f) - 36f);
+        AddSolidImage(sep, new Color(0.30f, 0.30f, 0.35f, 1f));
 
-        // Preview swatch (bottom).
-        _swatch = MakeChild("Swatch", _root, new Vector2(swatch, swatch));
-        _swatch.anchoredPosition = new Vector2(0f, -(totalH - swatch) * 0.5f);
-        _swatchImg = _swatch.gameObject.AddComponent<Image>();
-        _swatchImg.raycastTarget = false;
+        // Column divider lines between tracks.
+        BuildDivider(ColDiv1, trackH, trackMidY);
+        BuildDivider(ColDiv2, trackH, trackMidY);
+        BuildDivider(ColDiv3, trackH, trackMidY);
+
+        // Hue track — rainbow gradient.
+        BuildSliderColumn("Hue",      HueX, trackH, trackMidY, trackBottom,
+            BuildHueGradient(128),      new Color(1.00f, 0.55f, 0.55f, 1f),
+            out _, out _hueHandle);
+
+        // Saturation track — dynamic grey → hue color.
+        RawImage satRaw;
+        BuildSliderColumn("Sat",      SatX, trackH, trackMidY, trackBottom,
+            BuildSatGradient(128, _hue), new Color(0.55f, 1.00f, 0.55f, 1f),
+            out satRaw, out _satHandle);
+        _satTrackImg = satRaw;
+
+        // Lightness track — black → white.
+        BuildSliderColumn("Light",    LitX, trackH, trackMidY, trackBottom,
+            BuildMonoGradient(128, new Color(0f, 0f, 0f), new Color(1f, 1f, 1f)),
+            new Color(0.85f, 0.85f, 1.00f, 1f),
+            out _, out _litHandle);
+
+        // Opacity track — dark grey (transparent) → white (opaque).
+        BuildSliderColumn("Opacity",  OpxX, trackH, trackMidY, trackBottom,
+            BuildMonoGradient(128, new Color(0.15f, 0.15f, 0.17f), Color.white),
+            new Color(0.90f, 0.75f, 1.00f, 1f),
+            out _, out _opxHandle);
+
+        // Preview swatch at the bottom.
+        var swatchR = MakeRect("Swatch", _root, new Vector2(90, 28));
+        swatchR.anchoredPosition = new Vector2(0f, -(PanelH * 0.5f) + 22f);
+        _swatchImg = AddSolidImage(swatchR, Color.white);
     }
 
-    static RectTransform MakeChild(string name, RectTransform parent, Vector2 size)
+    void BuildSliderColumn(
+        string label,
+        float trackX, float trackH, float trackMidY, float trackBottom,
+        Texture2D gradient, Color titleColor,
+        out RawImage trackRawImg,
+        out RectTransform handle)
+    {
+        // Column title (sits inside the TopPad area, just above the track).
+        var titleR = MakeRect("Title_" + label, _root, new Vector2(72, 20));
+        titleR.anchoredPosition = new Vector2(trackX, (PanelH * 0.5f) - TopPad + 12f);
+        MakeText(titleR, label, 13, TextAnchor.MiddleCenter, titleColor);
+
+        // Track bar.
+        var trackR = MakeRect(label + "_Track", _root,
+            new Vector2(TrackW, Mathf.Max(trackH, 1f)));
+        trackR.anchoredPosition = new Vector2(trackX, trackMidY);
+        var raw = trackR.gameObject.AddComponent<RawImage>();
+        raw.texture       = gradient;
+        raw.raycastTarget = false;
+        trackRawImg = raw;
+
+        // Selection handle.
+        handle = MakeRect(label + "_Handle", _root, new Vector2(HandleW, HandleH));
+        handle.anchoredPosition = new Vector2(trackX, trackBottom);
+        AddSolidImage(handle, new Color(1f, 1f, 1f, 0.90f));
+    }
+
+    void BuildDivider(float x, float h, float midY)
+    {
+        var d = MakeRect("Divider", _root, new Vector2(1f, h));
+        d.anchoredPosition = new Vector2(x, midY);
+        AddSolidImage(d, new Color(0.25f, 0.25f, 0.28f, 1f));
+    }
+
+    // ── Gradient texture builders ─────────────────────────────────────────────
+
+    static Texture2D BuildHueGradient(int height)
+    {
+        var tex = new Texture2D(1, height, TextureFormat.RGBA32, false)
+            { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        for (int y = 0; y < height; y++)
+            tex.SetPixel(0, y, Color.HSVToRGB((float)y / (height - 1), 1f, 1f));
+        tex.Apply();
+        return tex;
+    }
+
+    static Texture2D BuildSatGradient(int height, float hue)
+    {
+        var tex = new Texture2D(1, height, TextureFormat.RGBA32, false)
+            { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        Color full = Color.HSVToRGB(hue, 1f, 1f);
+        for (int y = 0; y < height; y++)
+            tex.SetPixel(0, y,
+                Color.Lerp(new Color(0.30f, 0.30f, 0.32f), full, (float)y / (height - 1)));
+        tex.Apply();
+        return tex;
+    }
+
+    static Texture2D BuildMonoGradient(int height, Color bottom, Color top)
+    {
+        var tex = new Texture2D(1, height, TextureFormat.RGBA32, false)
+            { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        for (int y = 0; y < height; y++)
+            tex.SetPixel(0, y, Color.Lerp(bottom, top, (float)y / (height - 1)));
+        tex.Apply();
+        return tex;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    static RectTransform MakeRect(string name, RectTransform parent, Vector2 size)
     {
         var go = new GameObject(name, typeof(RectTransform));
         var rt = go.GetComponent<RectTransform>();
         rt.SetParent(parent, false);
-        rt.sizeDelta = size;
+        rt.sizeDelta  = size;
         rt.localScale = Vector3.one;
+        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
         return rt;
     }
 
-    /// <summary>
-    /// Generates an HSV color wheel: hue from the angle, saturation from the radius,
-    /// value fixed at 1. Pixels outside the unit disc are transparent, with a 1-px soft edge.
-    /// </summary>
-    static Texture2D BuildWheelTexture(int size)
+    static Image AddSolidImage(RectTransform rt, Color color)
     {
-        // linear: false = sRGB texture. The colors below are sRGB (Color.HSVToRGB), so the
-        // texture MUST be sRGB or the pipeline washes them out (dull/milky) in a linear project.
-        var tex = new Texture2D(size, size, TextureFormat.RGBA32, mipChain: false, linear: true)
-        { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        var img = rt.gameObject.AddComponent<Image>();
+        img.color         = color;
+        img.raycastTarget = false;
+        return img;
+    }
 
-        float c = (size - 1) * 0.5f;
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                float dx = (x - c) / c;
-                float dy = (y - c) / c;
-                float r  = Mathf.Sqrt(dx * dx + dy * dy);
-                if (r > 1f) { tex.SetPixel(x, y, Color.clear); continue; }
-
-                float hue = Mathf.Atan2(dy, dx) / (2f * Mathf.PI);
-                if (hue < 0f) hue += 1f;
-                Color col = Color.HSVToRGB(hue, Mathf.Clamp01(r), 1f);
-                col.a = 1f - Mathf.SmoothStep(0.97f, 1f, r); // soft outer edge
-                tex.SetPixel(x, y, col);
-            }
-        }
-        tex.Apply();
-        return tex;
+    static Text MakeText(RectTransform rt, string text, int fontSize,
+                         TextAnchor alignment, Color color)
+    {
+        var t = rt.gameObject.AddComponent<Text>();
+        t.text          = text;
+        t.font          = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        t.fontSize      = fontSize;
+        t.alignment     = alignment;
+        t.color         = color;
+        t.raycastTarget = false;
+        return t;
     }
 }

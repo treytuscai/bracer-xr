@@ -1502,8 +1502,8 @@ MonoBehaviour:
     sceneName: boundingBoxDemarcation
   - label: Optimal Interface Positioning Experiment
     sceneName: placeRotateScaleInterfaces
-  - label: Color Wheel Experiment
-    sceneName: chooseColorWithColorwheel
+  - label: Choose Optimal Color
+    sceneName: Color
   - label: Size Scale Pt. 2
     sceneName: SizeAndScale
   followHead: 1
