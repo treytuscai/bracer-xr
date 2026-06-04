@@ -10,15 +10,20 @@ namespace Surface.Core
 {
     /// <summary>
     /// Manages the full GPU->CPU depth pipeline each frame:
-    ///   1. HAND MASK: Render the hand mesh as a white silhouette into a half-res
-    ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP.
-    ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit. Hand pixels are
-    ///                 rejected in the shader (w=-1) so they arrive HasDepth=false.
-    ///   3. CROP:      Compute the screen-space bounding box of the forearm and request
-    ///                 an async GPU readback of only that region.
+    ///   1. HAND MASK: Render the hand mesh as a white silhouette into a grid-resolution
+    ///                 RenderTexture via CommandBuffer.DrawMesh using Meta's depth VP,
+    ///                 with the forearm crop remapped to fill the target so the silhouette
+    ///                 is sampled 1:1 with the grid (no full-screen oversampling).
+    ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit into a grid-resolution RT
+    ///                 (~one texel per forearm depth-texel). Hand pixels are rejected in the
+    ///                 shader (w=-1) so they arrive HasDepth=false, as are mixed/flying pixels on
+    ///                 the arm silhouette (EdgeDiscontinuityThreshold) so the boundary that seeds
+    ///                 extraction is built only from reliable interior cells.
+    ///   3. CROP:      Compute the forearm's screen-space bounding box; its depth-texel
+    ///                 footprint sizes the grid RT, which is read back whole (async GPU).
     ///   4. UNPROJECT: On readback completion, schedule a Burst job (DepthUnprojectionJob)
-    ///                 that downsamples the crop at pixelStride intervals into the flat
-    ///                 world-space hit grid stored in SurfaceBuffer.
+    ///                 that copies the grid readback 1:1 into the flat world-space hit grid
+    ///                 stored in SurfaceBuffer.
     ///   5. HAND-OFF:  Invoke the caller's callback with a JobHandle the downstream
     ///                 extraction pipeline can chain onto.
     ///
@@ -55,42 +60,52 @@ namespace Surface.Core
         // STATE
         // ------------------------------------------------------------------
         // Material wrapping MetaDepthCopy.shader; reconstructs world positions
-        // from the depth texture into _worldPosRT during the blit step.
+        // from the depth texture into the grid-resolution blit target.
         private Material _blitMaterial;
-        // Full-screen ARGBFloat RenderTexture holding one world-space Vector4
-        // per pixel (xyz = world position, w = raw depth / -1 if invalid).
-        // Full-screen because the depth texture covers the full view; the crop
-        // is applied during AsyncGPUReadback.Request, not during the blit.
-        private RenderTexture _worldPosRT;
+        // World positions are written to a per-frame pooled RenderTexture sized to the forearm
+        // grid (RenderTexture.GetTemporary in TryDispatch), not a persistent full-screen RT — the
+        // blit runs at grid resolution (~cols×rows fragments) instead of over the whole screen.
         // Set to true when AsyncGPUReadback.Request is enqueued, false at the
         // start of its callback. Reset at callback start (not end) so that
         // exceptions in downstream processing don't permanently stall the pipeline.
         private bool _isReadbackPending;
+
+        // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
+        // The forearm crop is sampled at ~1:1 with these texels (grid = crop's texel footprint).
+        private int _depthTexW, _depthTexH;
 
         // ------------------------------------------------------------------
         // HAND MASK (GPU silhouette)
         // ------------------------------------------------------------------
         // HandMask provides the CPU-baked mesh and localToWorld each frame.
         private HandMask _handMaskSource;
-        // Mask dilation radius in mask texels, applied at sample time in MetaDepthCopy
-        // (3x3 max). Grows the effective mask to cover readback latency without fattening
-        // the rendered silhouette. Set from ForearmDepthSurface Inspector.
-        public float MaskDilateTexels = 1f;
-        // Grayscale RenderTexture containing the hand silhouette in screen space.
-        // White = hand, black = clear. Sampled by MetaDepthCopy to reject hand pixels.
-        // Half-resolution: silhouette masking doesn't need full precision.
-        private RenderTexture _handMaskRT;
+        // Tuning, set once via the constructor from ForearmDepthSurface Inspector values:
+        //   MaskDilateTexels     — mask dilation radius in mask texels, applied at sample time in
+        //                          MetaDepthCopy (3x3 max) to cover readback latency.
+        //   DepthSmoothRadius    — edge-aware depth blur radius (0 = off).
+        //   DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to be averaged in.
+        //   EdgeDiscontinuityThreshold — depth step (metres) above which a texel is treated as a
+        //                          mixed/flying pixel on the silhouette and dropped (0 = off).
+        public float MaskDilateTexels           = 1f;
+        public int   DepthSmoothRadius          = 1;
+        public float DepthSmoothThreshold       = 0.01f;
+        public float EdgeDiscontinuityThreshold = 0.05f;
         // CommandBuffer that clears and re-draws the hand mesh each frame.
         private CommandBuffer _maskCmd;
         // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
         private Material _handMaskMat;
 
         /// <summary>
-        /// Loads the MetaDepthCopy and HandMaskRender shaders and creates materials.
-        /// Shaders must be present in the project and not stripped from builds.
+        /// Loads the MetaDepthCopy and HandMaskRender shaders, creates materials, and stores the
+        /// tuning parameters. Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback(HandMask handMaskSource)
+        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold, float edgeDiscontinuityThreshold)
         {
+            MaskDilateTexels           = maskDilateTexels;
+            DepthSmoothRadius          = depthSmoothRadius;
+            DepthSmoothThreshold       = depthSmoothThreshold;
+            EdgeDiscontinuityThreshold = edgeDiscontinuityThreshold;
+
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
             {
@@ -116,13 +131,13 @@ namespace Surface.Core
         /// early-out (readback in flight, no depth matrices, arm off-screen, shader missing).
         /// Callers must only arm their in-flight guard when this returns true.
         /// </summary>
-        public bool Schedule(
+        public bool TryDispatch(
             ArmFrame arm,
-            float maxRadialDist, int pixelStride,
+            float maxRadialDist,
             SurfaceBuffer buffer,
             Action<JobHandle, int, int> onComplete)
         {
-            // Abort if the shader failed to load at construction.
+            // Abort if the shader failed to load at construction, or a readback is still in flight.
             if (_blitMaterial == null) return false;
             if (_isReadbackPending) return false;
 
@@ -131,6 +146,9 @@ namespace Surface.Core
             // at the time that depth frame was captured (not the current render pose).
             Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
             if (depthMatrices == null || depthMatrices.Length == 0) return false;
+
+            // Depth texture dimensions are needed to size the grid; bail until it's bound.
+            if (!TryCacheDepthDims()) return false;
 
             Camera cam = arm.Cam;
             Vector3 wristPos = arm.WristPos;
@@ -142,97 +160,158 @@ namespace Surface.Core
             if (!CalculateArmBounds(
                 ref depthMatrices[0], ref wristPos, ref elbowPos, ref camPos,
                 cam.fieldOfView, cam.pixelWidth, cam.pixelHeight,
-                maxRadialDist, pixelStride,
+                maxRadialDist,
                 out int cropX, out int cropY, out int cropW, out int cropH))
             {
                 return false; // Arm behind camera or off-screen
             }
 
-            // Resize the world-position RenderTexture if the screen resolution changed.
+            // Sample the forearm crop at the depth buffer's NATIVE resolution: one grid cell per
+            // real depth texel spanning the crop (no screen-pixel stride). The per-axis footprint
+            // handles the anisotropic screen->texel mapping — the render is double-wide while the
+            // depth texture is square.
             int screenW = cam.pixelWidth;
             int screenH = cam.pixelHeight;
-            if (_worldPosRT == null || _worldPosRT.width != screenW || _worldPosRT.height != screenH)
-            {
-                if (_worldPosRT != null) _worldPosRT.Release();
-                // ARGBFloat = 4×32-bit floats per pixel, needed to store world-space XYZ + depth.
-                _worldPosRT = new RenderTexture(screenW, screenH, 0, RenderTextureFormat.ARGBFloat);
-                _worldPosRT.Create();
-            }
+            // Minimum 2 per axis: a 1×N grid produces no quads and boundary smoothing needs ≥2 cells.
+            int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
+            int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
 
-            // Invert the depth frame's world->clip matrix once on the CPU.
-            // The shader uses this to go clip->world (steps 3–4 of the reconstruction).
-            // depthMatrices[0] is the left-eye VP for the pose at depth-capture time.
-            _blitMaterial.SetMatrix("_DepthInverseVP", depthMatrices[0].inverse);
+            // Render the hand mask + world-position blit at grid resolution; returns the pooled
+            // world-position RT to read back (released in the readback callback).
+            RenderTexture rt = DispatchReconstruction(
+                depthMatrices[0], cropX, cropY, cropW, cropH, screenW, screenH, cols, rows);
 
-            // Render the hand silhouette into _handMaskRT before the blit.
-            // Pass depthMatrices[0] so the silhouette aligns with the depth texture's UV space.
-            RenderHandMask(depthMatrices[0], screenW, screenH);
-
-            // Blit runs MetaDepthCopy.shader over every screen pixel, executing the full
-            // reconstruction pipeline (sample R -> build clip point -> inverse VP -> perspective
-            // divide) and writing the resulting world position into each pixel of _worldPosRT
-            // as a Vector4 (xyz = world pos, w = rawDepth, or w = -1 for invalid pixels).
-            // Null source: the shader reads _EnvironmentDepthTexture as a global directly.
-            Graphics.Blit(null, _worldPosRT, _blitMaterial);
-
-            // Request only the crop sub-region to minimize PCIe/memory transfer.
-            // Parameters: source, mip, startX, width, startY, height, startZ, depth, callback.
+            // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
             _isReadbackPending = true;
             AsyncGPUReadback.Request(
-                _worldPosRT, 0, cropX, cropW, cropY, cropH, 0, 1,
-                request =>
-                {
-                    // Reset before any processing so exceptions downstream
-                    // don't permanently stall the pipeline.
-                    _isReadbackPending = false;
-
-                    if (request.hasError)
-                    {
-                        Debug.LogError("[Depth] GPU Readback Error!");
-                        onComplete?.Invoke(default, 0, 0);
-                        return;
-                    }
-
-                    NativeArray<Vector4> raw = request.GetData<Vector4>();
-                    if (!raw.IsCreated || raw.Length == 0)
-                    {
-                        onComplete?.Invoke(default, 0, 0);
-                        return;
-                    }
-
-                    // Compute grid dimensions from the crop size and stride.
-                    // Minimum of 2 in each dimension: a 1×N grid produces no quads,
-                    // and boundary smoothing downstream requires at least 2 cells.
-                    int cols = Mathf.Max(2, Mathf.CeilToInt((float)cropW / pixelStride));
-                    int rows = Mathf.Max(2, Mathf.CeilToInt((float)cropH / pixelStride));
-                    buffer.ResizeIfNeeded(rows, cols);
-
-                    var job = new DepthUnprojectionJob
-                    {
-                        WorldPositions = raw,
-                        DepthWidth     = cropW,
-                        DepthHeight    = cropH,
-                        PixelStride    = pixelStride,
-                        Cols           = cols,
-                        Hits           = buffer.Hits,
-                        HasDepth       = buffer.HasDepth,
-                        IsSurface      = buffer.IsSurface
-                    };
-
-                    onComplete?.Invoke(job.Schedule(rows * cols, 64), rows, cols);
-                });
+                rt, 0,
+                request => HandleReadback(request, rt, buffer, rows, cols, onComplete));
             return true;
         }
 
         /// <summary>
-        /// Releases the RenderTexture and blit material. Call when the component is destroyed.
+        /// Caches the native depth texture dimensions (e.g. 320×320) on first success. They are
+        /// constant for the session. Returns false until _EnvironmentDepthTexture is bound by
+        /// Meta's EnvironmentDepthManager, signalling the caller to retry next frame.
+        /// </summary>
+        private bool TryCacheDepthDims()
+        {
+            if (_depthTexW != 0) return true;
+
+            Texture depthTex = Shader.GetGlobalTexture("_EnvironmentDepthTexture");
+            if (depthTex == null) return false;
+
+            _depthTexW = depthTex.width;
+            _depthTexH = depthTex.height;
+            return true;
+        }
+
+        /// <summary>
+        /// Sets the blit material parameters, renders the hand silhouette, and runs the
+        /// MetaDepthCopy blit at GRID resolution (cols×rows) rather than full screen: each of the
+        /// ~cols*rows fragments samples R -> builds clip -> inverse VP -> perspective divide,
+        /// writing Vector4 (xyz = world pos, w = rawDepth, or w = -1 for invalid). Returns the
+        /// pooled world-position RenderTexture for readback; the mask RT is released here since
+        /// the blit has already sampled it.
+        /// </summary>
+        private RenderTexture DispatchReconstruction(
+            Matrix4x4 depthVP,
+            int cropX, int cropY, int cropW, int cropH,
+            int screenW, int screenH,
+            int cols, int rows)
+        {
+            // Forearm crop expressed as a screen-UV sub-rect: (scaleX, scaleY, offsetX, offsetY).
+            float scaleX  = (float)cropW / screenW;
+            float scaleY  = (float)cropH / screenH;
+            float offsetX = (float)cropX / screenW;
+            float offsetY = (float)cropY / screenH;
+
+            // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
+            // shader). depthVP is the left-eye VP for the pose at depth-capture time.
+            _blitMaterial.SetMatrix("_DepthInverseVP", depthVP.inverse);
+
+            // Remap the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect, so
+            // each output texel samples the depth texture at the correct screen position.
+            // Shader does depthUV = uv * scale + offset.
+            _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(scaleX, scaleY, offsetX, offsetY));
+
+            // Edge-aware depth-smoothing params for the bilateral pass in MetaDepthCopy.
+            _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
+            _blitMaterial.SetFloat("_DepthSmoothThreshold", DepthSmoothThreshold);
+            _blitMaterial.SetFloat("_EdgeDiscontinuityThreshold", EdgeDiscontinuityThreshold);
+            _blitMaterial.SetVector("_DepthTexelSize",
+                new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
+
+            // Render the hand silhouette before the blit, at grid resolution with the crop
+            // remapped to fill the target — so the blit samples it 1:1 at its own UV.
+            RenderTexture maskRT = RenderHandMask(depthVP, scaleX, scaleY, offsetX, offsetY, cols, rows);
+
+            // A pooled temporary RT avoids per-frame allocation churn as the crop size changes.
+            RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
+            Graphics.Blit(null, rt, _blitMaterial);
+
+            // The blit has sampled the mask; return it to the pool now (the readback reads only
+            // the world-position RT, not the mask).
+            if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
+
+            return rt;
+        }
+
+        /// <summary>
+        /// AsyncGPUReadback completion handler: releases the pooled RT, then schedules the Burst
+        /// unproject job and hands its JobHandle (plus grid dimensions) to onComplete. Invokes
+        /// onComplete with a default handle on error or empty readback so the caller's pipeline
+        /// can still advance. Runs on the main thread during Unity's readback callback.
+        /// </summary>
+        private void HandleReadback(
+            AsyncGPUReadbackRequest request,
+            RenderTexture rt,
+            SurfaceBuffer buffer,
+            int rows, int cols,
+            Action<JobHandle, int, int> onComplete)
+        {
+            // Reset + release the pooled RT before any processing so exceptions downstream
+            // don't permanently stall the pipeline or leak the temporary.
+            _isReadbackPending = false;
+            RenderTexture.ReleaseTemporary(rt);
+
+            if (request.hasError)
+            {
+                onComplete?.Invoke(default, 0, 0);
+                return;
+            }
+
+            NativeArray<Vector4> raw = request.GetData<Vector4>();
+            if (!raw.IsCreated || raw.Length == 0)
+            {
+                onComplete?.Invoke(default, 0, 0);
+                return;
+            }
+
+            buffer.ResizeIfNeeded(rows, cols);
+
+            // WorldPositions is the grid itself (row-major, width = cols): cell
+            // (r, c) lives at index r*cols + c — no stride/crop remap needed.
+            var job = new DepthUnprojectionJob
+            {
+                WorldPositions = raw,
+                Hits           = buffer.Hits,
+                HasDepth       = buffer.HasDepth,
+                IsSurface      = buffer.IsSurface
+            };
+
+            onComplete?.Invoke(job.Schedule(rows * cols, 64), rows, cols);
+        }
+
+        /// <summary>
+        /// Releases the blit material, mask material, and command buffer. Call when the
+        /// component is destroyed. The mask RenderTexture is pooled (GetTemporary) and
+        /// released each frame, so there is nothing persistent to free here.
         /// </summary>
         public void Dispose()
         {
-            if (_worldPosRT  != null) _worldPosRT.Release();
-            if (_handMaskRT  != null) _handMaskRT.Release();
-            if (_blitMaterial  != null) UnityEngine.Object.Destroy(_blitMaterial);
-            if (_handMaskMat   != null) UnityEngine.Object.Destroy(_handMaskMat);
+            if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
+            if (_handMaskMat  != null) UnityEngine.Object.Destroy(_handMaskMat);
             _maskCmd?.Release();
         }
 
@@ -241,45 +320,57 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Renders the CPU-baked hand mesh as a white silhouette into _handMaskRT using
-        /// CommandBuffer.DrawMesh with Meta's depth VP. The silhouette aligns with the
-        /// depth texture's UV space so MetaDepthCopy can reject hand pixels with a single
-        /// texture sample. Half-resolution is sufficient for silhouette masking.
+        /// Renders the CPU-baked hand mesh as a white silhouette into a pooled grid-resolution
+        /// (cols×rows) RenderTexture using CommandBuffer.DrawMesh with Meta's depth VP. A crop
+        /// remap matrix maps the forearm's NDC sub-rect onto the full target, so the silhouette
+        /// fills the mask at ~one texel per depth texel and MetaDepthCopy can sample it 1:1 at
+        /// the blit's own UV (no full-screen oversampling, no screen-space crop remap).
+        ///
+        /// Returns the pooled RenderTexture (caller releases it after the blit), or null when
+        /// there is no hand to draw — in which case _HandMaskTex is bound to black so the blit
+        /// rejects nothing.
         /// </summary>
-        private void RenderHandMask(Matrix4x4 depthVP, int screenW, int screenH)
+        private RenderTexture RenderHandMask(
+            Matrix4x4 depthVP,
+            float scaleX, float scaleY, float offsetX, float offsetY,
+            int maskW, int maskH)
         {
-            if (_handMaskSource == null || _handMaskMat == null) return;
-
-            Mesh bakedMesh = _handMaskSource.BakedMesh;
-            if (bakedMesh == null || bakedMesh.vertexCount == 0) return;
-
-            int maskW = screenW / 2;
-            int maskH = screenH / 2;
-            if (_handMaskRT == null || _handMaskRT.width != maskW || _handMaskRT.height != maskH)
+            if (_handMaskSource == null || _handMaskMat == null ||
+                _handMaskSource.BakedMesh == null || _handMaskSource.BakedMesh.vertexCount == 0)
             {
-                if (_handMaskRT != null) _handMaskRT.Release();
-                _handMaskRT = new RenderTexture(maskW, maskH, 0, RenderTextureFormat.R8);
-                _handMaskRT.Create();
-                _blitMaterial.SetTexture("_HandMaskTex", _handMaskRT);
-                // Set the texel size explicitly: Graphics.Blit binds the material outside the
-                // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
-                _blitMaterial.SetVector("_HandMaskTex_TexelSize",
-                    new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
+                _blitMaterial.SetTexture("_HandMaskTex", Texture2D.blackTexture);
+                return null;
             }
 
-            // Pass Meta's depth camera VP so the shader projects hand vertices into the
-            // same UV space as the depth texture. HandMaskRender handles the Vulkan Y flip.
-            _handMaskMat.SetMatrix("_DepthVP", depthVP);
-            // Sample-time dilation radius (texels), applied in MetaDepthCopy's 3x3 max.
+            // Crop remap: maps the forearm crop's NDC sub-rect to full NDC so the silhouette
+            // fills the grid-resolution target. Derived from the inverse of the blit's
+            // depthUV = uv*scale + offset, expressed in clip space (x' = x/scale + b*w):
+            //   ndc' = ndc/scale + (1 - 2*offset - scale)/scale.
+            // Folded into the depth VP, then HandMaskRender applies the Vulkan Y flip last.
+            Matrix4x4 crop = Matrix4x4.identity;
+            crop.m00 = 1f / scaleX; crop.m03 = (1f - 2f * offsetX - scaleX) / scaleX;
+            crop.m11 = 1f / scaleY; crop.m13 = (1f - 2f * offsetY - scaleY) / scaleY;
+            Matrix4x4 maskVP = crop * depthVP;
+
+            RenderTexture maskRT = RenderTexture.GetTemporary(maskW, maskH, 0, RenderTextureFormat.R8);
+            _blitMaterial.SetTexture("_HandMaskTex", maskRT);
+            // Set the texel size explicitly: Graphics.Blit binds the material outside the
+            // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
+            _blitMaterial.SetVector("_HandMaskTex_TexelSize",
+                new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
+
+            _handMaskMat.SetMatrix("_DepthVP", maskVP);
+            // Sample-time dilation radius (now in grid/depth-texel units), applied in MetaDepthCopy's 3x3 max.
             _blitMaterial.SetFloat("_MaskDilateTexels", MaskDilateTexels);
 
             _maskCmd.Clear();
-            _maskCmd.SetRenderTarget(_handMaskRT);
+            _maskCmd.SetRenderTarget(maskRT);
             _maskCmd.ClearRenderTarget(false, true, Color.black);
             // DrawMesh with the CPU-baked mesh: vertex positions are already skinned.
             // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call.
-            _maskCmd.DrawMesh(bakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
+            _maskCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
             Graphics.ExecuteCommandBuffer(_maskCmd);
+            return maskRT;
         }
 
         // --------------------------------------------------------
@@ -299,7 +390,7 @@ namespace Surface.Core
             ref Matrix4x4 depthVP,
             ref Vector3 wristPos, ref Vector3 elbowPos, ref Vector3 camPos,
             float fov, int pixelWidth, int pixelHeight,
-            float maxRadialDist, float pixelStride,
+            float maxRadialDist,
             out int xMin, out int yMin, out int width, out int height)
         {
             xMin = yMin = width = height = 0;
@@ -349,7 +440,8 @@ namespace Surface.Core
             fYMin = fYMin > 0f ? fYMin : 0f;
             fYMax = fYMax < pixelHeight ? fYMax : pixelHeight;
 
-            if (fXMax - fXMin < pixelStride || fYMax - fYMin < pixelStride) return false;
+            // Reject degenerate crops (a few screen pixels); the grid clamps to a 2×2 minimum.
+            if (fXMax - fXMin < 4f || fYMax - fYMin < 4f) return false;
 
             xMin   = (int)fXMin;
             yMin   = (int)fYMin;
@@ -392,9 +484,9 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Downsamples the readback crop at pixelStride intervals into the flat hit grid.
-        /// Each job element maps one grid cell (row, col) to a pixel in the crop and reads
-        /// the world position pre-computed by MetaDepthCopy.shader.
+        /// Copies the grid-resolution readback into the flat hit grid. The blit now renders at
+        /// grid resolution, so WorldPositions is the grid itself (row-major, width = Cols) and
+        /// each job element maps 1:1 to a cell — no crop/stride remap.
         ///
         /// The shader encodes validity in the Vector4 w component:
         ///   w >= 0 -> valid world position (w = rawDepth sampled from R channel, ∈ (0,1))
@@ -409,9 +501,6 @@ namespace Surface.Core
         private struct DepthUnprojectionJob : IJobParallelFor
         {
             [ReadOnly] public NativeArray<Vector4> WorldPositions;
-            // Dimensions of the crop in pixels (not the grid — grid = crop / stride).
-            // Must be public: Burst job structs are assigned via object initializer externally.
-            public int DepthWidth, DepthHeight, PixelStride, Cols;
 
             [WriteOnly] public NativeArray<Vector3> Hits;
             [WriteOnly] public NativeArray<bool>    HasDepth;
@@ -419,20 +508,7 @@ namespace Surface.Core
 
             public void Execute(int index)
             {
-                // Decode the flat grid index back to 2D grid coordinates, then to crop pixels.
-                int r = index / Cols;
-                int c = index % Cols;
-
-                int dx = c * PixelStride;
-                int dy = r * PixelStride;
-
-                // Clamp to the last valid pixel rather than skipping: the final row/column
-                // of the grid may overshoot the crop size by up to (PixelStride - 1) pixels.
-                if (dx >= DepthWidth)  dx = DepthWidth  - 1;
-                if (dy >= DepthHeight) dy = DepthHeight - 1;
-
-                // WorldPositions is the linearized crop: row-major, width = DepthWidth.
-                Vector4 sample = WorldPositions[dy * DepthWidth + dx];
+                Vector4 sample = WorldPositions[index];
 
                 // w < 0 is the sentinel written by MetaDepthCopy.shader for invalid pixels
                 // (sky, depth too close/far, or out of the sensor's range).

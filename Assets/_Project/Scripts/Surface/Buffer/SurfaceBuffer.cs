@@ -14,18 +14,18 @@ namespace Surface.Buffer
     /// structure is stored here. Rows and cols are passed separately to each stage.
     ///
     /// FIELD OWNERSHIP — who writes each array:
-    ///   Hits            — DepthUnprojectionJob (world positions), then SmoothSurfaceJob
-    ///                     (Laplacian pass output via ping-pong swap)
-    ///   Smoothed        — SmoothSurfaceJob (ping-pong write target; swapped with Hits
+    ///   Hits            — DepthUnprojectionJob (world positions), then BoundarySmoothJob
+    ///                     (boundary pass output via ping-pong swap)
+    ///   Smoothed        — BoundarySmoothJob (ping-pong write target; swapped with Hits
     ///                     after each pass so the next pass reads the smoothed result)
     ///   HasDepth        — DepthUnprojectionJob (false for hand pixels rejected by MetaDepthCopy)
     ///   IsSurface       — DepthUnprojectionJob (reset to false), SeedFromAxisJob +
     ///                     FloodFromSeedsJob (set true for forearm cells)
     ///   BFSQueue        — SeedFromAxisJob (enqueue), FloodFromSeedsJob (dequeue/enqueue)
-    ///   BoundaryVisited — BoundarySmoother (reset and set per boundary pass)
+    ///   BoundaryMask    — BoundaryMaskJob (marks boundary cells), read by BoundarySmoothJob
     ///
     /// WHY PUBLIC FIELDS INSTEAD OF PROPERTIES?
-    /// SurfaceSmoother ping-pongs Hits and Smoothed by directly swapping the references:
+    /// BoundarySmoother ping-pongs Hits and Smoothed by directly swapping the references:
     ///   var tmp = buffer.Hits; buffer.Hits = buffer.Smoothed; buffer.Smoothed = tmp;
     /// Properties with private setters would prevent this swap. Public fields are
     /// intentional and required by the double-buffer smoothing pattern.
@@ -41,8 +41,8 @@ namespace Surface.Buffer
         /// <summary> World-space 3D hit position for each grid cell. </summary>
         public NativeArray<Vector3> Hits;
         /// <summary>
-        /// Ping-pong write target for Laplacian smoothing passes.
-        /// SurfaceSmoother writes the smoothed result here, then swaps
+        /// Ping-pong write target for the boundary smoothing passes.
+        /// BoundarySmoother writes the smoothed result here, then swaps
         /// the Hits and Smoothed references so the next pass reads it.
         /// </summary>
         public NativeArray<Vector3> Smoothed;
@@ -56,8 +56,9 @@ namespace Surface.Buffer
         /// grow dynamically as the flood expands to neighbours.
         /// </summary>
         public NativeQueue<int> BFSQueue;
-        /// <summary> Per-cell visited flag used by BoundarySmoother to trace contour chains. </summary>
-        public NativeArray<bool> BoundaryVisited;
+        /// <summary> Per-cell boundary flag: true if this is a surface cell on the patch edge.
+        /// Written by BoundaryMaskJob, read by BoundarySmoothJob. </summary>
+        public NativeArray<bool> BoundaryMask;
 
         // Total cell count from the last allocation; -1 when unallocated.
         private int _currentSize = -1;
@@ -79,7 +80,7 @@ namespace Surface.Buffer
             IsSurface       = new NativeArray<bool>(total,    Allocator.Persistent);
             HasDepth        = new NativeArray<bool>(total,    Allocator.Persistent);
             BFSQueue        = new NativeQueue<int>(Allocator.Persistent);
-            BoundaryVisited = new NativeArray<bool>(total,    Allocator.Persistent);
+            BoundaryMask    = new NativeArray<bool>(total,    Allocator.Persistent);
 
             _currentSize = total;
         }
@@ -94,7 +95,7 @@ namespace Surface.Buffer
             if (Smoothed.IsCreated)        Smoothed.Dispose();
             if (IsSurface.IsCreated)       IsSurface.Dispose();
             if (HasDepth.IsCreated)        HasDepth.Dispose();
-            if (BoundaryVisited.IsCreated) BoundaryVisited.Dispose();
+            if (BoundaryMask.IsCreated) BoundaryMask.Dispose();
             if (BFSQueue.IsCreated)        BFSQueue.Dispose();
             _currentSize = -1;
         }

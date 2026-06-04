@@ -43,6 +43,9 @@ namespace Surface.Buffer
         /// are applied on top. See ArmFrame and MeshGenerator.CalculateUV for full details.
         /// </summary>
         public NativeArray<Vector2> UVs;
+        /// <summary> Local-space per-vertex normals, computed from grid neighbors by NormalsJob
+        /// (parallel, no RecalculateNormals on the main thread). </summary>
+        public NativeArray<Vector3> Normals;
         /// <summary>
         /// Triangle index buffer (size = (rows-1)*(cols-1)*6 maximum).
         /// Written atomically by TriangleJob; only [0..TriangleCount) is valid.
@@ -97,6 +100,7 @@ namespace Surface.Buffer
 
             Vertices   = new NativeArray<Vector3>(totalCells, Allocator.Persistent);
             UVs        = new NativeArray<Vector2>(totalCells, Allocator.Persistent);
+            Normals    = new NativeArray<Vector3>(totalCells, Allocator.Persistent);
             Triangles  = new NativeArray<int>(maxTris,        Allocator.Persistent);
             CellToVert = new NativeArray<int>(totalCells,     Allocator.Persistent);
             Counter    = new NativeArray<int>(2,              Allocator.Persistent);
@@ -112,6 +116,7 @@ namespace Surface.Buffer
         {
             if (Vertices.IsCreated)   Vertices.Dispose();
             if (UVs.IsCreated)        UVs.Dispose();
+            if (Normals.IsCreated)    Normals.Dispose();
             if (Triangles.IsCreated)  Triangles.Dispose();
             if (CellToVert.IsCreated) CellToVert.Dispose();
             if (Counter.IsCreated)    Counter.Dispose();
