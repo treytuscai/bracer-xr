@@ -46,6 +46,16 @@ namespace Surface.Core
         private Camera _cam;
 
         // ------------------------------------------------------------------
+        // CONFIGURATION
+        // ------------------------------------------------------------------
+        /// <summary>
+        /// When true, suppresses the portrait to landscape UV rotation: Orientation is driven toward
+        /// 0 regardless of arm orientation, so the display never flips 90°. Toggling it back to
+        /// false lets the orientation snapping resume.
+        /// </summary>
+        public bool _lockOrientation;
+
+        // ------------------------------------------------------------------
         // TEMPORAL SMOOTHING STATE
         // Survive across frames. Values are exponentially smoothed each frame
         // to reduce jitter from noisy bone tracking.
@@ -82,10 +92,11 @@ namespace Surface.Core
         /// <summary>
         /// Stores references for later use. Camera is resolved lazily on the first TryUpdate call.
         /// </summary>
-        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor)
+        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, bool lockOrientation)
         {
             _bodySkeleton    = bodySkeleton;
             _centerEyeAnchor = centerEyeAnchor;
+            _lockOrientation = lockOrientation;
         }
 
         /// <summary>
@@ -182,7 +193,8 @@ namespace Surface.Core
             // Portrait  (arm vertical):   target = 0     — no UV rotation needed.
             // Landscape (arm horizontal): target = -PI/2 — rotate UV frame 90° so the
             // display content reads left-to-right across the horizontal arm.
-            float target = Mathf.Abs(screenX) > Mathf.Abs(screenY) ? -Mathf.PI * 0.5f : 0f;
+            // LockOrientation forces the portrait target so the display never flips.
+            float target = (!_lockOrientation && Mathf.Abs(screenX) > Mathf.Abs(screenY)) ? -Mathf.PI * 0.5f : 0f;
             // Lerp (not LerpAngle) — values are in radians, range is [0, -PI/2], no wraparound needed.
             _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
             Orientation = _orientationAngle;

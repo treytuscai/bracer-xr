@@ -136,6 +136,9 @@ public class ForearmDepthSurface : MonoBehaviour
     public float displayWidth = 0.4f;
     [Tooltip("Center of the display window along the arm axis from the wrist (m). Formula: minFromWrist + displayHeight * 0.5")]
     public float displayOffset = 0.08f;
+    [Tooltip("Prevent the portrait to landscape rotation flip: keep the display upright (portrait) " +
+             "regardless of arm orientation. Runtime-toggleable.")]
+    public bool lockOrientation = false;
 
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES
@@ -200,7 +203,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void Awake()
     {
-        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor);
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
