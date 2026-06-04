@@ -46,7 +46,7 @@ git clone <repo-url>
 1. Open the project in Unity Hub with editor **2022.3.62f3**.
 2. Open `Assets/_Project/Scenes/MainScene.unity`.
 3. Connect the Quest 3 over USB (`adb devices` to confirm).
-4. **File → Build Settings** → confirm Android is the active platform and the scene is listed → **Build and Run**.
+4. **File -> Build Settings** -> confirm Android is the active platform and the scene is listed -> **Build and Run**.
 
 All project, SDK, and OVRManager settings are committed — no manual configuration is required.
 
@@ -61,7 +61,7 @@ Assets/_Project/
 ├── Scripts/
 │   └── Surface/
 │       ├── Core/                  depth pipeline stages
-│       │   ├── ArmFrame.cs            wrist/elbow → arm coordinate frame
+│       │   ├── ArmFrame.cs            wrist/elbow -> arm coordinate frame
 │       │   ├── DepthReadback.cs       async GPU readback + unprojection
 │       │   ├── HandMask.cs            GPU hand silhouette for depth exclusion
 │       │   ├── SurfaceExtractor.cs    seed + BFS flood isolation
