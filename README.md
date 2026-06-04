@@ -6,18 +6,18 @@ On-body interaction for Extended Reality. Ink & Interface renders an interactive
 
 ## How It Works
 
-The forearm surface is reconstructed every frame from the Quest 3's environment depth API (stereo-camera computed depth). The pipeline runs on the GPU and Burst-compiled worker threads, with no main-thread blocking beyond two minimal sync points.
+The forearm surface is reconstructed every frame from the Quest 3's environment depth API (stereo-camera computed depth). The pipeline runs on the GPU and Burst-compiled worker threads. It is **frame-pipelined**: the depth/extraction/mesh jobs scheduled from one depth frame are harvested on the *next* `LateUpdate`, by which point they are already complete — so the main thread never blocks waiting on them. The only main-thread work is the unavoidable mesh upload to Unity.
 
 _(An earlier prototype approximated the forearm as a geometric cylinder fit to the arm bones; it was dropped in favor of live depth reconstruction.)_
 
 **Per-frame pipeline:**
 
 1. Resolve wrist and elbow bones from the body skeleton to build the arm coordinate frame (axis, lateral, normal, pronation, orientation).
-2. Render the interacting hand as a GPU silhouette using Meta's depth-camera projection, and blit the depth texture through a reconstruction shader — hand pixels are rejected at the source so they never enter the reconstruction.
-3. Async GPU readback of the forearm crop; Burst jobs unproject depth pixels into a world-space hit grid.
+2. Render the interacting hand as a GPU silhouette and blit the depth texture through a reconstruction shader — both at the forearm crop's native depth-texel resolution, not full screen, so only the arm region is computed. Hand pixels are rejected at the source so they never enter the reconstruction.
+3. Async GPU readback of the forearm crop; a Burst job unprojects depth texels into a world-space hit grid.
 4. A seed region plus BFS flood isolates the forearm patch from background geometry.
-5. Laplacian smoothing on the hit grid and contour smoothing on the boundary.
-6. Mesh generation via atomic parallel vertex/triangle emission, with linear, camera-fixed UV projection (plus a pronation scroll offset).
+5. Edge-aware (bilateral) depth smoothing on the GPU during the blit, and a parallel Burst boundary smoother on the extracted edge cells.
+6. Mesh generation via atomic parallel vertex/triangle emission with parallel grid-based normal computation, and linear, camera-fixed UV projection (plus a pronation scroll offset).
 
 **Touch detection:** each frame the interacting hand's skinned-mesh vertices are tested against the reconstructed surface. The nearest surface cell within range is found, the signed depth above the surface is computed, and a UV coordinate is derived at sub-cell precision from the actual finger position. Touch is live — the surface keeps updating during interaction, pronation works mid-touch, and there is no freeze step.
 
@@ -65,8 +65,8 @@ Assets/_Project/
 │       │   ├── DepthReadback.cs       async GPU readback + unprojection
 │       │   ├── HandMask.cs            GPU hand silhouette for depth exclusion
 │       │   ├── SurfaceExtractor.cs    seed + BFS flood isolation
-│       │   ├── SurfaceSmoother.cs     Laplacian + contour smoothing
-│       │   └── MeshGenerator.cs       parallel mesh + UV emission
+│       │   ├── BoundarySmoother.cs    parallel Burst boundary smoothing
+│       │   └── MeshGenerator.cs       parallel mesh + UV + normal emission
 │       ├── Buffer/                shared NativeArray data buses
 │       │   ├── SurfaceBuffer.cs
 │       │   └── MeshBuffer.cs
@@ -85,16 +85,19 @@ Assets/_Project/
 
 Primary tuning surface, on the `ForearmDepthSurface` component:
 
+The grid is sized to the forearm crop's native depth-texel footprint, so there is no sample-stride/density knob — sampling self-tunes to the depth resolution.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `pixelStride` | 6 | Depth sample spacing (px). Lower = denser mesh, more compute |
-| `maskDilateTexels` | 1 | Hand-mask dilation radius (mask texels) to cover fast-motion depth bleed |
+| `maskDilateTexels` | 1 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
+| `depthSmoothRadius` | 1 | Edge-aware depth blur radius (depth texels; 0 = off, 1 = 3×3) |
+| `depthSmoothThreshold` | 0.01 m | Max linear depth difference for a neighbor to be averaged in (keeps the blur from crossing the arm/background edge) |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
 | `maxRadialDist` | 0.15 m | Outer wall that caps BFS flood growth away from the arm |
 | `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |
 | `connectivityThreshold` | 0.010 m | Max 3D step between adjacent flood cells to count as connected |
+| `edgeSmoothPasses` / `edgeWindowRadius` | 2 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
 | `maxQuadEdge` | 0.014 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps) |
-| `smoothPasses` / `edgeSmoothPasses` | 3 / 2 | Surface and boundary-contour smoothing iterations |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
 
