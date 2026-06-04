@@ -89,15 +89,15 @@ The grid is sized to the forearm crop's native depth-texel footprint, so there i
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `maskDilateTexels` | 1 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
+| `maskDilateTexels` | 0.5 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
 | `depthSmoothRadius` | 1 | Edge-aware depth blur radius (depth texels; 0 = off, 1 = 3×3) |
 | `depthSmoothThreshold` | 0.01 m | Max linear depth difference for a neighbor to be averaged in (keeps the blur from crossing the arm/background edge) |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
-| `maxRadialDist` | 0.1 m | Outer wall that caps BFS flood growth away from the arm |
+| `maxRadialDist` | 0.15 m | Outer wall that caps BFS flood growth away from the arm |
 | `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |
-| `connectivityThreshold` | 0.02 m | Max 3D step between adjacent flood cells to count as connected |
+| `connectivityThreshold` | 0.01 m | Max 3D step between adjacent flood cells to count as connected |
 | `edgeSmoothPasses` / `edgeWindowRadius` | 3 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
-| `maxQuadEdge` | 0.032 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps) |
+| `maxQuadEdge` | 0.014 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
 
