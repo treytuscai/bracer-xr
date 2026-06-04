@@ -143,9 +143,12 @@ Shader "Hidden/MetaDepthCopy"
 
                 // Step 1: sample the R channel of the left-eye depth slice (index 0).
                 // Depth is in Vulkan NDC [0,1]. Only R is used — Meta does not pack into G/B/A.
-                float centerDepth = SAMPLE_TEXTURE2D_ARRAY(
+                // Explicit LOD 0: the depth texture has no mips, and the _LOD variant takes no
+                // screen-space derivatives — required so the neighbor sample below can live in a
+                // dynamic loop without the "gradient in a varying loop" warning.
+                float centerDepth = SAMPLE_TEXTURE2D_ARRAY_LOD(
                     _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture,
-                    duv, 0).r;
+                    duv, 0, 0).r;
 
                 // Step 2: reject invalid depth. Must be strictly inside (0,1). Values at 0 (near
                 // plane) or 1 (far plane / sky) are meaningless. w = -1 is the out-of-band sentinel
@@ -172,8 +175,9 @@ Shader "Hidden/MetaDepthCopy"
                     {
                         if (nx == 0 && ny == 0) continue;
                         float2 nuv = duv + float2(nx, ny) * _DepthTexelSize.xy;
-                        float  nd  = SAMPLE_TEXTURE2D_ARRAY(
-                            _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture, nuv, 0).r;
+                        // Explicit LOD 0 (no derivatives) — this sample is inside a dynamic loop.
+                        float  nd  = SAMPLE_TEXTURE2D_ARRAY_LOD(
+                            _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture, nuv, 0, 0).r;
                         if (nd > 0.0 && nd < 1.0 &&
                             abs(LinearizeDepth(nd) - centerLinear) < _DepthSmoothThreshold)
                         {
