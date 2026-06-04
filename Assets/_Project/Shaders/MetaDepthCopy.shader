@@ -21,7 +21,7 @@
 // its UV and depth values were encoded relative to that historical pose — not the
 // current camera pose. Unprojecting with the current VP would misplace every pixel.
 // This shader receives the inverse of Meta's historical VP via _DepthInverseVP (inverted
-// in C# by DepthReadback.Schedule before the blit) and reconstructs positions in the
+// in C# by DepthReadback.DispatchReconstruction before the blit) and reconstructs positions in the
 // depth frame's coordinate space, which is already in world space.
 //
 // ANTI-SWIM
@@ -37,7 +37,7 @@
 //   4. Mul by _DepthInverseVP (clip -> world for the depth frame's pose).
 //   5. Perspective divide (xyz / w) -> world position.
 //
-// CALLED FROM: DepthReadback.Schedule() via Graphics.Blit(null, _worldPosRT, _blitMaterial).
+// CALLED FROM: DepthReadback.DispatchReconstruction() via Graphics.Blit(null, _worldPosRT, _blitMaterial).
 // The null source is intentional — the shader reads _EnvironmentDepthTexture as a global,
 // not from Unity's Blit source texture. Graphics.Blit bypasses the SRP Batcher, so the
 // CBUFFER below is for correctness and consistency rather than batching performance.
