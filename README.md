@@ -108,3 +108,11 @@ Touch tuning, on the `ForearmInteraction` component:
 | `touchHoverHeight` | 0.005 m | How far above the surface a finger still registers |
 | `touchDepth` | 0.04 m | How far through the surface a press can go before being ignored |
 | `maxCellSearchDist` | 0.04 m | Max arm-frame distance to the nearest surface cell for a touch to register |
+
+---
+
+## License
+
+The original work in this repository (primarily the code under `Assets/_Project/`) is licensed under the [Apache License 2.0](LICENSE) — © 2026 Trey Tuscai. You are free to use, modify, and build upon it, provided you retain the copyright and attribution notices (see [NOTICE](NOTICE)).
+
+Third-party SDKs vendored elsewhere under `Assets/` and `Packages/` (Meta XR SDK, Meta Movement SDK, etc.) are governed by their own license terms, not the Apache License above.

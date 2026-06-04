@@ -1,0 +1,17 @@
+Ink & Interface
+Copyright 2026 Trey Tuscai
+
+This product includes software developed by Trey Tuscai.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Scope
+
+The Apache License applies to the original work in this repository authored by
+Trey Tuscai — primarily the code under Assets/_Project/ (Scripts, Shaders, and
+related project assets).
+
+Third-party SDKs and packages vendored elsewhere under Assets/ and Packages/
+— including, but not limited to, the Meta XR SDK and the Meta Movement SDK —
+are the property of their respective owners and are governed by their own
+license terms, NOT the Apache License above.
