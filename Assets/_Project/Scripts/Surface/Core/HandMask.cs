@@ -28,7 +28,9 @@ namespace Surface.Core
         // IMPORTANT: these must be declared before ActiveFingerTips so the array
         // initializer captures the correct values (static fields init in order).
         // ------------------------------------------------------------------
-#pragma warning disable IDE0051
+        // IDE0051 = IDE "unused private member"; CS0414 = compiler "assigned but never read".
+        // Both fire on the reference-only bone indices; suppress both so the full table can stay.
+#pragma warning disable IDE0051, CS0414
         private static readonly int Palm       = 0;
         private static readonly int Wrist      = 1;
         private static readonly int ThumbMeta  = 2,  ThumbProx  = 3,  ThumbDist  = 4,  ThumbTip  = 5;
@@ -36,7 +38,7 @@ namespace Surface.Core
         private static readonly int MiddleMeta = 11, MiddleProx = 12, MiddleInter = 13, MiddleDist = 14, MiddleTip = 15;
         private static readonly int RingMeta   = 16, RingProx   = 17, RingInter  = 18, RingDist  = 19, RingTip  = 20;
         private static readonly int LittleMeta = 21, LittleProx = 22, LittleInter = 23, LittleDist = 24, LittleTip = 25;
-#pragma warning restore IDE0051
+#pragma warning restore IDE0051, CS0414
 
         // ------------------------------------------------------------------
         // ACTIVE FINGERTIPS
