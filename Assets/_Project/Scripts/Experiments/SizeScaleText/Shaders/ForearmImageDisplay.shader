@@ -19,8 +19,15 @@ Shader "Custom/ForearmImageDisplay"
 {
     Properties
     {
-        _MainTex ("Image (RGBA)", 2D) = "white" {}
-        _Tint    ("Tint",  Color)     = (1, 1, 1, 1)
+        _MainTex      ("Image (RGBA)", 2D)    = "white" {}
+        _Tint         ("Tint",  Color)        = (1, 1, 1, 1)
+
+        // _ImageScale: fraction of the arm UV space the image fills (0 = invisible, 1 = full patch).
+        // _ImageOffset: shift the image centre away from (0.5, 0.5) in UV space.
+        //   Set by SizeScaleController at runtime via imageScale / imageCenterOffset.
+        _ImageScale   ("Image Scale",  Float)  = 1.0
+        _ImageOffsetU ("Image Offset U", Float) = 0.0
+        _ImageOffsetV ("Image Offset V", Float) = 0.0
     }
 
     SubShader
@@ -47,7 +54,10 @@ Shader "Custom/ForearmImageDisplay"
             // All per-material uniforms inside UnityPerMaterial for SRP Batcher
             // compatibility (same pattern as ForearmColorText.shader).
             CBUFFER_START(UnityPerMaterial)
-                half4 _Tint;
+                half4  _Tint;
+                float  _ImageScale;
+                float  _ImageOffsetU;
+                float  _ImageOffsetV;
             CBUFFER_END
 
             struct Attributes
@@ -79,16 +89,29 @@ Shader "Custom/ForearmImageDisplay"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                // Discard fragments whose UVs lie outside the display patch.
-                // Pronation scroll and landscape offset can push vertices past
-                // [0, 1]; discarding instead of clamping prevents texture
-                // edge bleeding onto the surrounding passthrough skin.
+                // Discard fragments outside the arm UV patch.
                 if (input.uv.x < 0.0 || input.uv.x > 1.0 ||
                     input.uv.y < 0.0 || input.uv.y > 1.0)
                     discard;
 
+                // Compute the sub-rect in UV space where the image is displayed.
+                // _ImageScale = 1 → full patch, 0.5 → half width/height centred on the arm.
+                float scale   = clamp(_ImageScale, 0.001, 1.0);
+                float halfExt = scale * 0.5;
+                float2 center = float2(0.5 + _ImageOffsetU, 0.5 + _ImageOffsetV);
+                float2 rMin   = center - halfExt;
+                float2 rMax   = center + halfExt;
+
+                // Fragments outside the sub-rect are fully transparent (skin shows through).
+                if (input.uv.x < rMin.x || input.uv.x > rMax.x ||
+                    input.uv.y < rMin.y || input.uv.y > rMax.y)
+                    discard;
+
+                // Remap UV so the full texture fills the sub-rect.
+                float2 imageUV = (input.uv - rMin) / (rMax - rMin);
+
                 // Sample full RGBA and apply per-material tint.
-                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv) * _Tint;
+                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, imageUV) * _Tint;
                 return col;
             }
             ENDHLSL

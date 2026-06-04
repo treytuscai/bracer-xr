@@ -1193,9 +1193,37 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   surface: {fileID: 66024355}
   imageShader: {fileID: 4800000, guid: 9a410ea33add20049aaa7966a8a48420, type: 3}
-  images:
-  - {fileID: 2800000, guid: 01e59c918bbff2649bb640d93709d37a, type: 3}
-  - {fileID: 2800000, guid: b12254f1222b4554b8800b2d9e7fecdd, type: 3}
+  gaps:
+  - sizes:
+    - {fileID: 2800000, guid: fea79bcc90d25da43bf895d3b86c47de, type: 3}
+    - {fileID: 2800000, guid: 3887a947c0ba62349bd99b2886e776f3, type: 3}
+    - {fileID: 2800000, guid: f2622297d6d1e5c448e0f1ce34512ac2, type: 3}
+    - {fileID: 2800000, guid: 7e48af564b6203e4ba99dbfdcdccac45, type: 3}
+    - {fileID: 2800000, guid: 174f6a4de6b608143b0f5bcaf019a8d3, type: 3}
+    - {fileID: 2800000, guid: 856cc9f3730a32a4da015d2e8f0b3462, type: 3}
+    - {fileID: 2800000, guid: c16bbb083a2acf44e9f70f5c395cd4ea, type: 3}
+    - {fileID: 2800000, guid: 5626052b1a1a7e441ad00f1c562b558f, type: 3}
+  - sizes:
+    - {fileID: 2800000, guid: e562e75621500e84fa8c314c03752dfa, type: 3}
+    - {fileID: 2800000, guid: 3eaf3f0e499075b438818ce038c63b52, type: 3}
+    - {fileID: 2800000, guid: e342dfec0ff6aca408d943079017c6b8, type: 3}
+    - {fileID: 2800000, guid: 7ef7f2765b65f0541b380b5f28ed0afb, type: 3}
+    - {fileID: 2800000, guid: ee344371b6096b348b67a02d3ef7914d, type: 3}
+    - {fileID: 2800000, guid: 90d2344eb740b53488fca6a96c4dca93, type: 3}
+    - {fileID: 2800000, guid: 31c355c83a84e254b9995fab32c3bff6, type: 3}
+    - {fileID: 2800000, guid: 41b733359ba0a564086e888a7b4242c5, type: 3}
+  - sizes:
+    - {fileID: 2800000, guid: 763a5005b7dfe504caba8f2156735457, type: 3}
+    - {fileID: 2800000, guid: 5b658b51b12a9cb4fbd12149076611f7, type: 3}
+    - {fileID: 2800000, guid: 3f1398f1291dfb841b6651198053d54c, type: 3}
+    - {fileID: 2800000, guid: 92b7a43374b6217429791054c78abb01, type: 3}
+    - {fileID: 2800000, guid: 331abe00fdb1700478f026f36d3561af, type: 3}
+    - {fileID: 2800000, guid: a0c0de8c564441d49955c929e7829e58, type: 3}
+    - {fileID: 2800000, guid: c30ea285480a06b42a81686c0393a278, type: 3}
+    - {fileID: 2800000, guid: 6b5df45e6d7da1748be9e6e9b58f3665, type: 3}
+  imageScale: 0.2
+  imageCenterOffsetU: 0.15
+  imageCenterOffsetV: 0
 --- !u!1 &433757240
 GameObject:
   m_ObjectHideFlags: 0
