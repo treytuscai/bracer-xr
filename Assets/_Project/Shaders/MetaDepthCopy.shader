@@ -4,6 +4,11 @@
 //   xyz = world-space position
 //   w   = raw depth value ∈ (0,1) for valid pixels, -1 as an invalid sentinel
 //
+// Beyond reconstruction, the per-texel neighborhood scan does two cleanup jobs: an edge-aware
+// (bilateral) depth blur that denoises the surface interior, and a mixed-pixel reject that drops
+// texels on the arm/background silhouette (stereo "flying pixels" that flicker frame to frame),
+// so the boundary handed downstream is built only from reliable interior cells.
+//
 // DEPTH SOURCE
 // Meta's environment depth API computes depth from the Quest's two main RGB cameras via
 // stereo reconstruction — not a dedicated IR depth sensor. The output is a standard
@@ -99,6 +104,13 @@ Shader "Hidden/MetaDepthCopy"
                 int    _DepthSmoothRadius;
                 float  _DepthSmoothThreshold;   // max LINEAR depth diff (metres) to average a neighbor
                 float4 _DepthTexelSize;
+                // Edge (mixed-pixel) reject. A texel whose immediate 8-neighborhood crosses a depth
+                // step larger than this (metres) — or borders an invalid texel — sits on the arm/
+                // background silhouette, where stereo depth is a noisy "flying pixel" that flickers
+                // frame to frame. Such texels are dropped (w = -1) so the surface boundary is built
+                // only from reliable interior cells. This erodes the silhouette by ~1 texel at real
+                // depth discontinuities only. 0 disables the reject.
+                float  _EdgeDiscontinuityThreshold;
             CBUFFER_END
 
             // NDC depth [0,1] -> linear eye-space distance in metres (Meta's global ZBuffer params).
@@ -164,28 +176,54 @@ Shader "Hidden/MetaDepthCopy"
                 // params), so it behaves consistently across the depth range — unlike a raw NDC diff,
                 // which is nonlinear. We still average the NDC depth (what unprojection consumes);
                 // only the inclusion test is metric. _DepthSmoothRadius = 0 disables it.
+                // The same neighborhood scan does two jobs: bilateral smoothing (within
+                // _DepthSmoothRadius) AND edge/mixed-pixel detection (immediate 1-ring). The scan
+                // radius is the larger of the two so the edge check still runs when smoothing is off.
                 float centerLinear = LinearizeDepth(centerDepth);
                 float depthSum     = centerDepth;   // accumulate NDC depth for unprojection
                 float weightSum    = 1.0;
+                bool  edgeReject   = _EdgeDiscontinuityThreshold > 0.0;
+                bool  isEdge       = false;
+                int   scanRadius   = max(_DepthSmoothRadius, edgeReject ? 1 : 0);
                 [loop]
-                for (int ny = -_DepthSmoothRadius; ny <= _DepthSmoothRadius; ny++)
+                for (int ny = -scanRadius; ny <= scanRadius; ny++)
                 {
                     [loop]
-                    for (int nx = -_DepthSmoothRadius; nx <= _DepthSmoothRadius; nx++)
+                    for (int nx = -scanRadius; nx <= scanRadius; nx++)
                     {
                         if (nx == 0 && ny == 0) continue;
                         float2 nuv = duv + float2(nx, ny) * _DepthTexelSize.xy;
                         // Explicit LOD 0 (no derivatives) — this sample is inside a dynamic loop.
                         float  nd  = SAMPLE_TEXTURE2D_ARRAY_LOD(
                             _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture, nuv, 0, 0).r;
-                        if (nd > 0.0 && nd < 1.0 &&
-                            abs(LinearizeDepth(nd) - centerLinear) < _DepthSmoothThreshold)
+                        bool   nValid = nd > 0.0 && nd < 1.0;
+                        float  nLinear = nValid ? LinearizeDepth(nd) : 0.0;
+
+                        // EDGE DETECT — immediate 8-neighborhood only (so a discontinuity erodes
+                        // exactly one texel, not scanRadius texels). A neighbor that is invalid or
+                        // a large depth step away means this texel sits on the silhouette.
+                        if (edgeReject && abs(nx) <= 1 && abs(ny) <= 1 &&
+                            (!nValid || abs(nLinear - centerLinear) > _EdgeDiscontinuityThreshold))
+                            isEdge = true;
+
+                        // BILATERAL — average only neighbors within the smoothing radius AND within
+                        // the (smaller) metric smoothing threshold. The radius guard keeps
+                        // _DepthSmoothRadius = 0 meaning "no smoothing" even when scanRadius grew
+                        // to 1 for the edge check.
+                        if (nValid && abs(nx) <= _DepthSmoothRadius && abs(ny) <= _DepthSmoothRadius &&
+                            abs(nLinear - centerLinear) < _DepthSmoothThreshold)
                         {
                             depthSum  += nd;
                             weightSum += 1.0;
                         }
                     }
                 }
+
+                // Drop mixed/flying pixels on the silhouette so the boundary is built only from
+                // reliable interior cells (kills the every-few-frames staircase/sliver flicker).
+                if (isEdge)
+                    return float4(0, 0, 0, -1.0);
+
                 float rawDepth = depthSum / weightSum;
 
                 // Step 3: remap (U, V, rawDepth) from screen-space [0,1] to clip-space [-1,1].

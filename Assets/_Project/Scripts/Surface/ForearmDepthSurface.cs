@@ -25,8 +25,10 @@ using Surface.Core;
 ///                     across depth-connected neighbors up to a wider flood cylinder
 ///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
 ///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
-///                     MetaDepthCopy); a parallel boundary smoother then de-steps the mesh
-///                     edge by averaging each boundary cell with its boundary neighbors.
+///                     MetaDepthCopy), which also drops mixed/flying pixels on the silhouette
+///                     (edgeDiscontinuityThreshold) so the boundary is built from reliable
+///                     cells; a parallel boundary smoother then de-steps the mesh edge by
+///                     averaging each boundary cell with its boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
@@ -62,19 +64,29 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Hand Masking")]
     [Tooltip("Mask dilation radius in mask texels, applied at sample time (3x3 max). Grows the " +
              "effective hand mask to cover readback latency without bloating the rendered mesh.")]
-    [Range(0f, 4f)] public float maskDilateTexels = 1f;
+    [Range(0f, 4f)] public float maskDilateTexels = 0.8f;
 
     // ------------------------------------------------------------------
     // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
     // Edge-aware blur of the raw depth before unprojection: denoises the surface
     // interior without crossing the arm/background depth discontinuity.
+    //
+    // edgeDiscontinuityThreshold is a SEPARATE, complementary control that lives in the
+    // same shader pass: the bilateral is edge-PRESERVING (it refuses to smooth across the
+    // silhouette), so the boundary texels keep their raw noisy depth — stereo "flying
+    // pixels" that straddle arm and background and flicker frame to frame. The reject drops
+    // those texels at the source so the boundary is built from reliable interior cells.
     // ------------------------------------------------------------------
     [Header("Depth Smoothing")]
     [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
     [Range(0, 3)] public int depthSmoothRadius = 1;
     [Tooltip("Max depth difference in METRES for a neighbor to be averaged in (~0.01 = 1 cm). " +
              "Lower preserves detail/edges; higher is smoother but risks bridging arm to background.")]
-    public float depthSmoothThreshold = 0.01f;
+    [Range(0, 0.2f)] public float depthSmoothThreshold = 0.01f;
+    [Tooltip("Drop silhouette texels whose neighborhood crosses a depth step larger than this (m). " +
+             "Removes the mixed/flying pixels at the arm edge so the boundary is built from reliable " +
+             "interior cells (kills the every-few-frames staircase/sliver flicker). 0 = disabled.")]
+    [Range(0f, 0.2f)] public float edgeDiscontinuityThreshold = 0.05f;
 
     // ------------------------------------------------------------------
     // SEED + FLOOD
@@ -88,15 +100,15 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Seed + Flood")]
     [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
-    [Range(0.02f, 0.12f)] public float seedRadialDist = 0.05f;
+    [Range(0.02f, 0.1f)] public float seedRadialDist = 0.05f;
     [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
     [Range(0.02f, 0.2f)] public float maxRadialDist = 0.1f;
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
-    [Range(0f, 0.10f)] public float maxFromElbow = 0.02f;
+    [Range(0f, 0.15f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
-    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.02f;
+    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.01f;
 
     // ------------------------------------------------------------------
     // BOUNDARY SMOOTHING
@@ -116,12 +128,13 @@ public class ForearmDepthSurface : MonoBehaviour
     // maxQuadEdge rejects quads or tris whose longest edge exceeds this
     // threshold, preventing stretched faces across depth gaps (e.g. arm
     // to table). Must be >= connectivityThreshold because flood-connected
-    // cells can be farther apart in 3D when the surface is curved.
+    // cells can be farther apart in 3D when the surface is curved (a quad
+    // diagonal can reach ~sqrt(2)*connectivityThreshold).
     // ------------------------------------------------------------------
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.032f;
+    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.02f;
 
     // ------------------------------------------------------------------
     // DISPLAY
@@ -205,7 +218,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
+        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold, edgeDiscontinuityThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);

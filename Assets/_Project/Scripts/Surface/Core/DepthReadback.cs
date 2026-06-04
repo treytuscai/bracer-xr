@@ -16,7 +16,9 @@ namespace Surface.Core
     ///                 is sampled 1:1 with the grid (no full-screen oversampling).
     ///   2. BLIT:      Run MetaDepthCopy.shader via Graphics.Blit into a grid-resolution RT
     ///                 (~one texel per forearm depth-texel). Hand pixels are rejected in the
-    ///                 shader (w=-1) so they arrive HasDepth=false.
+    ///                 shader (w=-1) so they arrive HasDepth=false, as are mixed/flying pixels on
+    ///                 the arm silhouette (EdgeDiscontinuityThreshold) so the boundary that seeds
+    ///                 extraction is built only from reliable interior cells.
     ///   3. CROP:      Compute the forearm's screen-space bounding box; its depth-texel
     ///                 footprint sizes the grid RT, which is read back whole (async GPU).
     ///   4. UNPROJECT: On readback completion, schedule a Burst job (DepthUnprojectionJob)
@@ -82,9 +84,12 @@ namespace Surface.Core
         //                          MetaDepthCopy (3x3 max) to cover readback latency.
         //   DepthSmoothRadius    — edge-aware depth blur radius (0 = off).
         //   DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to be averaged in.
-        public float MaskDilateTexels     = 1f;
-        public int   DepthSmoothRadius    = 1;
-        public float DepthSmoothThreshold = 0.01f;
+        //   EdgeDiscontinuityThreshold — depth step (metres) above which a texel is treated as a
+        //                          mixed/flying pixel on the silhouette and dropped (0 = off).
+        public float MaskDilateTexels           = 1f;
+        public int   DepthSmoothRadius          = 1;
+        public float DepthSmoothThreshold       = 0.01f;
+        public float EdgeDiscontinuityThreshold = 0.05f;
         // CommandBuffer that clears and re-draws the hand mesh each frame.
         private CommandBuffer _maskCmd;
         // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
@@ -94,11 +99,12 @@ namespace Surface.Core
         /// Loads the MetaDepthCopy and HandMaskRender shaders, creates materials, and stores the
         /// tuning parameters. Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold)
+        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold, float edgeDiscontinuityThreshold)
         {
-            MaskDilateTexels     = maskDilateTexels;
-            DepthSmoothRadius    = depthSmoothRadius;
-            DepthSmoothThreshold = depthSmoothThreshold;
+            MaskDilateTexels           = maskDilateTexels;
+            DepthSmoothRadius          = depthSmoothRadius;
+            DepthSmoothThreshold       = depthSmoothThreshold;
+            EdgeDiscontinuityThreshold = edgeDiscontinuityThreshold;
 
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
@@ -232,6 +238,7 @@ namespace Surface.Core
             // Edge-aware depth-smoothing params for the bilateral pass in MetaDepthCopy.
             _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
             _blitMaterial.SetFloat("_DepthSmoothThreshold", DepthSmoothThreshold);
+            _blitMaterial.SetFloat("_EdgeDiscontinuityThreshold", EdgeDiscontinuityThreshold);
             _blitMaterial.SetVector("_DepthTexelSize",
                 new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
 

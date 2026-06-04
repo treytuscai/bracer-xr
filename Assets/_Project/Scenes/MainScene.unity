@@ -787,6 +787,7 @@ MonoBehaviour:
   maskDilateTexels: 0.8
   depthSmoothRadius: 1
   depthSmoothThreshold: 0.01
+  edgeDiscontinuityThreshold: 0.05
   seedRadialDist: 0.05
   maxRadialDist: 0.15
   minFromWrist: -0.12
@@ -794,7 +795,7 @@ MonoBehaviour:
   connectivityThreshold: 0.01
   edgeSmoothPasses: 3
   edgeWindowRadius: 2
-  maxQuadEdge: 0.05
+  maxQuadEdge: 0.02
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
