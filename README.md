@@ -95,14 +95,15 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |
 | `connectivityThreshold` | 0.01 m | Max 3D step between adjacent flood cells to count as connected |
 | `edgeSmoothPasses` / `edgeWindowRadius` | 3 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
-| `maxQuadEdge` | 0.014 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps) |
+| `maxQuadEdge` | 0.05 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
+| `lockOrientation` | false | Prevents the portrait to landscape rotation flip |
 
 Touch tuning, on the `ForearmInteraction` component:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `touchHoverHeight` | 0.02 m | How far above the surface a finger still registers |
+| `touchHoverHeight` | 0.005 m | How far above the surface a finger still registers |
 | `touchDepth` | 0.04 m | How far through the surface a press can go before being ignored |
 | `maxCellSearchDist` | 0.04 m | Max arm-frame distance to the nearest surface cell for a touch to register |
