@@ -783,8 +783,8 @@ MonoBehaviour:
   handMesh: {fileID: 2123695745}
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 0}
-  maskDilateTexels: 0.5
+  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
+  maskDilateTexels: 0.8
   depthSmoothRadius: 1
   depthSmoothThreshold: 0.01
   seedRadialDist: 0.05
@@ -794,10 +794,11 @@ MonoBehaviour:
   connectivityThreshold: 0.01
   edgeSmoothPasses: 3
   edgeWindowRadius: 2
-  maxQuadEdge: 0.014
+  maxQuadEdge: 0.05
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
+  lockOrientation: 1
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -875,7 +876,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.02
+  touchHoverHeight: 0.005
   touchDepth: 0.04
   maxCellSearchDist: 0.04
   showTouchDebug: 1
