@@ -783,20 +783,20 @@ MonoBehaviour:
   handMesh: {fileID: 2123695745}
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
-  handMaskInflate: 0
+  surfaceMaterial: {fileID: 0}
   maskDilateTexels: 1
-  maskDepthEps: 0.005
-  pixelStride: 6
+  logDepthDiagnostics: 1
+  skipReconstruction: 0
+  depthSmoothRadius: 1
+  depthSmoothThreshold: 0.01
   seedRadialDist: 0.05
-  maxRadialDist: 0.15
+  maxRadialDist: 0.1
   minFromWrist: -0.12
   maxFromElbow: 0.02
-  connectivityThreshold: 0.01
-  smoothPasses: 3
-  edgeSmoothPasses: 2
-  edgeWindowRadius: 3
-  maxQuadEdge: 0.014
+  connectivityThreshold: 0.02
+  edgeSmoothPasses: 3
+  edgeWindowRadius: 2
+  maxQuadEdge: 0.032
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08

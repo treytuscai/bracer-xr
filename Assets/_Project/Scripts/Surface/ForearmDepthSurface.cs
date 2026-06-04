@@ -90,13 +90,13 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
     [Range(0.02f, 0.12f)] public float seedRadialDist = 0.05f;
     [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
-    [Range(0.02f, 0.2f)] public float maxRadialDist = 0.15f;
+    [Range(0.02f, 0.2f)] public float maxRadialDist = 0.1f;
     [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
     [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
     [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
     [Range(0f, 0.10f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
-    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.010f;
+    [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.02f;
 
     // ------------------------------------------------------------------
     // BOUNDARY SMOOTHING
@@ -107,7 +107,7 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Boundary Smoothing")]
     [Tooltip("Boundary smoothing passes. 0 = no edge smoothing. Prefer more passes over a large radius.")]
-    [Range(0, 5)] public int edgeSmoothPasses = 2;
+    [Range(0, 5)] public int edgeSmoothPasses = 3;
     [Tooltip("Neighborhood half-width (cells) averaged per boundary pass. >2 starts rounding the arm's real shape.")]
     [Range(1, 6)] public int edgeWindowRadius = 2;
 
@@ -121,7 +121,7 @@ public class ForearmDepthSurface : MonoBehaviour
     [Header("Mesh")]
     [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
              "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.014f;
+    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.032f;
 
     // ------------------------------------------------------------------
     // DISPLAY
