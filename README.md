@@ -16,7 +16,7 @@ _(An earlier prototype approximated the forearm as a geometric cylinder fit to t
 2. Stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" — temporal outliers — so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion).
 3. Render the interacting hand as a GPU silhouette and blit the stabilized depth through a reconstruction shader — both at the forearm crop's native depth-texel resolution, not full screen, so only the arm region is computed. Hand pixels are rejected at the source so they never enter the reconstruction.
 4. Async GPU readback of the forearm crop; a Burst job unprojects depth texels into a world-space hit grid.
-5. A seed region plus BFS flood isolates the forearm patch from background geometry.
+5. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders — the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
 6. Edge-aware (bilateral) depth smoothing on the GPU during the blit denoises the surface interior, and a parallel Burst boundary smoother de-steps the extracted edge cells.
 7. Mesh generation via atomic parallel vertex/triangle emission with parallel grid-based normal computation, and linear, camera-fixed UV projection (plus a pronation scroll offset).
 
@@ -74,7 +74,7 @@ Assets/_Project/
 │       ├── ForearmDepthSurface.cs     root MonoBehaviour; orchestrates the pipeline
 │       └── ForearmInteraction.cs      touch detection against the surface
 ├── Shaders/
-│   ├── ForearmProjection.shader    URP transparent shader for the surface mesh
+│   ├── ForearmProjection.shader     URP transparent shader for the surface mesh
 │   ├── DepthTemporalMedian.shader   3-frame reprojected median that stabilizes the depth
 │   ├── MetaDepthCopy.shader         depth-reconstruction blit (world pos from depth)
 │   └── HandMaskRender.shader        GPU hand silhouette
@@ -93,8 +93,8 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `depthSmoothRadius` | 1 | Edge-aware depth blur radius (depth texels; 0 = off, 1 = 3×3) |
 | `depthSmoothThreshold` | 0.01 m | Max linear depth difference for a neighbor to be averaged in (keeps the blur from crossing the arm/background edge) |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
-| `maxRadialDist` | 0.15 m | Outer wall that caps BFS flood growth away from the arm |
-| `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |
+| `maxFloodDist` | 0.1 m | Outer wall that caps BFS flood growth away from the arm |
+| `maxFromElbow` | 0.02 m | How far past the elbow the forearm cylinder extends (the wrist-side cap is flat; the palm cylinder takes over) |
 | `connectivityThreshold` | 0.01 m | Max 3D step between adjacent flood cells to count as connected |
 | `edgeSmoothPasses` / `edgeWindowRadius` | 3 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
 | `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |

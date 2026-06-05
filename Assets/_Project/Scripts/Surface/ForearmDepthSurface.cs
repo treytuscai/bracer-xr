@@ -24,7 +24,7 @@ using Surface.Core;
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
-///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
+///                     (maxFloodDist) to grow the full forearm patch (IsSurface flags).
 ///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
 ///                     MetaDepthCopy); the boundary flicker is already removed upstream by the
 ///                     temporal median (step 2). A parallel boundary smoother then de-steps the
@@ -76,17 +76,16 @@ public class ForearmDepthSurface : MonoBehaviour
     [Range(0, 0.2f)] public float depthSmoothThreshold = 0.01f;
 
     // ------------------------------------------------------------------
-    // SEED + FLOOD - The depth crop pads by maxRadialDist so the readback
+    // SEED + FLOOD - The depth crop pads by maxFloodDist so the readback
     // region covers the full area the flood can reach.
     // ------------------------------------------------------------------
     [Header("Seed + Flood")]
     [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
     [Range(0.02f, 0.1f)] public float seedRadialDist = 0.05f;
     [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
-    [Range(0.02f, 0.2f)] public float maxRadialDist = 0.1f;
-    [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
-    [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
-    [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
+    [Range(0.02f, 0.2f)] public float maxFloodDist = 0.1f;
+    [Tooltip("How far past the elbow the forearm cylinder extends (m). The wrist-side cap is flat " +
+             "(at the wrist); the palm cylinder takes over from there.")]
     [Range(0f, 0.15f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.01f;
@@ -117,7 +116,7 @@ public class ForearmDepthSurface : MonoBehaviour
     public float displayHeight = 0.4f;
     [Tooltip("Physical width of one display panel (m). Set equal to displayHeight for square (undistorted) pixels.")]
     public float displayWidth = 0.4f;
-    [Tooltip("Center of the display window along the arm axis from the wrist (m). Formula: minFromWrist + displayHeight * 0.5")]
+    [Tooltip("Center of the display window along the arm axis from the wrist (m).")]
     public float displayOffset = 0.08f;
     [Tooltip("Prevent the portrait to landscape rotation flip: keep the display upright (portrait) " +
              "regardless of arm orientation.")]
@@ -186,7 +185,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
-        _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
+        _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
     }
@@ -272,7 +271,7 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _handMask.SnapshotMesh();
             _isProcessingMesh = _depthReadback.TryDispatch(
-                _armFrame, maxRadialDist,
+                _armFrame, maxFloodDist,
                 _surfaceBuffer, OnDepthReady
             );
         }
@@ -331,6 +330,7 @@ public class ForearmDepthSurface : MonoBehaviour
         JobHandle h = _surfaceExtractor.Schedule(
             _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
+            _armFrame.PalmCapPos, _armFrame.HasPalm,
             default);
         h = _boundarySmoother.Schedule(_surfaceBuffer, _rows, _cols, h);
         h = _meshGenerator.Schedule(

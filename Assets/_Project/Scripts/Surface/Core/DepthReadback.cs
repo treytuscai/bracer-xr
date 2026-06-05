@@ -132,7 +132,7 @@ namespace Surface.Core
         /// </summary>
         public bool TryDispatch(
             ArmFrame arm,
-            float maxRadialDist,
+            float maxFloodDist,
             SurfaceBuffer buffer,
             Action<JobHandle, int, int> onComplete)
         {
@@ -152,14 +152,16 @@ namespace Surface.Core
             Camera cam = arm.Cam;
             Vector3 wristPos = arm.WristPos;
             Vector3 elbowPos = arm.ElbowPos;
+            Vector3 palmCap  = arm.PalmCapPos;
             Vector3 camPos   = cam.transform.position;
 
             // Compute the screen-space bounding box of the forearm using the depth
             // camera's VP matrix so crop coordinates align with the depth texture.
+            // The palm cap is folded in (when tracked) so the crop covers the palm too.
             if (!CalculateArmBounds(
-                ref depthMatrices[0], ref wristPos, ref elbowPos, ref camPos,
+                ref depthMatrices[0], ref wristPos, ref elbowPos, ref palmCap, arm.HasPalm, ref camPos,
                 cam.fieldOfView, cam.pixelWidth, cam.pixelHeight,
-                maxRadialDist,
+                maxFloodDist,
                 out int cropX, out int cropY, out int cropW, out int cropH))
             {
                 return false; // Arm behind camera or off-screen
@@ -474,7 +476,7 @@ namespace Surface.Core
 
         /// <summary>
         /// Projects the wrist and elbow into screen space using the depth camera's VP matrix,
-        /// expands the bounding box by a perspective-correct margin derived from maxRadialDist,
+        /// expands the bounding box by a perspective-correct margin derived from maxFloodDist,
         /// and clamps to screen bounds. Returns false if either bone is behind the camera or
         /// the resulting crop is smaller than one pixel stride.
         ///
@@ -483,9 +485,9 @@ namespace Surface.Core
         /// </summary>
         private static bool CalculateArmBounds(
             ref Matrix4x4 depthVP,
-            ref Vector3 wristPos, ref Vector3 elbowPos, ref Vector3 camPos,
+            ref Vector3 wristPos, ref Vector3 elbowPos, ref Vector3 palmCap, bool hasPalm, ref Vector3 camPos,
             float fov, int pixelWidth, int pixelHeight,
-            float maxRadialDist,
+            float maxFloodDist,
             out int xMin, out int yMin, out int width, out int height)
         {
             xMin = yMin = width = height = 0;
@@ -511,18 +513,33 @@ namespace Surface.Core
             float midZ = (wristPos.z + elbowPos.z) * 0.5f - camPos.z;
             float armMidDist = Mathf.Sqrt(midX * midX + midY * midY + midZ * midZ);
 
-            // Convert maxRadialDist (world meters) to screen pixels at the arm's depth.
+            // Convert maxFloodDist (world meters) to screen pixels at the arm's depth.
             // focalPx is the pinhole camera focal length in pixels: f = h / (2 * tan(fov/2)).
             // Hardcoding Deg2Rad (0.0174532924f) avoids a Unity constant lookup per call.
             float focalPx       = pixelHeight / (2f * Mathf.Tan(fov * 0.5f * 0.0174532924f));
             // At distance d, a world-space radius r subtends r/d radians, so r/d * f pixels.
-            float dynamicPadding = (maxRadialDist / armMidDist) * focalPx;
+            float dynamicPadding = (maxFloodDist / armMidDist) * focalPx;
 
             // Bounding box of the two projected points, expanded by the padding.
             float minX = wristX < elbowX ? wristX : elbowX;
             float maxX = wristX > elbowX ? wristX : elbowX;
             float minY = wristY < elbowY ? wristY : elbowY;
             float maxY = wristY > elbowY ? wristY : elbowY;
+
+            // Fold in the palm cap so the crop covers the palm (which the seed+flood now reaches).
+            // Skip silently if the cap is untracked or behind the camera — the box stays wrist+elbow.
+            if (hasPalm)
+            {
+                ProjectPoint(ref depthVP, ref palmCap, halfWidth, halfHeight,
+                             out float capX, out float capY, out float capW);
+                if (capW > 0f)
+                {
+                    if (capX < minX) minX = capX;
+                    if (capX > maxX) maxX = capX;
+                    if (capY < minY) minY = capY;
+                    if (capY > maxY) maxY = capY;
+                }
+            }
 
             float fXMin = minX - dynamicPadding;
             float fXMax = maxX + dynamicPadding;

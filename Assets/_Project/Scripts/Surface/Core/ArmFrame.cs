@@ -22,6 +22,7 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         private const int WristBoneIndex = 19;
         private const int ElbowBoneIndex = 11;
+        private const int PalmCapBoneIndex = 30;
 
         // ------------------------------------------------------------------
         // REFERENCES
@@ -63,6 +64,9 @@ namespace Surface.Core
         // Portrait/landscape angle: 0 = arm vertical, -PI/2 = arm horizontal. Applied as a UV rotation.
         public float      Orientation   { get; private set; }
         public Camera     Cam           { get; private set; }
+        // Middle-finger MCP of the arm's own hand — the palm-side cap. Valid only when HasPalm.
+        public Vector3    PalmCapPos    { get; private set; }
+        public bool       HasPalm       { get; private set; }
 
         /// <summary>
         /// Stores references for later use. Camera is resolved lazily on the first TryUpdate call.
@@ -161,6 +165,19 @@ namespace Surface.Core
             float target = (!_lockOrientation && Mathf.Abs(screenX) > Mathf.Abs(screenY)) ? -Mathf.PI * 0.5f : 0f;
             _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
             Orientation = _orientationAngle;
+
+            // 6. PALM CAP (optional) — middle-finger MCP; absent when the hand isn't tracked (forearm-only).
+            HasPalm    = false;
+            PalmCapPos = Vector3.zero;
+            if (bones.Count > PalmCapBoneIndex)
+            {
+                Transform cap = bones[PalmCapBoneIndex].Transform;
+                if (cap != null)
+                {
+                    PalmCapPos = cap.position;
+                    HasPalm    = true;
+                }
+            }
 
             return true;
         }

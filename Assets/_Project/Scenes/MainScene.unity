@@ -783,13 +783,12 @@ MonoBehaviour:
   handMesh: {fileID: 2123695745}
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
-  surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
+  surfaceMaterial: {fileID: 0}
   maskDilateTexels: 0.8
   depthSmoothRadius: 1
   depthSmoothThreshold: 0.01
   seedRadialDist: 0.05
-  maxRadialDist: 0.15
-  minFromWrist: -0.12
+  maxFloodDist: 0.1
   maxFromElbow: 0.02
   connectivityThreshold: 0.01
   edgeSmoothPasses: 3
