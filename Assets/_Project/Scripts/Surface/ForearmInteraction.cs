@@ -2,33 +2,21 @@ using UnityEngine;
 using Surface.Buffer;
 
 /// <summary>
-/// Detects finger contact with the forearm display surface and exposes the result
-/// as a UV coordinate and world point each frame.
+/// Detects finger contact with the forearm display surface and exposes the result as a UV
+/// coordinate and world point each frame. Reads ForearmDepthSurface on the same GameObject for
+/// surface data; owns only the interaction logic.
 ///
-/// TOUCH DETECTION PIPELINE (per fingertip bone, per frame)
-///   1. Physical pre-rejection: project the bone position onto the arm coordinate frame
-///      and check if it falls within the display region's physical extents. Fast, approximate
-///      filter — omits ProjCenter and UV corrections, so it is conservative.
-///   2. Nearest surface cell: scan the reconstructed SurfaceBuffer to find the cell
-///      whose (along, across) arm-frame position is closest to the bone.
-///      O(rows × cols), acceptable at typical grid sizes (~2,000–4,000 cells).
-///   3. Above/below test: compute how far the bone is above or below the nearest surface
-///      cell using AxisUp. The IndexTip joint center sits ~5-10mm above the skin surface
-///      (inside the finger), so `above` will read as a small positive value even during
-///      flat contact. touchHoverHeight should be set to accommodate this offset.
-///   4. UV computation: mirrors MeshGenerator.VertexJob.CalculateUV exactly so the touch
-///      UV addresses the same texture region as the rendered mesh vertices.
-///   5. Best-candidate selection: among qualifying bones, pick the one with the smallest
-///      `above` value — the most deliberate contact or deepest press.
+/// Per fingertip bone, per frame:
+///   1. Pre-reject bones outside the display region's physical extents (fast, conservative).
+///   2. Find the nearest surface cell in arm-frame (along, across) space — O(rows × cols).
+///   3. Above/below test along AxisUp (the IndexTip joint sits ~5-10mm inside the finger, so
+///      `above` reads slightly positive even on flat contact — see touchHoverHeight).
+///   4. Compute the touch UV, mirroring MeshGenerator.CalculateUV so it addresses the same texture.
+///   5. Among qualifying bones, pick the smallest `above` (most deliberate contact).
 ///
-/// WORLD POINT DERIVATION
-/// The returned TouchWorldPoint is pos - AxisUp * above (the bone position projected onto
-/// the surface plane). Hand tracking is stereo-stable; the depth reconstruction is
-/// left-eye-only and carries more noise. Projecting the bone position is more accurate
-/// for render-layer alignment.
-///
-/// Reads ForearmDepthSurface on the same GameObject for surface data. That component
-/// owns all reconstruction; this component owns only the interaction logic.
+/// TouchWorldPoint is the bone projected onto the surface (pos - AxisUp*above), not the surface
+/// cell: hand tracking is stereo-stable while the left-eye depth is noisier, so the projected bone
+/// aligns better with the render layer.
 /// </summary>
 [RequireComponent(typeof(ForearmDepthSurface))]
 public class ForearmInteraction : MonoBehaviour
@@ -37,19 +25,10 @@ public class ForearmInteraction : MonoBehaviour
     // INSPECTOR PARAMETERS
     // ------------------------------------------------------------------
     [Header("Touch")]
-    // How far above the reconstructed surface a finger can hover and still register.
-    // Allows visual feedback (e.g. highlight) before physical contact.
-    // Too large -> accidental activations when the hand is near but not touching.
     [Tooltip("How far above the surface a finger can hover and still register as a touch (m)")]
     [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.02f;
-    // How far the finger can press through the surface before being rejected.
-    // The depth reconstruction represents skin surface; fingertip contact means the
-    // vertex lands at or slightly below it. Too large -> false touches through the arm.
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
-    // Maximum 2D arm-frame distance (along × across) from the bone to the nearest surface
-    // cell. The GPU hand mask removes cells directly under the finger, so the nearest cell
-    // is at the mask boundary (~1-2cm from the bone center). Must exceed the mask radius.
     [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
              "Must exceed the GPU mask radius (~1-2cm) since masked cells are excluded (m)")]
     [Range(0.005f, 0.15f)] public float maxCellSearchDist = 0.04f;
@@ -128,13 +107,10 @@ public class ForearmInteraction : MonoBehaviour
             float along  = Vector3.Dot(toPos, _surface.AxisDir);
             float across = Vector3.Dot(toPos, _surface.AxisRight);
 
-            // FAST PRE-REJECTION using physical arm-frame extents.
-            // Matches the U centering of ComputeMeshUV (ProjCenter applied). U lower bound is
-            // -0.5 (not 0) to cover the full pronation scroll range: at palm-up (scroll=0.5),
-            // the left edge of the visible display sits at u≈-0.25 before the scroll is added,
-            // so a 0f bound would silently reject valid touches on the left side of the palmar
-            // panel. Pronation and orientation rotation are intentionally omitted — they are
-            // UV mapping adjustments, not physical position changes.
+            // FAST PRE-REJECTION in physical arm-frame extents (pronation/orientation omitted — those
+            // are UV adjustments, not physical). The U lower bound is -0.5, not 0, to cover the full
+            // pronation scroll: at palm-up the palmar panel's left edge sits at u≈-0.25 pre-scroll, so
+            // a 0 bound would drop valid touches there.
             float u = ((across - _surface.ProjCenter) / _surface.displayWidth) + 0.25f;
             float v = (along  - displayStart)          / (displayEnd - displayStart);
             if (u < -0.5f || u > 1f || v < 0f || v > 1f) continue;
@@ -147,12 +123,9 @@ public class ForearmInteraction : MonoBehaviour
             float above = Vector3.Dot(pos - surfaceHit, _surface.AxisUp);
             if (above < -touchDepth || above > touchHoverHeight) continue;
 
-            // Project the finger onto the surface plane by removing its AxisUp component.
-            // Used for both UV computation and the reported world point.
-            // AxisUp is orthogonal to both Axis and AxisRight, so this projection does not
-            // affect the along/across values that drive U and V — only the depth component
-            // is removed. Using the finger position rather than surfaceHit gives continuous
-            // sub-cell UV precision instead of snapping to the nearest grid cell (~2-3mm error).
+            // Project the finger onto the surface plane (remove the AxisUp component). AxisUp is
+            // orthogonal to Axis/AxisRight, so along/across (and thus U/V) are unaffected. Using the
+            // finger rather than surfaceHit gives sub-cell UV precision instead of snapping to a cell.
             Vector3 projectedPos = pos - _surface.AxisUp * above;
             Vector2 hitUV        = ComputeMeshUV(projectedPos);
             if (hitUV.x < 0f || hitUV.x > 1f || hitUV.y < 0f || hitUV.y > 1f) continue;
@@ -204,17 +177,13 @@ public class ForearmInteraction : MonoBehaviour
     }
 
     /// <summary>
-    /// Scans all surface cells and returns the world-space hit of the cell whose
-    /// (along, across) arm-frame projection is nearest to the queried position,
-    /// provided that nearest cell is within maxCellSearchDist.
+    /// Returns the world-space hit of the surface cell whose (along, across) arm-frame projection is
+    /// nearest the queried position, if within maxCellSearchDist.
     ///
-    /// The distance cap is the critical correctness constraint: without it, this
-    /// function always succeeds (returning some cell on the arm), and the above/below
-    /// check in the caller only validates the AxisUp component of the displacement.
-    /// When the arm rotates, AxisUp changes direction so a hand vertex that is far
-    /// from the surface in 3D can still have a near-zero AxisUp projection against a
-    /// distant cell and falsely pass as a touch. Capping the 2D search ensures the
-    /// found cell is actually beneath the finger, not just the nearest cell on the arm.
+    /// The distance cap is the critical correctness constraint: without it this always returns some
+    /// cell, and the caller's above/below test only checks the AxisUp component — so a finger far
+    /// from the surface could project near-zero against a distant cell and falsely register. Capping
+    /// the 2D search ensures the found cell is actually beneath the finger.
     /// </summary>
     private bool TryGetNearestSurfaceHit(float along, float across, out Vector3 hit)
     {

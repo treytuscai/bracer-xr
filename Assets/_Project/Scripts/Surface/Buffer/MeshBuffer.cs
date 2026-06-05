@@ -5,27 +5,13 @@ using System;
 namespace Surface.Buffer
 {
     /// <summary>
-    /// Output buffer written by MeshGenerator and consumed by ForearmDepthSurface.UpdateUnityMesh.
-    /// Holds the vertex, UV, index, and auxiliary arrays needed for a single frame's mesh upload.
+    /// Output buffer written by MeshGenerator and consumed by ForearmDepthSurface.UpdateUnityMesh:
+    /// the vertex/UV/normal/index arrays for one frame's mesh upload.
     ///
-    /// SPARSE -> DENSE COMPACTION
-    /// The depth grid has (rows × cols) cells but only a subset are flagged as surface.
-    /// MeshGenerator allocates arrays sized to the grid maximum (worst case: every cell
-    /// is surface) and fills them densely from index 0 using atomic counters. Only
-    /// [0 .. VertexCount) and [0 .. TriangleCount) are valid after generation completes;
-    /// the rest of each array is pre-allocated but unused. ForearmDepthSurface uploads
-    /// only the valid slice via SetVertices/SetIndices with explicit counts.
-    ///
-    /// ATOMIC COUNTER PATTERN
-    /// VertexJob and TriangleJob run in parallel across thousands of cells. Each job
-    /// claims its output slot via Interlocked.Increment/Add on Counter[0] and Counter[1]
-    /// respectively, producing a unique write index without locks. After jobs complete,
-    /// the counts are copied from Counter into VertexCount and TriangleCount so the main
-    /// thread can pass them to Unity's Mesh API without touching the NativeArray again.
-    ///
-    /// WHY PUBLIC FIELDS INSTEAD OF PROPERTIES?
-    /// All arrays are assigned via object initializers inside Burst job structs and written
-    /// to by parallel jobs. Public fields are required for the Burst job struct pattern.
+    /// Arrays are sized to the grid maximum (every cell a surface vertex) and filled densely from 0
+    /// by parallel jobs that claim slots via Interlocked on Counter[0]/[1]. Only [0..VertexCount)
+    /// and [0..TriangleCount) are valid; the upload uses those explicit counts. Fields are public
+    /// because Burst job structs capture them by object initializer.
     /// </summary>
     public class MeshBuffer : IDisposable
     {
@@ -36,20 +22,11 @@ namespace Surface.Buffer
 
         /// <summary> Local-space vertex positions, transformed from world hits by WorldToLocal. </summary>
         public NativeArray<Vector3> Vertices;
-        /// <summary>
-        /// UV0: linear projection coordinates. U = distance along AxisRight from the arm's
-        /// visible center, normalized by displayWidth. V = distance along Axis from wrist,
-        /// normalized by displayHeight. Pronation scroll offset and orientation rotation
-        /// are applied on top. See ArmFrame and MeshGenerator.CalculateUV for full details.
-        /// </summary>
+        /// <summary> UV0 from MeshGenerator.CalculateUV (linear projection along the arm axes). </summary>
         public NativeArray<Vector2> UVs;
-        /// <summary> Local-space per-vertex normals, computed from grid neighbors by NormalsJob
-        /// (parallel, no RecalculateNormals on the main thread). </summary>
+        /// <summary> Local-space per-vertex normals, computed from grid neighbors by NormalsJob. </summary>
         public NativeArray<Vector3> Normals;
-        /// <summary>
-        /// Triangle index buffer (size = (rows-1)*(cols-1)*6 maximum).
-        /// Written atomically by TriangleJob; only [0..TriangleCount) is valid.
-        /// </summary>
+        /// <summary> Triangle index buffer (max (rows-1)*(cols-1)*6); only [0..TriangleCount) valid. </summary>
         public NativeArray<int> Triangles;
 
         // ------------------------------------------------------------------
@@ -57,9 +34,8 @@ namespace Surface.Buffer
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Maps flat grid cell index -> dense vertex array index.
-        /// -1 for cells that are not on the surface and received no vertex.
-        /// TriangleJob reads this to convert grid-space quad corners to vertex indices.
+        /// Flat grid cell index -> dense vertex index, or -1 for non-surface cells. TriangleJob
+        /// reads it to resolve quad corners to vertex indices.
         /// </summary>
         public NativeArray<int> CellToVert;
 
@@ -68,11 +44,8 @@ namespace Surface.Buffer
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Two-element NativeArray used as atomic counters by parallel Burst jobs.
-        /// Counter[0] = running vertex count (incremented by VertexJob via Interlocked).
-        /// Counter[1] = running triangle index count (incremented by TriangleJob).
-        /// Both are reset to 0 at the start of each Generate call, then copied into
-        /// VertexCount and TriangleCount after all jobs complete.
+        /// Atomic slot counters for the parallel jobs: [0] = vertex count (VertexJob), [1] = triangle
+        /// index count (TriangleJob). Reset to 0 each frame, then copied into VertexCount/TriangleCount.
         /// </summary>
         public NativeArray<int> Counter;
 
@@ -107,10 +80,8 @@ namespace Surface.Buffer
         }
 
         /// <summary>
-        /// Disposes all NativeArrays. Each disposal is guarded by IsCreated so this is safe
-        /// to call on a partially or fully unallocated buffer.
-        /// Note: VertexCount and TriangleCount are not reset here; they are overwritten at
-        /// the start of every Generate call so stale values are never acted upon.
+        /// Disposes all NativeArrays (each guarded by IsCreated). VertexCount/TriangleCount are not
+        /// reset — they are overwritten every Generate call.
         /// </summary>
         public void Dispose()
         {

@@ -10,26 +10,22 @@ namespace Surface.Core
     ///   Vertices (Vector4[])     — world-space bone joint positions for each active fingertip,
     ///                              consumed by ForearmInteraction for touch detection.
     ///
-    /// Touch detection uses the bone joint center directly. The joint center sits ~5-10mm
-    /// above the skin surface (inside the finger), so `above` reads as a small positive
-    /// value even when the finger is flat on the arm. Tune touchHoverHeight to accommodate
-    /// this offset — a value of ~0.02m covers both the bone offset and intentional hover.
+    /// Touch detection uses the bone joint center directly. It sits ~5-10mm above the skin (inside
+    /// the finger), so `above` reads slightly positive even when the finger is flat; touchHoverHeight
+    /// (~0.02m) covers this offset plus intentional hover.
     ///
-    /// Add indices to ActiveFingerTips to extend detection to additional fingers.
-    /// SnapshotMesh() is called once per LateUpdate before DepthReadback.TryDispatch() so
-    /// both the GPU silhouette and touch candidates use the same frame's hand pose.
+    /// SnapshotMesh() runs once per LateUpdate before DepthReadback.TryDispatch() so the GPU
+    /// silhouette and the touch candidates share the same frame's hand pose.
     /// </summary>
     public class HandMask : IDisposable
     {
         // ------------------------------------------------------------------
         // OVR HAND SKELETON BONE INDICES (XRHand layout)
-        // Verified against runtime Transform.name via adb logcat 2026-05-30.
-        // Full table kept as reference — add indices to ActiveFingerTips to enable them.
-        // IMPORTANT: these must be declared before ActiveFingerTips so the array
-        // initializer captures the correct values (static fields init in order).
+        // Verified against runtime Transform.name via adb logcat 2026-05-30. Kept as a full
+        // reference table; add indices to ActiveFingerTips to enable them. Must be declared
+        // before ActiveFingerTips (static fields initialize in order).
         // ------------------------------------------------------------------
-        // IDE0051 = IDE "unused private member"; CS0414 = compiler "assigned but never read".
-        // Both fire on the reference-only bone indices; suppress both so the full table can stay.
+        // Suppress IDE0051/CS0414 (unused/assigned-but-never-read) on the reference-only indices.
 #pragma warning disable IDE0051, CS0414
         private static readonly int Palm       = 0;
         private static readonly int Wrist      = 1;

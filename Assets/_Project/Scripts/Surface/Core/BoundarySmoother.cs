@@ -7,15 +7,11 @@ using Surface.Buffer;
 namespace Surface.Core
 {
     /// <summary>
-    /// Smooths the staircase artifact at the forearm mesh edge.
-    ///
-    /// The surface INTERIOR is denoised on the GPU (bilateral depth blur in MetaDepthCopy), so this
-    /// stage only touches the boundary. It is fully parallel/Burst — not a sequential contour
-    /// tracer (which fragmented the dense, noisy edge into short chains and skipped them, leaving
-    /// unsmoothed segments that flickered). Instead: one pass marks boundary cells, then each
-    /// boundary cell is averaged with nearby BOUNDARY cells only. Averaging boundary-with-boundary
-    /// (not interior) smooths the silhouette along the edge without pulling the patch inward (no
-    /// shrink), and every boundary cell is smoothed every frame (no fragmentation, no skips).
+    /// De-steps the forearm mesh edge. The interior is denoised on the GPU (bilateral in
+    /// MetaDepthCopy), so this stage only touches the boundary. Fully parallel/Burst: one pass marks
+    /// boundary cells, then each is averaged with nearby BOUNDARY cells only — smoothing along the
+    /// silhouette without pulling the patch inward, every cell every frame. (A sequential contour
+    /// tracer was rejected: it fragmented the noisy edge into skipped chains that flickered.)
     /// </summary>
     public class BoundarySmoother
     {
@@ -32,11 +28,9 @@ namespace Surface.Core
 
         /// <summary>
         /// Marks boundary cells, then schedules Passes ping-pong smoothing passes and returns the
-        /// final JobHandle (the caller completes it — deferred to the harvest step so the main
-        /// thread never blocks here). Each pass reads buffer.Hits and writes buffer.Smoothed, then
-        /// the references are swapped — safe because each job captured its NativeArray pointers at
-        /// Schedule time, and the swaps happen synchronously here so downstream jobs see the final
-        /// buffer.Hits.
+        /// final handle (the caller completes it at harvest). Each pass reads Hits, writes Smoothed,
+        /// then swaps the references — safe because each job captured its pointers at Schedule time
+        /// and the swaps happen synchronously here, so downstream jobs see the final buffer.Hits.
         /// </summary>
         public JobHandle Schedule(SurfaceBuffer buffer, int rows, int cols, JobHandle dependency)
         {

@@ -10,39 +10,28 @@ using System;
 namespace Surface.Core
 {
     /// <summary>
-    /// Converts the segmented depth hits in SurfaceBuffer into a renderable mesh in MeshBuffer
-    /// via a Burst job chain. Schedule() returns the chain's handle WITHOUT blocking; the caller
-    /// completes it later (frame-pipelined) and calls Finish() to read the results off it.
+    /// Converts the segmented depth hits in SurfaceBuffer into a renderable mesh in MeshBuffer via a
+    /// Burst job chain. Schedule() returns the chain's handle WITHOUT blocking; the caller completes
+    /// it later (frame-pipelined) and calls Finish() to read the results.
     ///
     /// JOB CHAIN
-    ///   1. ComputeProjectedCenterJob — sums each batch's lateral projection along AxisRight.
-    ///   2. FinalizeCenterJob — aggregates the per-batch sums into the mean "projected center"
-    ///      (written to a NativeArray), which keeps the UV window centered on the visible arm
-    ///      patch. In the job graph so VertexJob can depend on it without a mid-pipeline Complete.
-    ///   3. VertexJob — for each surface cell, atomically claims a dense vertex slot and
-    ///      computes the local-space position and UV0 (reading the finalized center).
-    ///   4. TriangleJob — for each 2×2 grid block, emits up to two triangles, each edge-tested
-    ///      independently against MaxQuadEdgeSq so a single far corner drops only its triangle.
+    ///   1+2. ComputeProjectedCenterJob / FinalizeCenterJob — reduce the hits' mean lateral
+    ///        projection along AxisRight ("projected center") that keeps the UV window on the visible
+    ///        patch. Kept in the job graph so VertexJob can depend on it without a mid-pipeline Complete.
+    ///   3.   VertexJob   — per surface cell, atomically claim a dense vertex slot; compute local
+    ///        position and UV0 (see CalculateUV; UV rationale in ArmFrame).
+    ///   4.   TriangleJob — per 2×2 block, emit up to two triangles, each edge-tested against
+    ///        MaxQuadEdgeSq so a single far corner drops only its own triangle. NormalsJob runs alongside.
     ///
-    /// UV DESIGN (see ArmFrame.cs for full rationale)
-    /// U is a linear projection along camera-fixed AxisRight, normalized by DisplayWidth
-    /// and centered on the arm's visible patch. V is a linear projection along Axis
-    /// (wrist->elbow), normalized by DisplayHeight. A pronation scroll offset is added to U
-    /// so wrist rotation reveals new content rather than spinning the image. A 2D rotation
-    /// compensates for portrait vs. landscape arm orientation.
-    ///
-    /// ATOMIC COUNTER PATTERN
-    /// VertexJob and TriangleJob run in parallel across all cells. Each thread claims its
-    /// output slot via Interlocked.Increment/Add on Counter[0]/Counter[1] without locks.
-    /// NativeDisableUnsafePtrRestriction is required to expose the raw pointer to Interlocked.
-    /// NativeDisableParallelForRestriction is required on the output arrays because writes
-    /// are at non-sequential atomic indices, not the job's own linear index.
+    /// ATOMIC COUNTER PATTERN: VertexJob/TriangleJob claim output slots via Interlocked on
+    /// Counter[0]/[1] without locks. This needs NativeDisableUnsafePtrRestriction (raw pointer for
+    /// Interlocked) and NativeDisableParallelForRestriction on the outputs (writes land at atomic
+    /// indices, not the job's own linear index).
     /// </summary>
     public class MeshGenerator : IDisposable
     {
         // ------------------------------------------------------------------
         // CONFIGURATION
-        // Stored pre-squared where applicable to avoid sqrt in the hot path.
         // ------------------------------------------------------------------
         // Squared max world-space edge length. Quads/tris exceeding this are rejected,
         // preventing stretched faces across depth discontinuities (e.g. arm to table).
@@ -104,12 +93,8 @@ namespace Surface.Core
 
             int totalCells = rows * cols;
 
-            // ------------------------------------------------------------------
-            // PASS 1: Projected center reduction
-            // Uses IJobParallelForBatch so each thread sums a local chunk of cells
-            // and writes exactly one (sum, count) pair — no per-element atomics needed.
-            // FinalizeCenterJob aggregates the pairs in the job graph (no main-thread Complete).
-            // ------------------------------------------------------------------
+            // PASS 1: Projected center reduction. IJobParallelForBatch — each thread sums a chunk and
+            // writes one (sum, count) pair (no per-element atomics); FinalizeCenterJob aggregates in-graph.
             int batchSize  = 64;
             int numBatches = (totalCells + batchSize - 1) / batchSize;
 
@@ -130,8 +115,6 @@ namespace Surface.Core
             };
             JobHandle handle = centerJob.ScheduleBatch(totalCells, batchSize, dependency);
 
-            // Aggregate the per-batch (sum, count) into the final center IN THE JOB GRAPH, so
-            // VertexJob can depend on it without a main-thread Complete() mid-pipeline.
             var finalizeJob = new FinalizeCenterJob
             {
                 Sums       = _partialSums,
@@ -161,13 +144,8 @@ namespace Surface.Core
             };
             handle = vertJob.Schedule(totalCells, 64, handle);
 
-            // ------------------------------------------------------------------
-            // PASS 3: Triangle generation
-            // Each job element is one 2×2 grid block, emitting up to two triangles. Every candidate
-            // triangle is tested independently against MaxQuadEdgeSq, so a single far corner drops
-            // only its triangle (the rest still fill) rather than discarding the whole block — while
-            // still rejecting any triangle that would span a real depth discontinuity.
-            // ------------------------------------------------------------------
+            // PASS 3: Triangle generation — one 2×2 block per element, each candidate triangle
+            // edge-tested against MaxQuadEdgeSq (a far corner drops only its own triangle).
             var triJob = new TriangleJob
             {
                 Hits = surfBuf.Hits, CellToVert = meshBuf.CellToVert,
@@ -176,11 +154,8 @@ namespace Surface.Core
             };
             JobHandle triHandle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
 
-            // ------------------------------------------------------------------
-            // PASS 4: Per-vertex normals from grid neighbors (parallel). Independent of triangles
-            // (both only depend on VertexJob's CellToVert + dense slots), so it runs alongside
-            // PASS 3 — replacing the main-thread Mesh.RecalculateNormals().
-            // ------------------------------------------------------------------
+            // PASS 4: Per-vertex normals from grid neighbors (parallel). Independent of triangles, so
+            // it runs alongside PASS 3 — replaces the main-thread Mesh.RecalculateNormals().
             var normalsJob = new NormalsJob
             {
                 Hits         = surfBuf.Hits,
@@ -332,28 +307,14 @@ namespace Surface.Core
             }
 
             /// <summary>
-            /// Computes UV0 for a surface hit using linear projection onto the arm axes.
-            ///
-            /// TWO-PANEL LAYOUT: U=[0,0.5] = dorsal (palm-down) panel, U=[0.5,1] = palmar panel.
-            /// Set DisplayWidth = DisplayHeight in the Inspector for undistorted (square-pixel)
-            /// rendering — both express the physical size of the visible display window in meters.
-            ///
-            /// V — along arm axis (Axis, wrist->elbow):
-            ///   Dot(fromWrist, Axis) gives physical distance along the arm. Divided by
-            ///   Height and centered, then flipped (1f -) so V=0 is the elbow-side and V=1
-            ///   is the wrist-side of the display window.
-            ///
-            /// U — across arm axis (AxisRight, camera-fixed):
-            ///   Dot(fromWrist, AxisRight) gives lateral distance from the arm center.
-            ///   Divided by Width and offset to 0.25 (dorsal panel center). A 180° wrist
-            ///   rotation adds Pronation/(2*PI) = 0.5, shifting the center to 0.75 (palmar
-            ///   panel). The camera-fixed AxisRight keeps the viewport upright; wrist rotation
-            ///   scrolls content rather than spinning the UV frame.
-            ///
-            /// Orientation rotation — a 2D rotation of the UV pair around (0.5, 0.5):
-            ///   Portrait  (Orientation ≈ 0):    no change.
-            ///   Landscape (Orientation ≈ -PI/2): U and V swap so the display reads
-            ///   left-to-right across the horizontally-held arm.
+            /// Computes UV0 for a surface hit by linear projection onto the arm axes. Two-panel
+            /// layout: U=[0,0.5] is the dorsal panel, U=[0.5,1] the palmar panel (set
+            /// DisplayWidth = DisplayHeight for square pixels).
+            ///   V: Dot(fromWrist, Axis) / Height, centered and flipped so V=0 is elbow-side, V=1 wrist-side.
+            ///   U: Dot(fromWrist, AxisRight) / Width, offset to the dorsal panel center (0.25); a 180°
+            ///      pronation adds 0.5 to scroll to the palmar panel (0.75) — content scrolls, the frame
+            ///      doesn't spin (AxisRight is camera-fixed).
+            ///   Then a 2D rotation by Orientation around (0.5, 0.5): no-op in portrait, swaps U/V in landscape.
             /// </summary>
             private Vector2 CalculateUV(Vector3 pt)
             {
@@ -367,7 +328,7 @@ namespace Surface.Core
 
                 u += PronationScroll;
 
-                // Rotate UV around the center point (0.5, 0.5).
+                // Rotate UV around (0.5, 0.5).
                 float cu = u - 0.5f, cv = v - 0.5f;
                 return new Vector2(cu * CosOrientation - cv * SinOrientation + 0.5f,
                                    cu * SinOrientation + cv * CosOrientation + 0.5f);
@@ -413,12 +374,9 @@ namespace Surface.Core
 
                 if (vCount == 4)
                 {
-                    // All 4 corners present: split into two CCW triangles and test each
-                    // independently. A single far corner (e.g. the grazing corner at a step edge)
-                    // then drops only its own triangle, so the near triangle still bridges the gap
-                    // instead of the whole quad being rejected. The per-triangle edge check still
-                    // rejects a face spanning a real depth discontinuity, so this won't bridge
-                    // arm->background — it's strictly less aggressive than the old all-or-nothing quad.
+                    // All 4 corners: two CCW triangles, each edge-tested independently so a single far
+                    // corner drops only its own triangle (the near one still fills) without bridging
+                    // a real discontinuity — strictly less aggressive than an all-or-nothing quad.
                     if (CheckTri(Hits[idxTL], Hits[idxBL], Hits[idxTR])) WriteTri(tl, bl, tr);
                     if (CheckTri(Hits[idxTR], Hits[idxBL], Hits[idxBR])) WriteTri(tr, bl, br);
                 }

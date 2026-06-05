@@ -7,49 +7,28 @@ using Surface.Buffer;
 namespace Surface.Core
 {
     /// <summary>
-    /// Isolates the forearm patch from the raw depth grid using a two-stage
-    /// Seed + Flood algorithm. Owns no memory; reads and writes SurfaceBuffer.
+    /// Isolates the forearm patch from the raw depth grid with a two-stage Seed + Flood. Owns no
+    /// memory; reads and writes SurfaceBuffer.
     ///
-    /// WHY TWO STAGES?
-    /// A single parallel cylinder test would include every depth cell that falls
-    /// inside the arm-shaped volume — but depth noise can place background cells
-    /// inside the cylinder, and surface cells near the arm's edge may not form a
-    /// contiguous patch. The two-stage design solves both:
-    ///
-    ///   Seed (parallel): tests every cell against the cylinder simultaneously.
-    ///   Cells inside are "definitely forearm" and are enqueued as flood seeds.
-    ///
-    ///   Flood (sequential BFS): grows outward from seeds to 8-connected neighbors
-    ///   that are (a) depth-continuous (≤ ConnectivityThreshold apart in 3D) AND
-    ///   (b) still inside the cylinder. The connectivity gate rejects isolated noise
-    ///   cells that happen to land in the arm volume; the cylinder gate prevents the
-    ///   flood from reaching background geometry that is depth-adjacent to the arm.
-    ///
-    /// CYLINDER GEOMETRY
-    /// Two radii define the arm cylinder along the wrist->elbow axis:
-    ///   SeedRadialDist:  tight inner cylinder. Only cells within this radius are
-    ///                    enqueued as seeds — they must be confidently forearm.
-    ///   FloodRadialDist: wider outer wall. The BFS may expand up to this radius,
-    ///                    capturing the full arm curvature without risking runaway
-    ///                    growth into background geometry at the arm's edge.
-    ///   Axial:           cell must be ≥ MinFromWrist past the wrist (negative = hand
-    ///                    side) and ≤ MaxFromElbow past the elbow (positive = upper arm).
-    ///                    MinFromWrist is negative so the cylinder extends slightly toward
-    ///                    the hand to compensate for the wrist bone's position offset.
+    /// WHY TWO STAGES: a single parallel cylinder test would admit background cells that depth noise
+    /// places inside the arm volume, and wouldn't guarantee a contiguous patch. Instead, Seed
+    /// (parallel) marks cells confidently inside a tight inner cylinder (SeedRadialDist) as flood
+    /// seeds; Flood (sequential BFS) grows from them to 8-connected neighbors that are both
+    /// depth-continuous (≤ ConnectivityThreshold in 3D) and still inside a wider outer cylinder
+    /// (FloodRadialDist) — the connectivity gate drops isolated noise, the cylinder gate stops the
+    /// flood reaching adjacent background.
     /// </summary>
     public class SurfaceExtractor
     {
         // ------------------------------------------------------------------
         // CONFIGURATION
-        // Public so they can be tuned at runtime via Inspector or test code.
-        // Values are squared on each Schedule call so runtime changes take effect
-        // without requiring reconstruction.
         // ------------------------------------------------------------------
         /// <summary> Max radial distance for seed cells — tight inner cylinder that must be confident forearm (meters). </summary>
         public float SeedRadialDist;
         /// <summary> Max radial distance for flood cells — wider wall that stops runaway growth (meters). </summary>
         public float FloodRadialDist;
-        /// <summary> Min signed distance along the axis from the wrist (negative = hand side, meters). </summary>
+        /// <summary> Min signed axial distance from the wrist (negative = hand side; negative value
+        /// extends the cylinder toward the hand to offset the wrist bone's position). </summary>
         public float MinFromWrist;
         /// <summary> Max signed distance along the axis past the elbow (meters). </summary>
         public float MaxFromElbow;
@@ -161,20 +140,14 @@ namespace Surface.Core
 
                 Vector3 p = Hits[index];
 
-                // AXIAL CHECK 1 — signed distance along the arm axis from the wrist.
-                // Dot(p - WristPos, Axis): positive = toward elbow, negative = toward hand.
-                // MinFromWrist is negative, so this accepts cells slightly behind the wrist.
+                // AXIAL CHECK — signed distance along the axis: Dot(p - bone, Axis), positive toward
+                // elbow. Accept [MinFromWrist (negative, hand side) .. MaxFromElbow past the elbow].
                 float fromWrist = Vector3.Dot(p - WristPos, Axis);
                 if (fromWrist < MinFromWrist) return;
-
-                // AXIAL CHECK 2 — signed distance along the arm axis past the elbow.
-                // Dot(p - ElbowPos, Axis): positive = past the elbow toward upper arm.
                 float fromElbow = Vector3.Dot(p - ElbowPos, Axis);
                 if (fromElbow > MaxFromElbow) return;
 
-                // RADIAL CHECK — perpendicular distance from the arm axis.
-                // |Cross(v, Axis)| = |v| * sin(θ) = perpendicular distance to the axis line.
-                // (Axis is a unit vector so |Cross(v, Axis)| reduces to the perpendicular component.)
+                // RADIAL CHECK — |Cross(v, Axis)| is the perpendicular distance to the axis (Axis is unit).
                 float radialSq = Vector3.Cross(p - ElbowPos, Axis).sqrMagnitude;
                 if (radialSq > MaxRSq) return;
 
@@ -241,14 +214,12 @@ namespace Surface.Core
 
                         Vector3 neighborHit = Hits[nIdx];
 
-                        // CONNECTIVITY GATE — reject if the neighbor is too far in 3D.
-                        // This prevents the flood from bridging depth discontinuities
-                        // (e.g. the arm transitioning to a nearby table surface).
+                        // CONNECTIVITY GATE — reject neighbors too far in 3D, so the flood can't bridge
+                        // a depth discontinuity (e.g. arm -> nearby table).
                         if ((neighborHit - currentHit).sqrMagnitude > ConnSq) continue;
 
-                        // CYLINDER RE-CHECK — the flood still enforces all three geometry
-                        // constraints so it cannot grow outside the arm volume even when
-                        // depth-connected to background geometry at the arm's edge.
+                        // CYLINDER RE-CHECK — re-apply the geometry gates so the flood can't grow
+                        // outside the arm volume even when depth-connected to background at the edge.
                         float radialSq = Vector3.Cross(neighborHit - ElbowPos, Axis).sqrMagnitude;
                         if (radialSq > MaxRSq) continue;
 
