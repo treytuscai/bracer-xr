@@ -319,20 +319,22 @@ MonoBehaviour:
   handSkeleton: {fileID: 113860855}
   centerEyeAnchor: {fileID: 188644609}
   surfaceMaterial: {fileID: 2100000, guid: d1213e4f5a6b7c8d9e0f1a2b3c4d5e6f, type: 2}
-  maskDilateTexels: 1
-  pixelStride: 6
+  maskDilateTexels: 0.8
+  depthSmoothRadius: 1
+  depthSmoothThreshold: 0.01
+  edgeDiscontinuityThreshold: 0.05
   seedRadialDist: 0.05
   maxRadialDist: 0.15
   minFromWrist: -0.12
   maxFromElbow: 0.02
   connectivityThreshold: 0.01
-  smoothPasses: 3
-  edgeSmoothPasses: 2
-  edgeWindowRadius: 3
-  maxQuadEdge: 0.014
+  edgeSmoothPasses: 3
+  edgeWindowRadius: 2
+  maxQuadEdge: 0.02
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
+  lockOrientation: 0
 --- !u!23 &66024356
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -1198,9 +1200,10 @@ MonoBehaviour:
       m_Calls: []
   rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.02
-  wheelPixels: 256
   panelWorldWidthMeters: 0.18
-  startValue: 1
+  startHue: 0
+  startSaturation: 1
+  startLightness: 0.5
   startOpacity: 1
 --- !u!1 &338176640
 GameObject:
@@ -1238,9 +1241,10 @@ MonoBehaviour:
       m_Calls: []
   rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.02
-  wheelPixels: 256
   panelWorldWidthMeters: 0.18
-  startValue: 1
+  startHue: 0
+  startSaturation: 1
+  startLightness: 0.5
   startOpacity: 1
 --- !u!4 &338176645
 Transform:

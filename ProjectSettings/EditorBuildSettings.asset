@@ -5,10 +5,10 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/_Project/Scenes/MainScene.unity
     guid: 249bb9ff86a184aa2a28b45df94af9be
-  - enabled: 0
+  - enabled: 1
     path: Assets/_Project/Scenes/experimentSelectScene.unity
     guid: 474ca4ee639f18e459566814f647543a
   - enabled: 0
@@ -26,6 +26,9 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/_Project/Scenes/SizeAndScale.unity
     guid: f88cadec4a5422749a9c89e4b233e576
+  - enabled: 1
+    path: Assets/_Project/Scenes/OrientationDegree.unity
+    guid: 1d61f7604fa6d4c46b631441c8b21cc6
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: aa8655defb79a45d2be9c4c46366fe0b,
       type: 2}
