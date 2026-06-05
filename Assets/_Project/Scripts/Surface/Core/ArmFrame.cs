@@ -156,13 +156,12 @@ namespace Surface.Core
             }
             Pronation = Mathf.Clamp(_smoothedPronation, 0f, Mathf.PI);
 
-            // 5. SCREEN ORIENTATION SNAPPING — project the arm axis onto the camera's screen axes;
-            // |Dot(axis, cam.right)| > |Dot(axis, cam.up)| means the arm looks horizontal (landscape).
-            float screenX = Vector3.Dot(axis, _cam.transform.right);
-            float screenY = Vector3.Dot(axis, _cam.transform.up);
+            // 5. ORIENTATION SNAPPING — gravity-anchored, not camera-relative, so head turns don't flip
+            // the display. |Dot(axis, up)| is sin(arm pitch); < sin(45°) ≈ 0.707 means horizontal (landscape).
+            float uprightness = Mathf.Abs(Vector3.Dot(axis, Vector3.up));
             // Landscape -> rotate the UV frame -PI/2 so content reads left-to-right; portrait -> 0.
             // lockOrientation forces portrait. Lerp (not LerpAngle): range [0,-PI/2], no wraparound.
-            float target = (!_lockOrientation && Mathf.Abs(screenX) > Mathf.Abs(screenY)) ? -Mathf.PI * 0.5f : 0f;
+            float target = (!_lockOrientation && uprightness < 0.707f) ? -Mathf.PI * 0.5f : 0f;
             _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
             Orientation = _orientationAngle;
 
