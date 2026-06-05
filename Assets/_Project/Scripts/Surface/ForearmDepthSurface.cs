@@ -12,8 +12,9 @@ using Surface.Core;
 /// Pipeline (runs every LateUpdate, asynchronously via AsyncGPUReadback + Burst):
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up) and smooth pronation/orientation.
-///   2. DepthReadback: Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh),
-///                     blit through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
+///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
+///                     render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh), blit
+///                     through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
 ///                     GPU-readback the forearm crop, and unproject each sampled pixel into a
 ///                     flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)
@@ -23,12 +24,11 @@ using Surface.Core;
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
-///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
+///                     (maxFloodDist) to grow the full forearm patch (IsSurface flags).
 ///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
-///                     MetaDepthCopy), which also drops mixed/flying pixels on the silhouette
-///                     (edgeDiscontinuityThreshold) so the boundary is built from reliable
-///                     cells; a parallel boundary smoother then de-steps the mesh edge by
-///                     averaging each boundary cell with its boundary neighbors.
+///                     MetaDepthCopy); the boundary flicker is already removed upstream by the
+///                     temporal median (step 2). A parallel boundary smoother then de-steps the
+///                     mesh edge by averaging each boundary cell with its boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
@@ -38,10 +38,7 @@ using Surface.Core;
 public class ForearmDepthSurface : MonoBehaviour
 {
     // ------------------------------------------------------------------
-    // INSPECTOR REFERENCES
-    // All four must be assigned before play. bodySkeleton drives the arm
-    // coordinate frame; handMesh drives masking and occlusion fade;
-    // centerEyeAnchor provides the camera used for projection math.
+    // INSPECTOR PARAMETERS
     // ------------------------------------------------------------------
     [Header("References")]
     [Tooltip("Body skeleton providing wrist and elbow bone transforms")]
@@ -56,10 +53,8 @@ public class ForearmDepthSurface : MonoBehaviour
     public Material surfaceMaterial;
 
     // ------------------------------------------------------------------
-    // HAND MASKING
-    // The hand mesh is rendered as a GPU silhouette before each depth blit.
-    // Hand depth pixels are rejected at the shader level (HasDepth=false),
-    // excluding them from surface reconstruction and touch detection.
+    // HAND MASKING — the hand is rendered as a GPU silhouette before each blit; masked depth
+    // pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
     [Tooltip("Mask dilation radius in mask texels, applied at sample time (3x3 max). Grows the " +
@@ -67,15 +62,11 @@ public class ForearmDepthSurface : MonoBehaviour
     [Range(0f, 4f)] public float maskDilateTexels = 0.8f;
 
     // ------------------------------------------------------------------
-    // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
-    // Edge-aware blur of the raw depth before unprojection: denoises the surface
-    // interior without crossing the arm/background depth discontinuity.
-    //
-    // edgeDiscontinuityThreshold is a SEPARATE, complementary control that lives in the
-    // same shader pass: the bilateral is edge-PRESERVING (it refuses to smooth across the
-    // silhouette), so the boundary texels keep their raw noisy depth — stereo "flying
-    // pixels" that straddle arm and background and flicker frame to frame. The reject drops
-    // those texels at the source so the boundary is built from reliable interior cells.
+    // DEPTH SMOOTHING
+    // Edge-aware blur of the depth before unprojection: denoises the surface interior
+    // without crossing the arm/background depth discontinuity. The boundary flicker is
+    // handled separately and upstream by the mandatory temporal median (DepthTemporalMedian),
+    // so this stage only smooths the interior.
     // ------------------------------------------------------------------
     [Header("Depth Smoothing")]
     [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
@@ -83,39 +74,26 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Max depth difference in METRES for a neighbor to be averaged in (~0.01 = 1 cm). " +
              "Lower preserves detail/edges; higher is smoother but risks bridging arm to background.")]
     [Range(0, 0.2f)] public float depthSmoothThreshold = 0.01f;
-    [Tooltip("Drop silhouette texels whose neighborhood crosses a depth step larger than this (m). " +
-             "Removes the mixed/flying pixels at the arm edge so the boundary is built from reliable " +
-             "interior cells (kills the every-few-frames staircase/sliver flicker). 0 = disabled.")]
-    [Range(0f, 0.2f)] public float edgeDiscontinuityThreshold = 0.05f;
 
     // ------------------------------------------------------------------
-    // SEED + FLOOD
-    // seedRadialDist defines the tight inner cylinder: only cells very close
-    // to the wrist->elbow axis are trusted as definite forearm and used as
-    // BFS starting points. floodRadialDist is the looser outer wall that lets
-    // the flood grow to capture the full arm curvature while still preventing
-    // runaway expansion into background geometry. The depth crop uses
-    // floodRadialDist as its padding so the readback region covers the full
-    // area the flood can reach. connectivityThreshold gates each BFS step.
+    // SEED + FLOOD - The depth crop pads by maxFloodDist so the readback
+    // region covers the full area the flood can reach.
     // ------------------------------------------------------------------
     [Header("Seed + Flood")]
+    [Tooltip("Include the palm (wrist -> middle-finger MCP) in the reconstruction. Off = forearm only.")]
+    public bool enablePalm = true;
     [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
     [Range(0.02f, 0.1f)] public float seedRadialDist = 0.05f;
     [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
-    [Range(0.02f, 0.2f)] public float maxRadialDist = 0.1f;
-    [Tooltip("How far before the wrist (negative, along axis) seed cells are allowed (m)")]
-    [Range(-0.15f, 0f)] public float minFromWrist = -0.12f;
-    [Tooltip("How far past the elbow (along axis) seed cells are allowed (m)")]
+    [Range(0.02f, 0.2f)] public float maxFloodDist = 0.1f;
+    [Tooltip("How far past the elbow the forearm cylinder extends (m). The wrist-side cap is flat " +
+             "(at the wrist); the palm cylinder takes over from there.")]
     [Range(0f, 0.15f)] public float maxFromElbow = 0.02f;
     [Tooltip("Max 3D flood step between adjacent grid hits to count as connected (m).")]
     [Range(0.005f, 0.05f)] public float connectivityThreshold = 0.01f;
 
     // ------------------------------------------------------------------
-    // BOUNDARY SMOOTHING
-    // The interior is denoised on the GPU (bilateral depth blur in MetaDepthCopy).
-    // These tune the parallel boundary smoother that de-steps the mesh edge:
-    // each boundary cell is averaged with nearby boundary cells, edgeSmoothPasses
-    // times, over a (2*edgeWindowRadius+1) neighborhood per pass.
+    // BOUNDARY SMOOTHING — de-steps the mesh edge.
     // ------------------------------------------------------------------
     [Header("Boundary Smoothing")]
     [Tooltip("Boundary smoothing passes. 0 = no edge smoothing. Prefer more passes over a large radius.")]
@@ -125,40 +103,30 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // ------------------------------------------------------------------
     // MESH
-    // maxQuadEdge rejects quads or tris whose longest edge exceeds this
-    // threshold, preventing stretched faces across depth gaps (e.g. arm
-    // to table). Must be >= connectivityThreshold because flood-connected
-    // cells can be farther apart in 3D when the surface is curved (a quad
-    // diagonal can reach ~sqrt(2)*connectivityThreshold).
     // ------------------------------------------------------------------
     [Header("Mesh")]
-    [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
-             "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.02f;
+    [Tooltip("Triangle discontinuity cut: drop a face whose two cells differ in true depth by more " +
+             "than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts " +
+             "self-occluded folds (no webbing). Lower = stricter. ~0.15 is a good start.")]
+    [Range(0.03f, 0.5f)] public float depthStepRatio = 0.15f;
 
     // ------------------------------------------------------------------
-    // DISPLAY
-    // These define the UV projection window on the arm surface.
-    // displayWidth/Height are the physical dimensions of the display region.
-    // displayOffset shifts the window center along the arm axis from the wrist.
+    // DISPLAY — the physical UV projection window on the arm surface.
     // ------------------------------------------------------------------
     [Header("Display")]
     [Tooltip("Physical height of the display region along the arm (m). Primary value — set this first.")]
     public float displayHeight = 0.4f;
     [Tooltip("Physical width of one display panel (m). Set equal to displayHeight for square (undistorted) pixels.")]
     public float displayWidth = 0.4f;
-    [Tooltip("Center of the display window along the arm axis from the wrist (m). Formula: minFromWrist + displayHeight * 0.5")]
+    [Tooltip("Center of the display window along the arm axis from the wrist (m).")]
     public float displayOffset = 0.08f;
     [Tooltip("Prevent the portrait to landscape rotation flip: keep the display upright (portrait) " +
-             "regardless of arm orientation. Runtime-toggleable.")]
+             "regardless of arm orientation.")]
     public bool lockOrientation = false;
 
     // ------------------------------------------------------------------
-    // PIPELINE DATA BUSES
-    // Shared NativeArrays that flow between all pipeline stages each frame.
-    // SurfaceBuffer carries per-cell flags (HasDepth, IsSurface) and the
-    // world-space hit grid (Hits). MeshBuffer carries the final vertex, UV,
-    // and index arrays for GPU upload.
+    // PIPELINE DATA BUSES — shared NativeArrays flowing between stages each frame (SurfaceBuffer =
+    // per-cell flags + world hit grid; MeshBuffer = vertex/UV/index arrays for upload).
     // ------------------------------------------------------------------
     private SurfaceBuffer _surfaceBuffer = new SurfaceBuffer();
     private MeshBuffer _meshBuffer = new MeshBuffer();
@@ -216,12 +184,12 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void Awake()
     {
-        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation, enablePalm);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold, edgeDiscontinuityThreshold);
-        _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
+        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
+        _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
-        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
+        _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
     }
 
     /// <summary>
@@ -305,7 +273,7 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _handMask.SnapshotMesh();
             _isProcessingMesh = _depthReadback.TryDispatch(
-                _armFrame, maxRadialDist,
+                _armFrame, maxFloodDist,
                 _surfaceBuffer, OnDepthReady
             );
         }
@@ -364,6 +332,7 @@ public class ForearmDepthSurface : MonoBehaviour
         JobHandle h = _surfaceExtractor.Schedule(
             _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,
+            _armFrame.PalmCapPos, _armFrame.HasPalm,
             default);
         h = _boundarySmoother.Schedule(_surfaceBuffer, _rows, _cols, h);
         h = _meshGenerator.Schedule(
