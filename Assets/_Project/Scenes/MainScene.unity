@@ -787,6 +787,7 @@ MonoBehaviour:
   maskDilateTexels: 0.8
   depthSmoothRadius: 1
   depthSmoothThreshold: 0.01
+  enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1
   maxFromElbow: 0.02

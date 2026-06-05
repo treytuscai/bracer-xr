@@ -92,6 +92,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `maskDilateTexels` | 0.8 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
 | `depthSmoothRadius` | 1 | Edge-aware depth blur radius (depth texels; 0 = off, 1 = 3×3) |
 | `depthSmoothThreshold` | 0.01 m | Max linear depth difference for a neighbor to be averaged in (keeps the blur from crossing the arm/background edge) |
+| `enablePalm` | true | Include the palm (wrist -> middle-finger MCP) in the reconstruction; off = forearm only |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
 | `maxFloodDist` | 0.1 m | Outer wall that caps BFS flood growth away from the arm |
 | `maxFromElbow` | 0.02 m | How far past the elbow the forearm cylinder extends (the wrist-side cap is flat; the palm cylinder takes over) |

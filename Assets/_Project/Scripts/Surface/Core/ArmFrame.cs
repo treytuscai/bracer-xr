@@ -38,7 +38,9 @@ namespace Surface.Core
         // CONFIGURATION
         // ------------------------------------------------------------------
         /// <summary> When true, forces Orientation toward 0 (portrait) so the display never flips. </summary>
-        public bool _lockOrientation;
+        public bool LockOrientation;
+        // When false, HasPalm stays false and the surface is forearm-only.
+        public bool EnablePalm;
 
         // ------------------------------------------------------------------
         // TEMPORAL SMOOTHING STATE (survives across frames, damps bone-tracking jitter)
@@ -71,11 +73,12 @@ namespace Surface.Core
         /// <summary>
         /// Stores references for later use. Camera is resolved lazily on the first TryUpdate call.
         /// </summary>
-        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, bool lockOrientation)
+        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, bool lockOrientation, bool enablePalm)
         {
             _bodySkeleton    = bodySkeleton;
             _centerEyeAnchor = centerEyeAnchor;
-            _lockOrientation = lockOrientation;
+            LockOrientation = lockOrientation;
+            EnablePalm = enablePalm;
         }
 
         /// <summary>
@@ -161,14 +164,14 @@ namespace Surface.Core
             float uprightness = Mathf.Abs(Vector3.Dot(axis, Vector3.up));
             // Landscape -> rotate the UV frame -PI/2 so content reads left-to-right; portrait -> 0.
             // lockOrientation forces portrait. Lerp (not LerpAngle): range [0,-PI/2], no wraparound.
-            float target = (!_lockOrientation && uprightness < 0.707f) ? -Mathf.PI * 0.5f : 0f;
+            float target = (!LockOrientation && uprightness < 0.707f) ? -Mathf.PI * 0.5f : 0f;
             _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
             Orientation = _orientationAngle;
 
             // 6. PALM CAP (optional) — middle-finger MCP; absent when the hand isn't tracked (forearm-only).
             HasPalm    = false;
             PalmCapPos = Vector3.zero;
-            if (bones.Count > PalmCapBoneIndex)
+            if (EnablePalm && bones.Count > PalmCapBoneIndex)
             {
                 Transform cap = bones[PalmCapBoneIndex].Transform;
                 if (cap != null)

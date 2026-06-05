@@ -80,6 +80,8 @@ public class ForearmDepthSurface : MonoBehaviour
     // region covers the full area the flood can reach.
     // ------------------------------------------------------------------
     [Header("Seed + Flood")]
+    [Tooltip("Include the palm (wrist -> middle-finger MCP) in the reconstruction. Off = forearm only.")]
+    public bool enablePalm = true;
     [Tooltip("Max radial distance from the arm axis for seed cells — tight inner cylinder of confident forearm hits (m)")]
     [Range(0.02f, 0.1f)] public float seedRadialDist = 0.05f;
     [Tooltip("Max radial distance from the arm axis for flood cells — outer wall that caps BFS growth (m)")]
@@ -182,7 +184,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void Awake()
     {
-        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation, enablePalm);
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
