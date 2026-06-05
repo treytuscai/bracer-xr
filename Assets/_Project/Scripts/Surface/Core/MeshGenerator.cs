@@ -20,8 +20,8 @@ namespace Surface.Core
     ///        patch. Kept in the job graph so VertexJob can depend on it without a mid-pipeline Complete.
     ///   3.   VertexJob   — per surface cell, atomically claim a dense vertex slot; compute local
     ///        position and UV0 (see CalculateUV; UV rationale in ArmFrame).
-    ///   4.   TriangleJob — per 2×2 block, emit up to two triangles, each edge-tested against
-    ///        MaxQuadEdgeSq so a single far corner drops only its own triangle. NormalsJob runs alongside.
+    ///   4.   TriangleJob — per 2×2 block, emit up to two triangles, dropping any whose edge spans a
+    ///        true-depth step (StepRatio) so folds don't web. NormalsJob runs alongside.
     ///
     /// ATOMIC COUNTER PATTERN: VertexJob/TriangleJob claim output slots via Interlocked on
     /// Counter[0]/[1] without locks. This needs NativeDisableUnsafePtrRestriction (raw pointer for
@@ -33,9 +33,11 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // CONFIGURATION
         // ------------------------------------------------------------------
-        // Squared max world-space edge length. Quads/tris exceeding this are rejected,
-        // preventing stretched faces across depth discontinuities (e.g. arm to table).
-        public float MaxQuadEdgeSq;
+        // Relative-depth cut: drop a triangle edge whose endpoints differ in true (linear) depth by
+        // more than this fraction. Grazing-tolerant but cuts self-occluded folds so continuous-but-steep
+        // surface fills (no holes) while folds don't web. This is the only triangle-emission gate;
+        // the flood already approved the cells.
+        public float StepRatio;
         // Shifts the UV display window along the arm axis from the wrist (meters).
         public float DisplayOffset;
         // Physical width of the display region on the arm; normalizes the U axis (meters).
@@ -53,17 +55,14 @@ namespace Surface.Core
         // mid-pipeline. Persistent (size 1).
         private NativeArray<float> _projCenter;
 
-        /// <summary>
-        /// Stores configuration. maxQuadEdge is squared immediately so edge checks
-        /// in TriangleJob can use sqrMagnitude without a sqrt.
-        /// </summary>
+        /// <summary> Stores configuration. </summary>
         public MeshGenerator(
-            float maxQuadEdge,
+            float stepRatio,
             float displayOffset,
             float displayWidth,
             float displayHeight)
         {
-            MaxQuadEdgeSq = maxQuadEdge * maxQuadEdge;
+            StepRatio     = stepRatio;
             DisplayOffset = displayOffset;
             DisplayWidth  = displayWidth;
             DisplayHeight = displayHeight;
@@ -144,12 +143,12 @@ namespace Surface.Core
             };
             handle = vertJob.Schedule(totalCells, 64, handle);
 
-            // PASS 3: Triangle generation — one 2×2 block per element, each candidate triangle
-            // edge-tested against MaxQuadEdgeSq (a far corner drops only its own triangle).
+            // PASS 3: Triangle generation — one 2×2 block per element, dropping any triangle whose
+            // edge spans a true-depth step (a single step corner drops only its own triangle).
             var triJob = new TriangleJob
             {
-                Hits = surfBuf.Hits, CellToVert = meshBuf.CellToVert,
-                Cols = cols, MaxSq = MaxQuadEdgeSq,
+                Depth = surfBuf.Depth, CellToVert = meshBuf.CellToVert,
+                Cols = cols, StepRatio = StepRatio,
                 OutTris = meshBuf.Triangles, Counter = meshBuf.Counter
             };
             JobHandle triHandle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
@@ -337,16 +336,16 @@ namespace Surface.Core
 
         /// <summary>
         /// Tessellates 2×2 grid blocks into quads or triangles with counter-clockwise winding.
-        /// Uses CellToVert to skip non-surface corners and rejects faces whose world-space
-        /// edges exceed MaxSq to prevent bridging across depth discontinuities.
+        /// Uses CellToVert to skip non-surface corners and drops faces that span a true-depth step
+        /// (StepRatio) so the mesh doesn't web across self-occluded folds.
         /// </summary>
         [BurstCompile]
         struct TriangleJob : IJobParallelFor
         {
-            [ReadOnly] public NativeArray<Vector3> Hits;
-            [ReadOnly] public NativeArray<int>     CellToVert;
+            [ReadOnly] public NativeArray<float> Depth;
+            [ReadOnly] public NativeArray<int>   CellToVert;
             public int   Cols;
-            public float MaxSq;
+            public float StepRatio;
 
             [NativeDisableParallelForRestriction] public NativeArray<int> OutTris;
             [NativeDisableUnsafePtrRestriction]   public NativeArray<int> Counter;
@@ -374,19 +373,18 @@ namespace Surface.Core
 
                 if (vCount == 4)
                 {
-                    // All 4 corners: two CCW triangles, each edge-tested independently so a single far
-                    // corner drops only its own triangle (the near one still fills) without bridging
-                    // a real discontinuity — strictly less aggressive than an all-or-nothing quad.
-                    if (CheckTri(Hits[idxTL], Hits[idxBL], Hits[idxTR])) WriteTri(tl, bl, tr);
-                    if (CheckTri(Hits[idxTR], Hits[idxBL], Hits[idxBR])) WriteTri(tr, bl, br);
+                    // All 4 corners: two CCW triangles, each edge-tested independently so a single
+                    // step corner drops only its own triangle (the continuous one still fills).
+                    if (CheckTri(idxTL, idxBL, idxTR)) WriteTri(tl, bl, tr);
+                    if (CheckTri(idxTR, idxBL, idxBR)) WriteTri(tr, bl, br);
                 }
                 else
                 {
                     // Exactly 3 corners: emit one CCW triangle for the present corners.
-                    if      (tl < 0 && CheckTri(Hits[idxTR], Hits[idxBL], Hits[idxBR])) WriteTri(tr, bl, br);
-                    else if (tr < 0 && CheckTri(Hits[idxTL], Hits[idxBL], Hits[idxBR])) WriteTri(tl, bl, br);
-                    else if (bl < 0 && CheckTri(Hits[idxTL], Hits[idxBR], Hits[idxTR])) WriteTri(tl, br, tr);
-                    else if (br < 0 && CheckTri(Hits[idxTL], Hits[idxBL], Hits[idxTR])) WriteTri(tl, bl, tr);
+                    if      (tl < 0 && CheckTri(idxTR, idxBL, idxBR)) WriteTri(tr, bl, br);
+                    else if (tr < 0 && CheckTri(idxTL, idxBL, idxBR)) WriteTri(tl, bl, br);
+                    else if (bl < 0 && CheckTri(idxTL, idxBR, idxTR)) WriteTri(tl, br, tr);
+                    else if (br < 0 && CheckTri(idxTL, idxBL, idxTR)) WriteTri(tl, bl, tr);
                 }
             }
 
@@ -397,11 +395,22 @@ namespace Surface.Core
                 OutTris[start] = a; OutTris[start + 1] = b; OutTris[start + 2] = c;
             }
 
-            /// <summary> Returns true if all 3 edges of the triangle are within MaxSq. </summary>
-            bool CheckTri(Vector3 a, Vector3 b, Vector3 c) =>
-                (a - b).sqrMagnitude < MaxSq &&
-                (b - c).sqrMagnitude < MaxSq &&
-                (a - c).sqrMagnitude < MaxSq;
+            /// <summary> True if no edge of the triangle (by cell index) spans a depth step. </summary>
+            bool CheckTri(int a, int b, int c) =>
+                EdgeOk(a, b) && EdgeOk(b, c) && EdgeOk(a, c);
+
+            /// <summary>
+            /// An edge is valid if its endpoints don't span a depth step: the true (linear) depths
+            /// differ by ≤ StepRatio × the nearer depth. Grazing-tolerant (a steep continuous surface
+            /// is a small per-texel depth change) but rejects self-occluded folds (a large near-rim/
+            /// far-rim jump). The cells are already approved by seed+flood; this only drops the face.
+            /// </summary>
+            bool EdgeOk(int i, int j)
+            {
+                float di = Depth[i];
+                float dj = Depth[j];
+                return Mathf.Abs(di - dj) <= StepRatio * Mathf.Min(di, dj);
+            }
         }
 
         /// <summary>

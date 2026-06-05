@@ -1,6 +1,6 @@
 // MetaDepthCopy.shader
 // Grid-resolution blit that unprojects the stabilized environment depth into a world-space position
-// per texel. Output (Vector4): xyz = world position, w = raw depth ∈ (0,1), or w = -1 (invalid).
+// per texel. Output (Vector4): xyz = world position, w = linear (metric) depth, or w = -1 (invalid).
 // A bilateral pass denoises the surface interior; the boundary flicker was already removed upstream
 // by the temporal median, so this shader only denoises and unprojects. The frag body documents the
 // reconstruction steps inline.
@@ -195,9 +195,10 @@ Shader "Hidden/MetaDepthCopy"
                 if (mask > 0.5)
                     return float4(0, 0, 0, -1.0);
 
-                // Return world position in xyz; w carries rawDepth so DepthReadback can
-                // distinguish valid pixels (w >= 0) from the invalid sentinel (w = -1).
-                return float4(worldPos, rawDepth);
+                // Return world position in xyz; w carries the LINEAR (metric) depth, both as the
+                // valid/invalid flag (w >= 0 valid, w = -1 sentinel) and as the true-depth signal
+                // MeshGenerator uses to cut triangles across discontinuities.
+                return float4(worldPos, LinearizeDepth(rawDepth));
             }
             ENDHLSL
         }

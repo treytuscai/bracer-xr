@@ -209,7 +209,7 @@ namespace Surface.Core
         /// Sets the blit material parameters, renders the hand silhouette, and runs the
         /// MetaDepthCopy blit at GRID resolution (cols×rows) rather than full screen: each of the
         /// ~cols*rows fragments samples R -> builds clip -> inverse VP -> perspective divide,
-        /// writing Vector4 (xyz = world pos, w = rawDepth, or w = -1 for invalid). Returns the
+        /// writing Vector4 (xyz = world pos, w = linear depth, or w = -1 for invalid). Returns the
         /// pooled world-position RenderTexture for readback; the mask RT is released here since
         /// the blit has already sampled it.
         /// </summary>
@@ -301,6 +301,7 @@ namespace Surface.Core
             {
                 WorldPositions = raw,
                 Hits           = buffer.Hits,
+                Depth          = buffer.Depth,
                 HasDepth       = buffer.HasDepth,
                 IsSurface      = buffer.IsSurface
             };
@@ -582,11 +583,9 @@ namespace Surface.Core
         /// grid resolution, so WorldPositions is the grid itself (row-major, width = Cols) and
         /// each job element maps 1:1 to a cell — no crop/stride remap.
         ///
-        /// The shader encodes validity in the Vector4 w component:
-        ///   w >= 0 -> valid world position (w = rawDepth sampled from R channel, ∈ (0,1))
+        /// The shader encodes validity and the depth signal in the Vector4 w component:
+        ///   w >= 0 -> valid; w is the linear (metric) depth, stored into Depth[] for the triangle cut
         ///   w  < 0 -> invalid pixel (sky, too close, or out of sensor range); shader outputs w = -1
-        /// Only the R channel of the depth texture is sampled. Meta uses a float format
-        /// so the full [0,1] depth value fits in R with no packed overflow into G/B/A.
         ///
         /// IsSurface is reset to false for every cell so the downstream seed+flood
         /// starts from a clean slate regardless of the previous frame's result.
@@ -597,6 +596,7 @@ namespace Surface.Core
             [ReadOnly] public NativeArray<Vector4> WorldPositions;
 
             [WriteOnly] public NativeArray<Vector3> Hits;
+            [WriteOnly] public NativeArray<float>   Depth;
             [WriteOnly] public NativeArray<bool>    HasDepth;
             [WriteOnly] public NativeArray<bool>    IsSurface;
 
@@ -605,16 +605,19 @@ namespace Surface.Core
                 Vector4 sample = WorldPositions[index];
 
                 // w < 0 is the sentinel written by MetaDepthCopy.shader for invalid pixels
-                // (sky, depth too close/far, or out of the sensor's range).
+                // (sky, depth too close/far, or out of the sensor's range). Otherwise w is the
+                // linear (metric) depth.
                 if (sample.w < 0f)
                 {
                     HasDepth[index]  = false;
                     IsSurface[index] = false;
                     Hits[index]      = Vector3.zero;
+                    Depth[index]     = -1f;
                     return;
                 }
 
                 Hits[index]      = new Vector3(sample.x, sample.y, sample.z);
+                Depth[index]     = sample.w;
                 HasDepth[index]  = true;
                 IsSurface[index] = false; // Cleared here; seed+flood sets it next.
             }

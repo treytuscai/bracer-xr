@@ -20,6 +20,9 @@ namespace Surface.Buffer
 
         /// <summary> World-space 3D hit position for each grid cell. </summary>
         public NativeArray<Vector3> Hits;
+        /// <summary> Linear (metric) camera depth for each cell, straight from the sensor; -1 if invalid.
+        /// The true-depth signal MeshGenerator uses to cut triangles across discontinuities. </summary>
+        public NativeArray<float> Depth;
         /// <summary> Ping-pong target for BoundarySmoother: it writes here, then swaps with Hits. </summary>
         public NativeArray<Vector3> Smoothed;
         /// <summary> True if this cell was classified as forearm surface by seed+flood. </summary>
@@ -47,6 +50,7 @@ namespace Surface.Buffer
             Dispose();
 
             Hits            = new NativeArray<Vector3>(total, Allocator.Persistent);
+            Depth           = new NativeArray<float>(total,   Allocator.Persistent);
             Smoothed        = new NativeArray<Vector3>(total, Allocator.Persistent);
             IsSurface       = new NativeArray<bool>(total,    Allocator.Persistent);
             HasDepth        = new NativeArray<bool>(total,    Allocator.Persistent);
@@ -63,6 +67,7 @@ namespace Surface.Buffer
         public void Dispose()
         {
             if (Hits.IsCreated)            Hits.Dispose();
+            if (Depth.IsCreated)           Depth.Dispose();
             if (Smoothed.IsCreated)        Smoothed.Dispose();
             if (IsSurface.IsCreated)       IsSurface.Dispose();
             if (HasDepth.IsCreated)        HasDepth.Dispose();

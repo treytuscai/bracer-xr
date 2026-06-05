@@ -104,9 +104,10 @@ public class ForearmDepthSurface : MonoBehaviour
     // MESH
     // ------------------------------------------------------------------
     [Header("Mesh")]
-    [Tooltip("Drop quads/tris whose longest edge exceeds this (m). Must be ≥ connectivityThreshold " +
-             "to allow for surface curvature between cells that connected through different flood paths")]
-    [Range(0.005f, 0.06f)] public float maxQuadEdge = 0.02f;
+    [Tooltip("Triangle discontinuity cut: drop a face whose two cells differ in true depth by more " +
+             "than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts " +
+             "self-occluded folds (no webbing). Lower = stricter. ~0.15 is a good start.")]
+    [Range(0.03f, 0.5f)] public float depthStepRatio = 0.15f;
 
     // ------------------------------------------------------------------
     // DISPLAY — the physical UV projection window on the arm surface.
@@ -187,7 +188,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
-        _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);
+        _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
     }
 
     /// <summary>

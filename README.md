@@ -97,7 +97,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |
 | `connectivityThreshold` | 0.01 m | Max 3D step between adjacent flood cells to count as connected |
 | `edgeSmoothPasses` / `edgeWindowRadius` | 3 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
-| `maxQuadEdge` | 0.02 m | Rejects quads whose longest edge exceeds this (prevents bridging gaps). Must stay ≥ ~√2 × `connectivityThreshold` to admit valid quad diagonals |
+| `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
 | `lockOrientation` | false | Prevents the portrait to landscape rotation flip |
