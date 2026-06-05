@@ -12,8 +12,9 @@ using Surface.Core;
 /// Pipeline (runs every LateUpdate, asynchronously via AsyncGPUReadback + Burst):
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up) and smooth pronation/orientation.
-///   2. DepthReadback: Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh),
-///                     blit through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
+///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
+///                     render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh), blit
+///                     through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
 ///                     GPU-readback the forearm crop, and unproject each sampled pixel into a
 ///                     flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)
@@ -25,10 +26,9 @@ using Surface.Core;
 ///                     across depth-connected neighbors up to a wider flood cylinder
 ///                     (maxRadialDist) to grow the full forearm patch (IsSurface flags).
 ///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
-///                     MetaDepthCopy), which also drops mixed/flying pixels on the silhouette
-///                     (edgeDiscontinuityThreshold) so the boundary is built from reliable
-///                     cells; a parallel boundary smoother then de-steps the mesh edge by
-///                     averaging each boundary cell with its boundary neighbors.
+///                     MetaDepthCopy); the boundary flicker is already removed upstream by the
+///                     temporal median (step 2). A parallel boundary smoother then de-steps the
+///                     mesh edge by averaging each boundary cell with its boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
@@ -68,14 +68,10 @@ public class ForearmDepthSurface : MonoBehaviour
 
     // ------------------------------------------------------------------
     // DEPTH SMOOTHING (GPU bilateral, in MetaDepthCopy)
-    // Edge-aware blur of the raw depth before unprojection: denoises the surface
-    // interior without crossing the arm/background depth discontinuity.
-    //
-    // edgeDiscontinuityThreshold is a SEPARATE, complementary control that lives in the
-    // same shader pass: the bilateral is edge-PRESERVING (it refuses to smooth across the
-    // silhouette), so the boundary texels keep their raw noisy depth — stereo "flying
-    // pixels" that straddle arm and background and flicker frame to frame. The reject drops
-    // those texels at the source so the boundary is built from reliable interior cells.
+    // Edge-aware blur of the depth before unprojection: denoises the surface interior
+    // without crossing the arm/background depth discontinuity. The boundary flicker is
+    // handled separately and upstream by the mandatory temporal median (DepthTemporalMedian),
+    // so this stage only smooths the interior.
     // ------------------------------------------------------------------
     [Header("Depth Smoothing")]
     [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
@@ -83,10 +79,6 @@ public class ForearmDepthSurface : MonoBehaviour
     [Tooltip("Max depth difference in METRES for a neighbor to be averaged in (~0.01 = 1 cm). " +
              "Lower preserves detail/edges; higher is smoother but risks bridging arm to background.")]
     [Range(0, 0.2f)] public float depthSmoothThreshold = 0.01f;
-    [Tooltip("Drop silhouette texels whose neighborhood crosses a depth step larger than this (m). " +
-             "Removes the mixed/flying pixels at the arm edge so the boundary is built from reliable " +
-             "interior cells (kills the every-few-frames staircase/sliver flicker). 0 = disabled.")]
-    [Range(0f, 0.2f)] public float edgeDiscontinuityThreshold = 0.05f;
 
     // ------------------------------------------------------------------
     // SEED + FLOOD
@@ -218,7 +210,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold, edgeDiscontinuityThreshold);
+        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxRadialDist, minFromWrist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(maxQuadEdge, displayOffset, displayWidth, displayHeight);

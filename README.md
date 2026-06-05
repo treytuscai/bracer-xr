@@ -13,11 +13,12 @@ _(An earlier prototype approximated the forearm as a geometric cylinder fit to t
 **Per-frame pipeline:**
 
 1. Resolve wrist and elbow bones from the body skeleton to build the arm coordinate frame (axis, lateral, normal, pronation, orientation).
-2. Render the interacting hand as a GPU silhouette and blit the depth texture through a reconstruction shader — both at the forearm crop's native depth-texel resolution, not full screen, so only the arm region is computed. Hand pixels are rejected at the source so they never enter the reconstruction.
-3. Async GPU readback of the forearm crop; a Burst job unprojects depth texels into a world-space hit grid.
-4. A seed region plus BFS flood isolates the forearm patch from background geometry.
-5. Edge-aware (bilateral) depth smoothing on the GPU during the blit — which also rejects mixed/"flying" pixels on the arm silhouette (where stereo depth is unreliable and flickers frame to frame) so the boundary is built from reliable interior cells — and a parallel Burst boundary smoother on the extracted edge cells.
-6. Mesh generation via atomic parallel vertex/triangle emission with parallel grid-based normal computation, and linear, camera-fixed UV projection (plus a pronation scroll offset).
+2. Stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" — temporal outliers — so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion).
+3. Render the interacting hand as a GPU silhouette and blit the stabilized depth through a reconstruction shader — both at the forearm crop's native depth-texel resolution, not full screen, so only the arm region is computed. Hand pixels are rejected at the source so they never enter the reconstruction.
+4. Async GPU readback of the forearm crop; a Burst job unprojects depth texels into a world-space hit grid.
+5. A seed region plus BFS flood isolates the forearm patch from background geometry.
+6. Edge-aware (bilateral) depth smoothing on the GPU during the blit denoises the surface interior, and a parallel Burst boundary smoother de-steps the extracted edge cells.
+7. Mesh generation via atomic parallel vertex/triangle emission with parallel grid-based normal computation, and linear, camera-fixed UV projection (plus a pronation scroll offset).
 
 **Touch detection:** each frame the interacting hand's skinned-mesh vertices are tested against the reconstructed surface. The nearest surface cell within range is found, the signed depth above the surface is computed, and a UV coordinate is derived at sub-cell precision from the actual finger position. Touch is live — the surface keeps updating during interaction, pronation works mid-touch, and there is no freeze step.
 
@@ -74,6 +75,7 @@ Assets/_Project/
 │       └── ForearmInteraction.cs      touch detection against the surface
 ├── Shaders/
 │   ├── ForearmProjection.shader    URP transparent shader for the surface mesh
+│   ├── DepthTemporalMedian.shader   3-frame reprojected median that stabilizes the depth
 │   ├── MetaDepthCopy.shader         depth-reconstruction blit (world pos from depth)
 │   └── HandMaskRender.shader        GPU hand silhouette
 ├── Materials/   Scenes/   Textures/
@@ -90,7 +92,6 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `maskDilateTexels` | 0.8 | Hand-mask dilation radius (grid/depth texels) to cover fast-motion depth bleed |
 | `depthSmoothRadius` | 1 | Edge-aware depth blur radius (depth texels; 0 = off, 1 = 3×3) |
 | `depthSmoothThreshold` | 0.01 m | Max linear depth difference for a neighbor to be averaged in (keeps the blur from crossing the arm/background edge) |
-| `edgeDiscontinuityThreshold` | 0.05 m | Depth step above which a silhouette texel is treated as a mixed/flying pixel and dropped — removes the unreliable boundary fringe (0 = off)|
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
 | `maxRadialDist` | 0.15 m | Outer wall that caps BFS flood growth away from the arm |
 | `minFromWrist` / `maxFromElbow` | −0.12 / 0.02 m | Axial bounds for seed cells along the arm |

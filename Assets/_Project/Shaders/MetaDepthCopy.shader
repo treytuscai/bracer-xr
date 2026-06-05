@@ -1,46 +1,21 @@
 // MetaDepthCopy.shader
-// Full-screen blit shader that reconstructs a world-space position for every screen pixel
-// from Meta's environment depth texture. Outputs a Vector4 render texture where:
-//   xyz = world-space position
-//   w   = raw depth value ∈ (0,1) for valid pixels, -1 as an invalid sentinel
+// Grid-resolution blit that unprojects the stabilized environment depth into a world-space position
+// per texel. Output (Vector4): xyz = world position, w = raw depth ∈ (0,1), or w = -1 (invalid).
+// A bilateral pass denoises the surface interior; the boundary flicker was already removed upstream
+// by the temporal median, so this shader only denoises and unprojects. The frag body documents the
+// reconstruction steps inline.
 //
-// Beyond reconstruction, the per-texel neighborhood scan does two cleanup jobs: an edge-aware
-// (bilateral) depth blur that denoises the surface interior, and a mixed-pixel reject that drops
-// texels on the arm/background silhouette (stereo "flying pixels" that flicker frame to frame),
-// so the boundary handed downstream is built only from reliable interior cells.
+// DEPTH SOURCE: _StabilizedDepthTex — a 3-frame reprojected median of Meta's stereo-camera depth
+// (not IR), raw NDC [0,1] in R, produced by DepthReadback's pre-pass.
 //
-// DEPTH SOURCE
-// Meta's environment depth API computes depth from the Quest's two main RGB cameras via
-// stereo reconstruction — not a dedicated IR depth sensor. The output is a standard
-// [0,1] NDC depth texture in the R channel. Only R is sampled; Meta does not pack any
-// additional data into G/B/A.
+// HISTORICAL VP (anti-swim): the depth was captured at an earlier head pose, so it is unprojected
+// with the inverse of THAT frame's VP — _DepthInverseVP = inverse of
+// _EnvironmentDepthReprojectionMatrices[0], inverted on the CPU in DepthReadback (HLSL per-pixel
+// inversion is expensive). Using the current camera VP instead would misplace every pixel and make
+// the surface swim as the head moves; this lands the result directly in world space.
 //
-// WHY A BLIT SHADER, NOT A REGULAR RENDERING SHADER
-// A standard rendering shader runs in the current render frame's coordinate space.
-// The depth texture was captured at an earlier head pose (the depth sensor frame), so
-// its UV and depth values were encoded relative to that historical pose — not the
-// current camera pose. Unprojecting with the current VP would misplace every pixel.
-// This shader receives the inverse of Meta's historical VP via _DepthInverseVP (inverted
-// in C# by DepthReadback.DispatchReconstruction before the blit) and reconstructs positions in the
-// depth frame's coordinate space, which is already in world space.
-//
-// ANTI-SWIM
-// _DepthInverseVP is the inverse of _EnvironmentDepthReprojectionMatrices[0], which
-// Meta captures at the exact moment the depth frame was rendered. Using this historical
-// matrix eliminates the pose desync between the depth frame and the current render frame,
-// preventing the reconstructed surface from drifting as the user moves their head.
-//
-// RECONSTRUCTION STEPS (community-verified)
-//   1. Sample R channel of _EnvironmentDepthTexture (slice 0 = left eye) -> rawDepth ∈ (0,1).
-//   2. Reject rawDepth ≤ 0 or ≥ 1 (sky, near-plane, out-of-range) -> output w = -1.
-//   3. Remap (U, V, rawDepth) from [0,1] to clip-space [-1,1] via * 2 - 1.
-//   4. Mul by _DepthInverseVP (clip -> world for the depth frame's pose).
-//   5. Perspective divide (xyz / w) -> world position.
-//
-// CALLED FROM: DepthReadback.DispatchReconstruction() via Graphics.Blit(null, _worldPosRT, _blitMaterial).
-// The null source is intentional — the shader reads _EnvironmentDepthTexture as a global,
-// not from Unity's Blit source texture. Graphics.Blit bypasses the SRP Batcher, so the
-// CBUFFER below is for correctness and consistency rather than batching performance.
+// Called from DepthReadback.DispatchReconstruction via Graphics.Blit(null, rt, mat). The null source
+// is intentional — depth and mask are bound textures, not Blit's source.
 
 Shader "Hidden/MetaDepthCopy"
 {
@@ -62,21 +37,21 @@ Shader "Hidden/MetaDepthCopy"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            // Meta's stereo depth texture array; slice 0 = left eye, slice 1 = right eye.
-            // Declared as a global (outside CBUFFER) — set by Meta's EnvironmentDepthManager,
-            // not as a per-material property.
-            TEXTURE2D_ARRAY(_EnvironmentDepthTexture);
-            SAMPLER(sampler_EnvironmentDepthTexture);
-
             // Screen-space hand silhouette rendered each frame by DepthReadback via
             // CommandBuffer.DrawMesh before this blit. White = hand, black = clear.
             // Declared outside CBUFFER — textures cannot live inside a constant buffer.
             TEXTURE2D(_HandMaskTex);
             SAMPLER(sampler_HandMaskTex);
 
+            // Temporally-stabilized depth: a 3-frame, motion-reprojected per-texel median of the
+            // environment depth (native ~320x320 layout), produced by DepthReadback's
+            // DepthTemporalMedian pre-pass. This is the only depth source — raw NDC [0,1] in R.
+            TEXTURE2D(_StabilizedDepthTex);
+            SAMPLER(sampler_StabilizedDepthTex);
+
             // Set globally by Meta's EnvironmentDepthManager. Encodes NDC depth -> linear metres:
             //   linear = 1 / (ndc + y) * x,  with ndc = rawDepth * 2 - 1.
-            // Lets the smoothing threshold be a real distance instead of an opaque NDC value.
+            // Lets the bilateral threshold be a real distance instead of an opaque NDC value.
             float4 _EnvironmentDepthZBufferParams;
 
             CBUFFER_START(UnityPerMaterial)
@@ -97,20 +72,13 @@ Shader "Hidden/MetaDepthCopy"
                 // Set per frame by DepthReadback.Schedule (scaleX, scaleY, offsetX, offsetY) so
                 // each output texel samples the depth texture at the correct screen position.
                 float4 _CropUVScaleOffset;
-                // Edge-aware depth smoothing (applied in frag before unprojection).
+                // Edge-aware (bilateral) depth smoothing (applied in frag before unprojection).
                 //   _DepthSmoothRadius    — neighborhood half-width in depth texels (0 = off, 1 = 3x3).
-                //   _DepthSmoothThreshold — max NDC depth diff for a neighbor to be averaged in.
+                //   _DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to average in.
                 //   _DepthTexelSize       — (1/width, 1/height, width, height) of the depth texture.
                 int    _DepthSmoothRadius;
-                float  _DepthSmoothThreshold;   // max LINEAR depth diff (metres) to average a neighbor
+                float  _DepthSmoothThreshold;
                 float4 _DepthTexelSize;
-                // Edge (mixed-pixel) reject. A texel whose immediate 8-neighborhood crosses a depth
-                // step larger than this (metres) — or borders an invalid texel — sits on the arm/
-                // background silhouette, where stereo depth is a noisy "flying pixel" that flickers
-                // frame to frame. Such texels are dropped (w = -1) so the surface boundary is built
-                // only from reliable interior cells. This erodes the silhouette by ~1 texel at real
-                // depth discontinuities only. 0 disables the reject.
-                float  _EdgeDiscontinuityThreshold;
             CBUFFER_END
 
             // NDC depth [0,1] -> linear eye-space distance in metres (Meta's global ZBuffer params).
@@ -118,6 +86,13 @@ Shader "Hidden/MetaDepthCopy"
             {
                 float ndc = rawDepth * 2.0 - 1.0;
                 return (1.0 / (ndc + _EnvironmentDepthZBufferParams.y)) * _EnvironmentDepthZBufferParams.x;
+            }
+
+            // Samples the stabilized (temporally-medianed) depth. Raw NDC [0,1] in R.
+            // LOD 0: no mips, and the _LOD form takes no derivatives (safe inside the dynamic loop).
+            float SampleDepthR(float2 uv)
+            {
+                return SAMPLE_TEXTURE2D_LOD(_StabilizedDepthTex, sampler_StabilizedDepthTex, uv, 0).r;
             }
 
             struct Attributes
@@ -153,14 +128,8 @@ Shader "Hidden/MetaDepthCopy"
                 // as the depth-frame NDC xy — it replaces the old full-screen input.uv everywhere.
                 float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
 
-                // Step 1: sample the R channel of the left-eye depth slice (index 0).
-                // Depth is in Vulkan NDC [0,1]. Only R is used — Meta does not pack into G/B/A.
-                // Explicit LOD 0: the depth texture has no mips, and the _LOD variant takes no
-                // screen-space derivatives — required so the neighbor sample below can live in a
-                // dynamic loop without the "gradient in a varying loop" warning.
-                float centerDepth = SAMPLE_TEXTURE2D_ARRAY_LOD(
-                    _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture,
-                    duv, 0, 0).r;
+                // Step 1: sample the stabilized depth (Vulkan NDC [0,1]).
+                float centerDepth = SampleDepthR(duv);
 
                 // Step 2: reject invalid depth. Must be strictly inside (0,1). Values at 0 (near
                 // plane) or 1 (far plane / sky) are meaningless. w = -1 is the out-of-band sentinel
@@ -168,61 +137,32 @@ Shader "Hidden/MetaDepthCopy"
                 if (centerDepth <= 0.0 || centerDepth >= 1.0)
                     return float4(0, 0, 0, -1.0);
 
-                // Step 2b: BILATERAL (edge-aware) depth smoothing. Average the (2R+1)^2 depth-texel
-                // neighborhood, but include only neighbors whose LINEAR depth is within
-                // _DepthSmoothThreshold METRES of the center — so the blur denoises the surface
-                // WITHOUT crossing the arm/background discontinuity (a naive blur would bridge the
-                // arm into the background). The threshold is a real distance (via Meta's ZBuffer
-                // params), so it behaves consistently across the depth range — unlike a raw NDC diff,
-                // which is nonlinear. We still average the NDC depth (what unprojection consumes);
-                // only the inclusion test is metric. _DepthSmoothRadius = 0 disables it.
-                // The same neighborhood scan does two jobs: bilateral smoothing (within
-                // _DepthSmoothRadius) AND edge/mixed-pixel detection (immediate 1-ring). The scan
-                // radius is the larger of the two so the edge check still runs when smoothing is off.
+                // Step 2b: BILATERAL (edge-aware) depth smoothing. Average the (2R+1)^2 neighborhood,
+                // but only neighbors within _DepthSmoothThreshold METRES of the center (a metric test,
+                // not raw NDC which is nonlinear) — so the blur denoises the surface without bridging
+                // the arm/background discontinuity. Averages NDC depth; only the test is metric.
+                // _DepthSmoothRadius = 0 disables it.
                 float centerLinear = LinearizeDepth(centerDepth);
                 float depthSum     = centerDepth;   // accumulate NDC depth for unprojection
                 float weightSum    = 1.0;
-                bool  edgeReject   = _EdgeDiscontinuityThreshold > 0.0;
-                bool  isEdge       = false;
-                int   scanRadius   = max(_DepthSmoothRadius, edgeReject ? 1 : 0);
                 [loop]
-                for (int ny = -scanRadius; ny <= scanRadius; ny++)
+                for (int ny = -_DepthSmoothRadius; ny <= _DepthSmoothRadius; ny++)
                 {
                     [loop]
-                    for (int nx = -scanRadius; nx <= scanRadius; nx++)
+                    for (int nx = -_DepthSmoothRadius; nx <= _DepthSmoothRadius; nx++)
                     {
                         if (nx == 0 && ny == 0) continue;
                         float2 nuv = duv + float2(nx, ny) * _DepthTexelSize.xy;
                         // Explicit LOD 0 (no derivatives) — this sample is inside a dynamic loop.
-                        float  nd  = SAMPLE_TEXTURE2D_ARRAY_LOD(
-                            _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture, nuv, 0, 0).r;
-                        bool   nValid = nd > 0.0 && nd < 1.0;
-                        float  nLinear = nValid ? LinearizeDepth(nd) : 0.0;
-
-                        // EDGE DETECT — immediate 8-neighborhood only (so a discontinuity erodes
-                        // exactly one texel, not scanRadius texels). A neighbor that is invalid or
-                        // a large depth step away means this texel sits on the silhouette.
-                        if (edgeReject && abs(nx) <= 1 && abs(ny) <= 1 &&
-                            (!nValid || abs(nLinear - centerLinear) > _EdgeDiscontinuityThreshold))
-                            isEdge = true;
-
-                        // BILATERAL — average only neighbors within the smoothing radius AND within
-                        // the (smaller) metric smoothing threshold. The radius guard keeps
-                        // _DepthSmoothRadius = 0 meaning "no smoothing" even when scanRadius grew
-                        // to 1 for the edge check.
-                        if (nValid && abs(nx) <= _DepthSmoothRadius && abs(ny) <= _DepthSmoothRadius &&
-                            abs(nLinear - centerLinear) < _DepthSmoothThreshold)
+                        float  nd  = SampleDepthR(nuv);
+                        if (nd <= 0.0 || nd >= 1.0) continue;
+                        if (abs(LinearizeDepth(nd) - centerLinear) < _DepthSmoothThreshold)
                         {
                             depthSum  += nd;
                             weightSum += 1.0;
                         }
                     }
                 }
-
-                // Drop mixed/flying pixels on the silhouette so the boundary is built only from
-                // reliable interior cells (kills the every-few-frames staircase/sliver flicker).
-                if (isEdge)
-                    return float4(0, 0, 0, -1.0);
 
                 float rawDepth = depthSum / weightSum;
 
@@ -239,19 +179,11 @@ Shader "Hidden/MetaDepthCopy"
                 // Step 5: perspective divide — converts homogeneous coordinates to world position.
                 float3 worldPos = worldH.xyz / worldH.w;
 
-                // Hand mask: reject pixels covered by the hand silhouette.
-                // _HandMaskTex is rendered each frame via CommandBuffer.DrawMesh before this
-                // blit at GRID resolution with the crop remapped to fill [0,1] — so it is
-                // sampled at this fragment's own uv (1:1 with the grid), NOT the screen-space
-                // crop duv. White where the hand mesh covers the forearm crop, black elsewhere.
-                //
-                // Rather than one tap, sample a 3x3 neighborhood and take the max — a cheap
-                // morphological dilation. This grows the effective mask by _MaskDilateTexels
-                // texels to cover the readback-latency gap (the depth hand trails the current
-                // mesh) WITHOUT fattening the rendered silhouette or dropping the 0.5 threshold,
-                // so a stationary hand keeps tight while a moving one stays covered.
-                // NOTE: a mask texel now equals a grid cell (~one depth texel), so dilation is
-                // in grid/depth-texel units, not the old half-screen-pixel units.
+                // Hand mask: reject pixels the hand silhouette covers. _HandMaskTex is rendered at
+                // grid resolution (crop remapped to fill [0,1]) so it samples at this fragment's own
+                // uv, NOT the screen-space duv. The 3x3 max is a cheap dilation that grows the
+                // effective mask by _MaskDilateTexels (in grid/depth-texel units) to cover readback
+                // latency — the depth hand trails the current mesh — without fattening the silhouette.
                 float2 texelStep = _HandMaskTex_TexelSize.xy * _MaskDilateTexels;
                 float mask = 0.0;
                 UNITY_UNROLL
