@@ -11,24 +11,27 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/_Project/Scenes/experimentSelectScene.unity
     guid: 474ca4ee639f18e459566814f647543a
-  - enabled: 0
+  - enabled: 1
     path: Assets/_Project/Scenes/boundingBoxDemarcation.unity
     guid: 16c2dbc6a27a9e0478bc5b06c9e8b7ea
   - enabled: 0
     path: Assets/_Project/Scenes/chooseColorWithColorwheel.unity
     guid: dbbd4f086143a614094ca01f95d1269e
-  - enabled: 0
+  - enabled: 1
     path: Assets/_Project/Scenes/placeRotateScaleInterfaces.unity
     guid: adab5566bdfe0443f8566f66948486a8
-  - enabled: 0
+  - enabled: 1
     path: Assets/_Project/Scenes/Color.unity
     guid: 78817cd7e9f3d40219f9527a9d336731
-  - enabled: 0
+  - enabled: 1
     path: Assets/_Project/Scenes/SizeAndScale.unity
     guid: f88cadec4a5422749a9c89e4b233e576
   - enabled: 1
     path: Assets/_Project/Scenes/OrientationDegree.unity
     guid: 1d61f7604fa6d4c46b631441c8b21cc6
+  - enabled: 1
+    path: Assets/_Project/Scenes/RevisedBoundingBox.unity
+    guid: fee6fa1009e27dc49bee9558a52ec458
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: aa8655defb79a45d2be9c4c46366fe0b,
       type: 2}
