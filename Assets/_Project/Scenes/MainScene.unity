@@ -785,8 +785,6 @@ MonoBehaviour:
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 0}
   maskDilateTexels: 1
-  depthSmoothRadius: 1
-  depthSmoothThreshold: 0.01
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1

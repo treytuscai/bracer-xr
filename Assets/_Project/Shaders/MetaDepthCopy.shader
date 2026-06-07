@@ -1,9 +1,8 @@
 // MetaDepthCopy.shader
 // Grid-resolution blit that unprojects the stabilized environment depth into a world-space position
 // per texel. Output (Vector4): xyz = world position, w = linear (metric) depth, or w = -1 (invalid).
-// A bilateral pass denoises the surface interior; the boundary flicker was already removed upstream
-// by the temporal median, so this shader only denoises and unprojects. The frag body documents the
-// reconstruction steps inline.
+// Denoising is handled upstream by the temporal median (DepthTemporalMedian); this shader only masks
+// the hand, rejects invalid depth, and unprojects. The frag body documents the steps inline.
 //
 // DEPTH SOURCE: _StabilizedDepthTex — a 3-frame reprojected median of Meta's stereo-camera depth
 // (not IR), raw NDC [0,1] in R, produced by DepthReadback's pre-pass.
@@ -37,9 +36,10 @@ Shader "Hidden/MetaDepthCopy"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            // Screen-space hand silhouette rendered each frame by DepthReadback via
-            // CommandBuffer.DrawMesh before this blit. White = hand, black = clear.
-            // Declared outside CBUFFER — textures cannot live inside a constant buffer.
+            // Full depth-frame hand silhouette rendered each frame by DepthReadback via
+            // CommandBuffer.DrawMesh, BEFORE the temporal median's extract pass (which carves the hand
+            // out of depth history) and this blit. White = hand, black = clear. Sampled in depth UV
+            // (duv). Declared outside CBUFFER — textures cannot live inside a constant buffer.
             TEXTURE2D(_HandMaskTex);
             SAMPLER(sampler_HandMaskTex);
 
@@ -51,7 +51,7 @@ Shader "Hidden/MetaDepthCopy"
 
             // Set globally by Meta's EnvironmentDepthManager. Encodes NDC depth -> linear metres:
             //   linear = 1 / (ndc + y) * x,  with ndc = rawDepth * 2 - 1.
-            // Lets the bilateral threshold be a real distance instead of an opaque NDC value.
+            // Used to emit the metric depth in the output w (the triangle-cut signal MeshGenerator reads).
             float4 _EnvironmentDepthZBufferParams;
 
             CBUFFER_START(UnityPerMaterial)
@@ -59,9 +59,6 @@ Shader "Hidden/MetaDepthCopy"
                 // matrix for the depth frame's historical pose. Inverted once per frame on
                 // the CPU by DepthReadback.Schedule to convert clip->world in this shader.
                 float4x4 _DepthInverseVP;
-                // (1/width, 1/height, width, height) of _HandMaskTex, auto-populated by
-                // Unity when the texture is bound. Used to step the dilation kernel by texels.
-                float4 _HandMaskTex_TexelSize;
                 // Mask dilation radius in WHOLE grid texels (int — a fraction of a texel is meaningless).
                 // The 3x3 kernel takes the max, growing the EFFECTIVE silhouette by this many texels
                 // without re-bloating the rendered mesh or lowering the 0.5 threshold. Compensates for
@@ -72,13 +69,9 @@ Shader "Hidden/MetaDepthCopy"
                 // Set per frame by DepthReadback.Schedule (scaleX, scaleY, offsetX, offsetY) so
                 // each output texel samples the depth texture at the correct screen position.
                 float4 _CropUVScaleOffset;
-                // Edge-aware (bilateral) depth smoothing (applied in frag before unprojection).
-                //   _DepthSmoothRadius    — neighborhood half-width in grid texels (0 = off, 1 = 3x3).
-                //   _DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to average in.
-                //   _GridTexelSize        — (1/cols, 1/rows, cols, rows) of the crop grid (= stabilized
-                //                            depth + hand-mask resolution); one step = one real texel.
-                int    _DepthSmoothRadius;
-                float  _DepthSmoothThreshold;
+                // (1/cols, 1/rows, cols, rows) of the crop grid (= the stabilized depth resolution).
+                // Used to step the hand-mask dilation kernel by one grid texel (mapped into depth UV
+                // via _CropUVScaleOffset). See SampleHandMaskDilated.
                 float4 _GridTexelSize;
             CBUFFER_END
 
@@ -89,33 +82,34 @@ Shader "Hidden/MetaDepthCopy"
                 return (1.0 / (ndc + _EnvironmentDepthZBufferParams.y)) * _EnvironmentDepthZBufferParams.x;
             }
 
-            // Samples the stabilized (temporally-medianed) depth. Raw NDC [0,1] in R.
-            // LOD 0: no mips, and the _LOD form takes no derivatives (safe inside the dynamic loop).
+            // Samples the stabilized (temporally-medianed) depth. Raw NDC [0,1] in R. LOD 0: no mips.
             float SampleDepthR(float2 uv)
             {
                 return SAMPLE_TEXTURE2D_LOD(_StabilizedDepthTex, sampler_StabilizedDepthTex, uv, 0).r;
             }
 
-            // Samples the hand silhouette mask (rendered at grid resolution; 1 = hand, 0 = clear).
-            // LOD 0 — no derivatives, safe inside the dynamic bilateral loop.
-            float SampleHandMask(float2 uv)
+            // Samples the hand silhouette mask (full depth-frame resolution; 1 = hand, 0 = clear),
+            // in DEPTH UV (duv). LOD 0 — no mips on the mask.
+            float SampleHandMask(float2 duv)
             {
-                return SAMPLE_TEXTURE2D_LOD(_HandMaskTex, sampler_HandMaskTex, uv, 0).r;
+                return SAMPLE_TEXTURE2D_LOD(_HandMaskTex, sampler_HandMaskTex, duv, 0).r;
             }
 
-            // Dilated hand-mask test: 3x3 max stepped by _MaskDilateTexels whole grid texels. Grows
-            // the EFFECTIVE silhouette to cover (a) the 1-2 frame readback latency (the depth hand
-            // trails the live mesh) and (b) imperfect-mesh peek-through — bits of finger/hand that slip
-            // past the rendered silhouette. Returns the max coverage in the neighborhood (1 = hand).
-            float SampleHandMaskDilated(float2 uv)
+            // Dilated hand-mask test in DEPTH UV: 3x3 max stepped by _MaskDilateTexels whole grid texels.
+            // One grid texel is mapped into depth UV as _CropUVScaleOffset.xy * _GridTexelSize.xy (the
+            // grid is the crop, so a grid step scales by the crop's UV size). Grows the EFFECTIVE
+            // silhouette to cover (a) the 1-2 frame readback latency (the depth hand trails the live
+            // mesh) and (b) imperfect-mesh peek-through. MUST match the median's extract carve so the
+            // rejected region and the carved-from-history region are identical. Returns max coverage.
+            float SampleHandMaskDilated(float2 duv)
             {
-                float2 texelStep = _HandMaskTex_TexelSize.xy * _MaskDilateTexels;
+                float2 texelStep = _CropUVScaleOffset.xy * _GridTexelSize.xy * _MaskDilateTexels;
                 float m = 0.0;
                 UNITY_UNROLL
                 for (int dy = -1; dy <= 1; dy++)
                     UNITY_UNROLL
                     for (int dx = -1; dx <= 1; dx++)
-                        m = max(m, SampleHandMask(uv + float2(dx, dy) * texelStep));
+                        m = max(m, SampleHandMask(duv + float2(dx, dy) * texelStep));
                 return m;
             }
 
@@ -147,61 +141,27 @@ Shader "Hidden/MetaDepthCopy"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                // The stabilized depth is now the forearm CROP rendered at grid resolution, so it is
-                // sampled 1:1 at this output texel's own [0,1] uv — NOT remapped. duv (the forearm's
-                // screen-UV sub-rect) is still needed below as the depth-frame NDC xy for the
-                // clip-space reconstruction (Step 3).
+                // The stabilized depth is the forearm CROP rendered at grid resolution, so it is sampled
+                // 1:1 at this output texel's own [0,1] uv — NOT remapped. duv (the forearm's screen-UV
+                // sub-rect) is the depth-frame UV: it is the NDC xy for the clip-space reconstruction
+                // (Step 3) AND the lookup into the full-frame hand mask (Step 1).
                 float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
 
-                // Step 1: HAND MASK FIRST — reject pixels the hand silhouette covers BEFORE sampling
-                // or smoothing depth, so the hand's depth is never read as a center NOR averaged into
-                // a forearm neighbor in Step 2b. This matters most at touch distance, where the finger
-                // sits at ~arm depth so the metric bilateral test alone would NOT exclude it — only the
-                // mask does. Dilated (see SampleHandMaskDilated) to cover readback latency and the
-                // imperfect-mesh peek-through. _HandMaskTex is grid-res, sampled at this fragment's own
-                // uv (NOT the screen-space duv).
-                if (SampleHandMaskDilated(input.uv) > 0.5)
+                // Step 1: HAND MASK FIRST — reject pixels the hand silhouette covers. Dilated (see
+                // SampleHandMaskDilated) to cover readback latency, imperfect-mesh peek-through, AND the
+                // stereo-depth bleed ring: arm texels just outside a hovering finger that Meta's stereo
+                // pulls toward the finger (the lifted edge). The dilation eats that ring; it is the same
+                // radius the median's extract pass carved out of history. The mask is full depth-frame,
+                // so sample it in depth UV (duv).
+                if (SampleHandMaskDilated(duv) > 0.5)
                     return float4(0, 0, 0, -1.0);
 
                 // Step 2: sample the stabilized (crop-resolution) depth at this texel (Vulkan NDC [0,1]),
                 // and reject invalid. Must be strictly inside (0,1); 0 (near plane) or 1 (far plane /
                 // sky) are meaningless. w = -1 is the out-of-band sentinel DepthUnprojectionJob checks.
-                float centerDepth = SampleDepthR(input.uv);
-                if (centerDepth <= 0.0 || centerDepth >= 1.0)
+                float rawDepth = SampleDepthR(input.uv);
+                if (rawDepth <= 0.0 || rawDepth >= 1.0)
                     return float4(0, 0, 0, -1.0);
-
-                // Step 2b: BILATERAL (edge-aware) depth smoothing. Average the (2R+1)^2 neighborhood,
-                // keeping only neighbors within _DepthSmoothThreshold METERS of the center (a metric
-                // test, since raw NDC is nonlinear) AND not under the hand mask — so the blur denoises
-                // the surface without bridging the arm/background step or pulling in the hand's depth.
-                // Averages NDC depth; only the test is metric. _DepthSmoothRadius = 0 disables it.
-                float centerLinear = LinearizeDepth(centerDepth);
-                float depthSum     = centerDepth;   // accumulate NDC depth for unprojection
-                float weightSum    = 1.0;
-                [loop]
-                for (int ny = -_DepthSmoothRadius; ny <= _DepthSmoothRadius; ny++)
-                {
-                    [loop]
-                    for (int nx = -_DepthSmoothRadius; nx <= _DepthSmoothRadius; nx++)
-                    {
-                        if (nx == 0 && ny == 0) continue;
-                        // One real grid texel per step (stabilized depth + mask share this resolution).
-                        float2 nuv = input.uv + float2(nx, ny) * _GridTexelSize.xy;
-                        // Explicit LOD 0 (no derivatives) — these samples are inside a dynamic loop.
-                        float  nd  = SampleDepthR(nuv);
-                        if (nd <= 0.0 || nd >= 1.0) continue;
-                        // Skip hand neighbors — dilated, since the baked mesh is imperfect and finger
-                        // bits peek past the raw silhouette; we must not average that depth in.
-                        if (SampleHandMaskDilated(nuv) > 0.5) continue;
-                        if (abs(LinearizeDepth(nd) - centerLinear) < _DepthSmoothThreshold)
-                        {
-                            depthSum  += nd;
-                            weightSum += 1.0;
-                        }
-                    }
-                }
-
-                float rawDepth = depthSum / weightSum;
 
                 // Step 3: remap (U, V, rawDepth) from screen-space [0,1] to clip-space [-1,1].
                 // The UV becomes the XY of the clip-space point and rawDepth becomes Z.

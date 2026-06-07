@@ -58,22 +58,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
     [Tooltip("Mask dilation radius in grid texels, applied at sample time (3x3 max). Grows the " +
-             "effective hand mask to cover readback latency without bloating the rendered mesh.")]
+             "effective hand mask to cover readback latency and imperfect-mesh peek-through. Keep " +
+             "small (1) — large values eat real surface around the hand.")]
     [Range(0, 4)] public int maskDilateTexels = 1;
-
-    // ------------------------------------------------------------------
-    // DEPTH SMOOTHING
-    // Edge-aware blur of the depth before unprojection: denoises the surface interior
-    // without crossing the arm/background depth discontinuity. The boundary flicker is
-    // handled separately and upstream by the mandatory temporal median (DepthTemporalMedian),
-    // so this stage only smooths the interior.
-    // ------------------------------------------------------------------
-    [Header("Depth Smoothing")]
-    [Tooltip("Edge-aware depth blur radius in depth texels (0 = off, 1 = 3x3, 2 = 5x5).")]
-    [Range(0, 3)] public int depthSmoothRadius = 1;
-    [Tooltip("Max depth difference in METRES for a neighbor to be averaged in (~0.01 = 1 cm). " +
-             "Lower preserves detail/edges; higher is smoother but risks bridging arm to background.")]
-    [Range(0, 0.2f)] public float depthSmoothThreshold = 0.01f;
 
     // ------------------------------------------------------------------
     // SEED + FLOOD - The depth crop pads by maxFloodDist so the readback
@@ -186,7 +173,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation, enablePalm);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask, maskDilateTexels, depthSmoothRadius, depthSmoothThreshold);
+        _depthReadback = new DepthReadback(_handMask, maskDilateTexels);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
