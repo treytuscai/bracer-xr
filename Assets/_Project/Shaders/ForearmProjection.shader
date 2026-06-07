@@ -31,9 +31,9 @@ Shader "Custom/ForearmProjection"
         Blend SrcAlpha OneMinusSrcAlpha
         // No depth writes: transparent surfaces shouldn't occlude geometry behind them.
         ZWrite Off
-        // Both faces rendered: the arm surface mesh is a thin shell whose underside
-        // may be visible from certain viewing angles.
-        Cull Off
+        // Cull back faces: the surface is a thin shell wrapping the top of the arm, so the
+        // underside is rarely seen.
+        Cull Back
 
         Pass
         {

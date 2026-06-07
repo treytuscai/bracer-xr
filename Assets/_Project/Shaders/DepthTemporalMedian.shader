@@ -80,6 +80,10 @@ Shader "Hidden/DepthTemporalMedian"
             TEXTURE2D(_TexH1);  SAMPLER(sampler_TexH1);  // history frame 1
             TEXTURE2D(_TexH2);  SAMPLER(sampler_TexH2);  // history frame 2
 
+            // Maps the cropped output's [0,1] UV onto the forearm's sub-rect in the full depth frame.
+            // The median computes only the crop; history stays full-frame for reprojection.
+            float4 _CropUVScaleOffset;
+
             // Depth-frame world->clip VPs and their inverses, per frame (set by DepthReadback).
             float4x4 _CurVP;  float4x4 _CurInvVP;
             float4x4 _H1VP;   float4x4 _H1InvVP;
@@ -129,11 +133,15 @@ Shader "Hidden/DepthTemporalMedian"
 
             float frag(Varyings input) : SV_Target
             {
-                float dCur = SAMPLE_TEXTURE2D_LOD(_TexCur, sampler_TexCur, input.uv, 0).r;
+                // Output is the forearm crop; remap to the full-frame depth UV for the current frame.
+                // Histories stay full-frame, sampled at the reprojected UV in ReprojToCurrentRaw.
+                float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
+
+                float dCur = SAMPLE_TEXTURE2D_LOD(_TexCur, sampler_TexCur, duv, 0).r;
                 // Invalid current depth: pass through; MetaDepthCopy's (0,1) test rejects it.
                 if (dCur <= 0.0 || dCur >= 1.0) return dCur;
 
-                float3 P  = UnprojectRaw(input.uv, dCur, _CurInvVP);
+                float3 P  = UnprojectRaw(duv, dCur, _CurInvVP);
                 float  n1 = ReprojToCurrentRaw(P, _H1VP, _H1InvVP, _TexH1, sampler_TexH1, dCur);
                 float  n2 = ReprojToCurrentRaw(P, _H2VP, _H2InvVP, _TexH2, sampler_TexH2, dCur);
 

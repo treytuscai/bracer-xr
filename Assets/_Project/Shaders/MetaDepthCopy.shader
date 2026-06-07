@@ -123,13 +123,14 @@ Shader "Hidden/MetaDepthCopy"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                // Remap this grid-resolution output texel's [0,1] UV onto the forearm's screen-UV
-                // sub-rect. duv is used for ALL screen-space sampling below (depth + hand mask) and
-                // as the depth-frame NDC xy — it replaces the old full-screen input.uv everywhere.
+                // The stabilized depth is now the forearm CROP rendered at grid resolution, so it is
+                // sampled 1:1 at this output texel's own [0,1] uv — NOT remapped. duv (the forearm's
+                // screen-UV sub-rect) is still needed below as the depth-frame NDC xy for the
+                // clip-space reconstruction (Step 3).
                 float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
 
-                // Step 1: sample the stabilized depth (Vulkan NDC [0,1]).
-                float centerDepth = SampleDepthR(duv);
+                // Step 1: sample the stabilized (crop-resolution) depth at this texel (Vulkan NDC [0,1]).
+                float centerDepth = SampleDepthR(input.uv);
 
                 // Step 2: reject invalid depth. Must be strictly inside (0,1). Values at 0 (near
                 // plane) or 1 (far plane / sky) are meaningless. w = -1 is the out-of-band sentinel
@@ -152,7 +153,11 @@ Shader "Hidden/MetaDepthCopy"
                     for (int nx = -_DepthSmoothRadius; nx <= _DepthSmoothRadius; nx++)
                     {
                         if (nx == 0 && ny == 0) continue;
-                        float2 nuv = duv + float2(nx, ny) * _DepthTexelSize.xy;
+                        // Neighbor walk on the crop-resolution stabilized texture (centered at
+                        // input.uv). NOTE: _DepthTexelSize is still the full depth-frame texel size
+                        // (1/320), so the step is smaller than one grid texel — the bilateral is weak
+                        // until that's switched to the grid texel size (deferred follow-up).
+                        float2 nuv = input.uv + float2(nx, ny) * _DepthTexelSize.xy;
                         // Explicit LOD 0 (no derivatives) — this sample is inside a dynamic loop.
                         float  nd  = SampleDepthR(nuv);
                         if (nd <= 0.0 || nd >= 1.0) continue;

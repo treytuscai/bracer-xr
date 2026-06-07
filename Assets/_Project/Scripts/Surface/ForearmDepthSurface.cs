@@ -200,6 +200,7 @@ public class ForearmDepthSurface : MonoBehaviour
         // Set up the mesh that gets rebuilt every frame
         _meshFilter = GetComponent<MeshFilter>();
         _meshRenderer = GetComponent<MeshRenderer>();
+        _meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         _mesh = new Mesh
         {
             name = "ForearmDepth",

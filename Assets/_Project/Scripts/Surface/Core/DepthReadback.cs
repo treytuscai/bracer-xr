@@ -79,9 +79,8 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // Hidden/DepthTemporalMedian: pass 0 extracts the left-eye slice, pass 1 medians 3 frames.
         private Material _medianMat;
-        // Ring of the last 3 depth frames (native depth res, R float), plus the median output.
+        // Ring of the last 3 depth frames (native depth res, R float), kept full-frame for reprojection.
         private RenderTexture[] _depthHist;
-        private RenderTexture   _stabilizedDepth;
         // Per-slot depth-frame VP (and inverse) captured when each frame was extracted, so the
         // median pass can reproject the two history frames into the current head pose.
         private Matrix4x4[] _histVP;
@@ -232,9 +231,12 @@ namespace Surface.Core
             // both the temporal reprojection and the main blit's _DepthInverseVP.
             Matrix4x4 depthInvVP = depthVP.inverse;
 
-            // Stabilize the depth (3-frame reprojected median) and bind it for the blit to sample.
-            // Runs here so it ticks once per dispatch (≈ one depth frame), not once per Unity frame.
-            UpdateTemporalDepth(depthVP, depthInvVP);
+            // Stabilize the depth (3-frame reprojected median, computed over the CROP only — pass 1
+            // renders cols×rows, not the full 320×320, so the bulk of the reprojection work is skipped)
+            // and bind it for the blit. Ticks once per dispatch (≈ one depth frame). Returns a pooled
+            // temp we release after the blit has sampled it.
+            RenderTexture stab = UpdateTemporalDepth(
+                depthVP, depthInvVP, cols, rows, new Vector4(scaleX, scaleY, offsetX, offsetY));
 
             _blitMaterial.SetMatrix("_DepthInverseVP", depthInvVP);
 
@@ -257,9 +259,10 @@ namespace Surface.Core
             RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
             Graphics.Blit(null, rt, _blitMaterial);
 
-            // The blit has sampled the mask; return it to the pool now (the readback reads only
-            // the world-position RT, not the mask).
+            // The blit has sampled the mask and the stabilized depth; return both pooled temps now
+            // (the readback reads only the world-position RT).
             if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
+            if (stab   != null) RenderTexture.ReleaseTemporary(stab);
 
             return rt;
         }
@@ -312,17 +315,18 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Computes the 3-frame per-texel median of the depth into _stabilizedDepth and binds it for
-        /// the blit to sample. Extracts the current frame into the ring's write slot (capturing its
-        /// depth VP), then medians the current frame against the two history frames reprojected into
-        /// the current head pose (pass 1). Called once per dispatch so the history spans distinct
-        /// depth frames.
+        /// Computes the 3-frame per-texel median of the depth and binds it for the blit to sample.
+        /// Pass 0 extracts the current frame into the ring's write slot at FULL resolution (history
+        /// stays full-frame so the reprojection can sample anywhere); pass 1 medians the current frame
+        /// against the two reprojected histories but renders only the forearm crop (cols×rows) to keep
+        /// the per-texel reprojection cheap. Returns the pooled crop-sized stabilized RT; the caller
+        /// releases it after the blit.
         /// </summary>
-        private void UpdateTemporalDepth(Matrix4x4 depthVP, Matrix4x4 depthInvVP)
+        private RenderTexture UpdateTemporalDepth(
+            Matrix4x4 depthVP, Matrix4x4 depthInvVP, int cols, int rows, Vector4 cropUVScaleOffset)
         {
-            // Required shader missing (logged at construction): nothing to stabilize with, so the
-            // blit will read an unbound stabilized texture and reject — leave it to surface the error.
-            if (_medianMat == null) return;
+            // Required shader missing (logged at construction): nothing to stabilize with.
+            if (_medianMat == null) return null;
 
             EnsureTemporalRTs();
 
@@ -362,16 +366,24 @@ namespace Surface.Core
             _medianMat.SetMatrix("_H1InvVP",  _histInvVP[h1]);
             _medianMat.SetMatrix("_H2VP",     _histVP[h2]);
             _medianMat.SetMatrix("_H2InvVP",  _histInvVP[h2]);
-            Graphics.Blit(null, _stabilizedDepth, _medianMat, 1);
+            _medianMat.SetVector("_CropUVScaleOffset", cropUVScaleOffset);
+
+            // Pass 1 renders only the crop (cols×rows — the region the blit consumes), reading the
+            // full-frame histories at reprojected UVs. Pooled temp; caller releases after the blit.
+            RenderTexture stab = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.RFloat);
+            stab.filterMode = FilterMode.Point;
+            Graphics.Blit(null, stab, _medianMat, 1);
 
             _histWrite = (_histWrite + 1) % 3;
 
-            _blitMaterial.SetTexture("_StabilizedDepthTex", _stabilizedDepth);
+            _blitMaterial.SetTexture("_StabilizedDepthTex", stab);
+            return stab;
         }
 
         /// <summary>
-        /// Lazily allocates the 3-frame history ring and the stabilized output at the native depth
-        /// resolution (R float, point-sampled). Created once; the depth dimensions are constant.
+        /// Lazily allocates the 3-frame depth history ring at the native depth resolution (R float,
+        /// point-sampled), kept full-frame so reprojection can sample anywhere. The stabilized output
+        /// is a per-dispatch pooled crop-sized temp (see UpdateTemporalDepth), not allocated here.
         /// </summary>
         private void EnsureTemporalRTs()
         {
@@ -384,9 +396,6 @@ namespace Surface.Core
                     { filterMode = FilterMode.Point, name = $"DepthHist{i}" };
                 _depthHist[i].Create();
             }
-            _stabilizedDepth = new RenderTexture(_depthTexW, _depthTexH, 0, RenderTextureFormat.RFloat)
-                { filterMode = FilterMode.Point, name = "StabilizedDepth" };
-            _stabilizedDepth.Create();
 
             _histVP    = new Matrix4x4[3];
             _histInvVP = new Matrix4x4[3];
@@ -409,7 +418,6 @@ namespace Surface.Core
 
             if (_depthHist != null)
                 foreach (var rt in _depthHist) if (rt != null) rt.Release();
-            if (_stabilizedDepth != null) _stabilizedDepth.Release();
         }
 
         // --------------------------------------------------------
