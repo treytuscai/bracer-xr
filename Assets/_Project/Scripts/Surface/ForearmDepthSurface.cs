@@ -57,9 +57,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Mask dilation radius in mask texels, applied at sample time (3x3 max). Grows the " +
+    [Tooltip("Mask dilation radius in grid texels, applied at sample time (3x3 max). Grows the " +
              "effective hand mask to cover readback latency without bloating the rendered mesh.")]
-    [Range(0f, 4f)] public float maskDilateTexels = 0.8f;
+    [Range(0, 4)] public int maskDilateTexels = 1;
 
     // ------------------------------------------------------------------
     // DEPTH SMOOTHING

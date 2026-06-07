@@ -53,11 +53,11 @@ namespace Surface.Core
         // HandMask provides the CPU-baked mesh and localToWorld each frame.
         private HandMask _handMaskSource;
         // Tuning, set once via the constructor from ForearmDepthSurface Inspector values:
-        //   MaskDilateTexels     — mask dilation radius in mask texels, applied at sample time in
-        //                          MetaDepthCopy (3x3 max) to cover readback latency.
+        //   MaskDilateTexels     — mask dilation radius in grid texels, applied at sample
+        //                          time in MetaDepthCopy (3x3 max) to cover readback latency.
         //   DepthSmoothRadius    — edge-aware depth blur radius (0 = off).
         //   DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to be averaged in.
-        public float MaskDilateTexels     = 1f;
+        public int   MaskDilateTexels     = 1;
         public int   DepthSmoothRadius    = 1;
         public float DepthSmoothThreshold = 0.01f;
         // CommandBuffer that clears and re-draws the hand mesh each frame.
@@ -92,7 +92,7 @@ namespace Surface.Core
         /// Loads the MetaDepthCopy and HandMaskRender shaders, creates materials, and stores the
         /// tuning parameters. Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold)
+        public DepthReadback(HandMask handMaskSource, int maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold)
         {
             MaskDilateTexels     = maskDilateTexels;
             DepthSmoothRadius    = depthSmoothRadius;
@@ -245,11 +245,13 @@ namespace Surface.Core
             // Shader does depthUV = uv * scale + offset.
             _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(scaleX, scaleY, offsetX, offsetY));
 
-            // Edge-aware (bilateral) depth-smoothing params for MetaDepthCopy.
+            // Edge-aware (bilateral) depth-smoothing params for MetaDepthCopy. _GridTexelSize is the
+            // texel size of the cols×rows crop grid — the stabilized depth and hand mask are both at
+            // that resolution now, so each bilateral/mask neighbor step walks one real grid texel.
             _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
             _blitMaterial.SetFloat("_DepthSmoothThreshold", DepthSmoothThreshold);
-            _blitMaterial.SetVector("_DepthTexelSize",
-                new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
+            _blitMaterial.SetVector("_GridTexelSize",
+                new Vector4(1f / cols, 1f / rows, cols, rows));
 
             // Render the hand silhouette before the blit, at grid resolution with the crop
             // remapped to fill the target — so the blit samples it 1:1 at its own UV.
@@ -466,7 +468,7 @@ namespace Surface.Core
 
             _handMaskMat.SetMatrix("_DepthVP", maskVP);
             // Sample-time dilation radius (now in grid/depth-texel units), applied in MetaDepthCopy's 3x3 max.
-            _blitMaterial.SetFloat("_MaskDilateTexels", MaskDilateTexels);
+            _blitMaterial.SetInteger("_MaskDilateTexels", MaskDilateTexels);
 
             _maskCmd.Clear();
             _maskCmd.SetRenderTarget(maskRT);
