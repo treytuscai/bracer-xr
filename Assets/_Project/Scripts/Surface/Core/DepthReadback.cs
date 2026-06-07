@@ -11,10 +11,11 @@ namespace Surface.Core
     /// <summary>
     /// Drives the full GPU->CPU depth pipeline each frame, producing SurfaceBuffer's world-space hit grid:
     ///   1. CROP:      the forearm's screen-space bounding box sizes a grid RT (~one texel per depth texel).
-    ///   2. STABILIZE: 3-frame reprojected median of the depth (UpdateTemporalDepth).
-    ///   3. HAND MASK: render the hand mesh as a white silhouette at grid resolution (crop remapped to fill).
+    ///   2. HAND MASK: render the hand mesh as a white silhouette at FULL depth-frame resolution (depth UV).
+    ///   3. STABILIZE: 3-frame reprojected median of the depth (UpdateTemporalDepth); its extract pass
+    ///                 carves the (dilated) hand out of history so the moving hand can't corrupt the median.
     ///   4. BLIT:      MetaDepthCopy unprojects the stabilized depth into the grid RT; hand pixels arrive
-    ///                 HasDepth=false (rejected as w=-1 in the shader). The RT is read back whole (async).
+    ///                 HasDepth=false (rejected as w=-1 in the shader, sampling the same mask). Read back async.
     ///   5. UNPROJECT: a Burst job copies the readback 1:1 into SurfaceBuffer; the caller chains the
     ///                 extraction pipeline onto the returned JobHandle.
     ///
@@ -53,13 +54,11 @@ namespace Surface.Core
         // HandMask provides the CPU-baked mesh and localToWorld each frame.
         private HandMask _handMaskSource;
         // Tuning, set once via the constructor from ForearmDepthSurface Inspector values:
-        //   MaskDilateTexels     — mask dilation radius in mask texels, applied at sample time in
-        //                          MetaDepthCopy (3x3 max) to cover readback latency.
-        //   DepthSmoothRadius    — edge-aware depth blur radius (0 = off).
-        //   DepthSmoothThreshold — max LINEAR depth diff (metres) for a neighbor to be averaged in.
-        public float MaskDilateTexels     = 1f;
-        public int   DepthSmoothRadius    = 1;
-        public float DepthSmoothThreshold = 0.01f;
+        //   MaskDilateTexels — mask dilation radius in grid texels (3x3 max), applied identically in
+        //                      the median's extract carve AND MetaDepthCopy's reject, to cover the 1-2
+        //                      frame readback latency and imperfect-mesh peek-through. Kept small (1):
+        //                      large values erode real surface in a ring around the hand.
+        public int MaskDilateTexels;
         // CommandBuffer that clears and re-draws the hand mesh each frame.
         private CommandBuffer _maskCmd;
         // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
@@ -79,9 +78,8 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // Hidden/DepthTemporalMedian: pass 0 extracts the left-eye slice, pass 1 medians 3 frames.
         private Material _medianMat;
-        // Ring of the last 3 depth frames (native depth res, R float), plus the median output.
+        // Ring of the last 3 depth frames (native depth res, R float), kept full-frame for reprojection.
         private RenderTexture[] _depthHist;
-        private RenderTexture   _stabilizedDepth;
         // Per-slot depth-frame VP (and inverse) captured when each frame was extracted, so the
         // median pass can reproject the two history frames into the current head pose.
         private Matrix4x4[] _histVP;
@@ -93,11 +91,9 @@ namespace Surface.Core
         /// Loads the MetaDepthCopy and HandMaskRender shaders, creates materials, and stores the
         /// tuning parameters. Shaders must be present in the project and not stripped from builds.
         /// </summary>
-        public DepthReadback(HandMask handMaskSource, float maskDilateTexels, int depthSmoothRadius, float depthSmoothThreshold)
+        public DepthReadback(HandMask handMaskSource, int maskDilateTexels)
         {
-            MaskDilateTexels     = maskDilateTexels;
-            DepthSmoothRadius    = depthSmoothRadius;
-            DepthSmoothThreshold = depthSmoothThreshold;
+            MaskDilateTexels = maskDilateTexels;
 
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
@@ -226,40 +222,48 @@ namespace Surface.Core
             float scaleY  = (float)cropH / screenH;
             float offsetX = (float)cropX / screenW;
             float offsetY = (float)cropY / screenH;
+            Vector4 cropUVScaleOffset = new Vector4(scaleX, scaleY, offsetX, offsetY);
 
             // Invert the depth frame's world->clip matrix once on the CPU (clip->world in the
             // shader). depthVP is the left-eye VP for the pose at depth-capture time. Reused for
             // both the temporal reprojection and the main blit's _DepthInverseVP.
             Matrix4x4 depthInvVP = depthVP.inverse;
 
-            // Stabilize the depth (3-frame reprojected median) and bind it for the blit to sample.
-            // Runs here so it ticks once per dispatch (≈ one depth frame), not once per Unity frame.
-            UpdateTemporalDepth(depthVP, depthInvVP);
+            // Render the FULL-FRAME hand silhouette FIRST: it has two consumers this frame. (1) The
+            // temporal median's extract pass samples it to carve the (dilated) hand out of depth
+            // history, so the moving hand can't reproject onto clean arm and corrupt the median. (2)
+            // MetaDepthCopy samples the SAME mask to reject the current hand. RenderHandMask binds it to
+            // both materials. Must precede UpdateTemporalDepth, whose pass 0 reads it.
+            RenderTexture maskRT = RenderHandMask(depthVP);
+
+            // Stabilize the depth (3-frame reprojected median, computed over the CROP only — pass 1
+            // renders cols×rows, not the full 320×320, so the bulk of the reprojection work is skipped)
+            // and bind it for the blit. Pass 0 carves the hand out of history (see above). Returns a
+            // pooled temp we release after the blit has sampled it.
+            RenderTexture stab = UpdateTemporalDepth(depthVP, depthInvVP, cols, rows, cropUVScaleOffset);
 
             _blitMaterial.SetMatrix("_DepthInverseVP", depthInvVP);
 
             // Remap the grid-resolution blit's [0,1] UV onto the forearm's screen-UV sub-rect, so
-            // each output texel samples the depth texture at the correct screen position.
+            // each output texel samples the depth texture at the correct screen position. The same
+            // mapping takes a grid texel into depth UV for the full-frame hand-mask lookup.
             // Shader does depthUV = uv * scale + offset.
-            _blitMaterial.SetVector("_CropUVScaleOffset", new Vector4(scaleX, scaleY, offsetX, offsetY));
+            _blitMaterial.SetVector("_CropUVScaleOffset", cropUVScaleOffset);
 
-            // Edge-aware (bilateral) depth-smoothing params for MetaDepthCopy.
-            _blitMaterial.SetInt("_DepthSmoothRadius", DepthSmoothRadius);
-            _blitMaterial.SetFloat("_DepthSmoothThreshold", DepthSmoothThreshold);
-            _blitMaterial.SetVector("_DepthTexelSize",
-                new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
-
-            // Render the hand silhouette before the blit, at grid resolution with the crop
-            // remapped to fill the target — so the blit samples it 1:1 at its own UV.
-            RenderTexture maskRT = RenderHandMask(depthVP, scaleX, scaleY, offsetX, offsetY, cols, rows);
+            // _GridTexelSize is the texel size of the cols×rows crop grid (= the stabilized depth
+            // resolution); the hand-mask dilation uses it to step the full-frame mask by one grid
+            // texel mapped into depth UV (_CropUVScaleOffset.xy * _GridTexelSize.xy * _MaskDilateTexels).
+            _blitMaterial.SetVector("_GridTexelSize", new Vector4(1f / cols, 1f / rows, cols, rows));
+            _blitMaterial.SetInteger("_MaskDilateTexels", MaskDilateTexels);
 
             // A pooled temporary RT avoids per-frame allocation churn as the crop size changes.
             RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
             Graphics.Blit(null, rt, _blitMaterial);
 
-            // The blit has sampled the mask; return it to the pool now (the readback reads only
-            // the world-position RT, not the mask).
+            // The blit has sampled the mask and the stabilized depth; return both pooled temps now
+            // (the readback reads only the world-position RT).
             if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
+            if (stab   != null) RenderTexture.ReleaseTemporary(stab);
 
             return rt;
         }
@@ -312,19 +316,28 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Computes the 3-frame per-texel median of the depth into _stabilizedDepth and binds it for
-        /// the blit to sample. Extracts the current frame into the ring's write slot (capturing its
-        /// depth VP), then medians the current frame against the two history frames reprojected into
-        /// the current head pose (pass 1). Called once per dispatch so the history spans distinct
-        /// depth frames.
+        /// Computes the 3-frame per-texel median of the depth and binds it for the blit to sample.
+        /// Pass 0 extracts the current frame into the ring's write slot at FULL resolution (history
+        /// stays full-frame so the reprojection can sample anywhere); pass 1 medians the current frame
+        /// against the two reprojected histories but renders only the forearm crop (cols×rows) to keep
+        /// the per-texel reprojection cheap. Returns the pooled crop-sized stabilized RT; the caller
+        /// releases it after the blit.
         /// </summary>
-        private void UpdateTemporalDepth(Matrix4x4 depthVP, Matrix4x4 depthInvVP)
+        private RenderTexture UpdateTemporalDepth(
+            Matrix4x4 depthVP, Matrix4x4 depthInvVP, int cols, int rows, Vector4 cropUVScaleOffset)
         {
-            // Required shader missing (logged at construction): nothing to stabilize with, so the
-            // blit will read an unbound stabilized texture and reject — leave it to surface the error.
-            if (_medianMat == null) return;
+            // Required shader missing (logged at construction): nothing to stabilize with.
+            if (_medianMat == null) return null;
 
             EnsureTemporalRTs();
+
+            // Pass 0 (extract) carves the hand out of history. Bind the SAME dilation kernel the
+            // consumer (MetaDepthCopy) rejects with, so the carved hole and the rejected region match.
+            // _HandMaskTex itself is already bound on _medianMat by RenderHandMask. These must be set
+            // before the pass-0 blits below (including the first-frame priming blits).
+            _medianMat.SetVector("_CropUVScaleOffset", cropUVScaleOffset);
+            _medianMat.SetVector("_GridTexelSize", new Vector4(1f / cols, 1f / rows, cols, rows));
+            _medianMat.SetInteger("_MaskDilateTexels", MaskDilateTexels);
 
             int cur = _histWrite;
 
@@ -362,16 +375,24 @@ namespace Surface.Core
             _medianMat.SetMatrix("_H1InvVP",  _histInvVP[h1]);
             _medianMat.SetMatrix("_H2VP",     _histVP[h2]);
             _medianMat.SetMatrix("_H2InvVP",  _histInvVP[h2]);
-            Graphics.Blit(null, _stabilizedDepth, _medianMat, 1);
+            // _CropUVScaleOffset already set above (before pass 0) — pass 1 reuses the same value.
+
+            // Pass 1 renders only the crop (cols×rows — the region the blit consumes), reading the
+            // full-frame histories at reprojected UVs. Pooled temp; caller releases after the blit.
+            RenderTexture stab = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.RFloat);
+            stab.filterMode = FilterMode.Point;
+            Graphics.Blit(null, stab, _medianMat, 1);
 
             _histWrite = (_histWrite + 1) % 3;
 
-            _blitMaterial.SetTexture("_StabilizedDepthTex", _stabilizedDepth);
+            _blitMaterial.SetTexture("_StabilizedDepthTex", stab);
+            return stab;
         }
 
         /// <summary>
-        /// Lazily allocates the 3-frame history ring and the stabilized output at the native depth
-        /// resolution (R float, point-sampled). Created once; the depth dimensions are constant.
+        /// Lazily allocates the 3-frame depth history ring at the native depth resolution (R float,
+        /// point-sampled), kept full-frame so reprojection can sample anywhere. The stabilized output
+        /// is a per-dispatch pooled crop-sized temp (see UpdateTemporalDepth), not allocated here.
         /// </summary>
         private void EnsureTemporalRTs()
         {
@@ -384,9 +405,6 @@ namespace Surface.Core
                     { filterMode = FilterMode.Point, name = $"DepthHist{i}" };
                 _depthHist[i].Create();
             }
-            _stabilizedDepth = new RenderTexture(_depthTexW, _depthTexH, 0, RenderTextureFormat.RFloat)
-                { filterMode = FilterMode.Point, name = "StabilizedDepth" };
-            _stabilizedDepth.Create();
 
             _histVP    = new Matrix4x4[3];
             _histInvVP = new Matrix4x4[3];
@@ -409,7 +427,6 @@ namespace Surface.Core
 
             if (_depthHist != null)
                 foreach (var rt in _depthHist) if (rt != null) rt.Release();
-            if (_stabilizedDepth != null) _stabilizedDepth.Release();
         }
 
         // --------------------------------------------------------
@@ -417,48 +434,34 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Renders the CPU-baked hand mesh as a white silhouette into a pooled grid-resolution
-        /// (cols×rows) RenderTexture using CommandBuffer.DrawMesh with Meta's depth VP. A crop
-        /// remap matrix maps the forearm's NDC sub-rect onto the full target, so the silhouette
-        /// fills the mask at ~one texel per depth texel and MetaDepthCopy can sample it 1:1 at
-        /// the blit's own UV (no full-screen oversampling, no screen-space crop remap).
+        /// Renders the CPU-baked hand mesh as a white silhouette into a pooled FULL depth-frame
+        /// (_depthTexW×_depthTexH) RenderTexture using CommandBuffer.DrawMesh with Meta's depth VP
+        /// (no crop remap), so the mask lives in the depth texture's own UV space. Two consumers
+        /// sample it this frame: the temporal median's extract pass (to carve the hand out of depth
+        /// history) and MetaDepthCopy (to reject the current hand) — so it is bound to BOTH materials.
         ///
-        /// Returns the pooled RenderTexture (caller releases it after the blit), or null when
-        /// there is no hand to draw — in which case _HandMaskTex is bound to black so the blit
-        /// rejects nothing.
+        /// Returns the pooled RenderTexture (caller releases it after the blit), or null when there is
+        /// no hand to draw — in which case _HandMaskTex is bound to black on both materials so nothing
+        /// is carved or rejected.
         /// </summary>
-        private RenderTexture RenderHandMask(
-            Matrix4x4 depthVP,
-            float scaleX, float scaleY, float offsetX, float offsetY,
-            int maskW, int maskH)
+        private RenderTexture RenderHandMask(Matrix4x4 depthVP)
         {
             if (_handMaskSource == null || _handMaskMat == null ||
                 _handMaskSource.BakedMesh == null || _handMaskSource.BakedMesh.vertexCount == 0)
             {
                 _blitMaterial.SetTexture("_HandMaskTex", Texture2D.blackTexture);
+                if (_medianMat != null) _medianMat.SetTexture("_HandMaskTex", Texture2D.blackTexture);
                 return null;
             }
 
-            // Crop remap: maps the forearm crop's NDC sub-rect to full NDC so the silhouette
-            // fills the grid-resolution target. Derived from the inverse of the blit's
-            // depthUV = uv*scale + offset, expressed in clip space (x' = x/scale + b*w):
-            //   ndc' = ndc/scale + (1 - 2*offset - scale)/scale.
-            // Folded into the depth VP, then HandMaskRender applies the Vulkan Y flip last.
-            Matrix4x4 crop = Matrix4x4.identity;
-            crop.m00 = 1f / scaleX; crop.m03 = (1f - 2f * offsetX - scaleX) / scaleX;
-            crop.m11 = 1f / scaleY; crop.m13 = (1f - 2f * offsetY - scaleY) / scaleY;
-            Matrix4x4 maskVP = crop * depthVP;
-
-            RenderTexture maskRT = RenderTexture.GetTemporary(maskW, maskH, 0, RenderTextureFormat.R8);
+            // Full-frame silhouette at the native depth resolution, in the depth camera's UV space.
+            // HandMaskRender applies the Vulkan Y flip; no crop matrix — both consumers sample it in
+            // depth UV (the median's extract at its full-frame uv, MetaDepthCopy at duv).
+            RenderTexture maskRT = RenderTexture.GetTemporary(_depthTexW, _depthTexH, 0, RenderTextureFormat.R8);
             _blitMaterial.SetTexture("_HandMaskTex", maskRT);
-            // Set the texel size explicitly: Graphics.Blit binds the material outside the
-            // normal SRP path, so don't rely on Unity auto-populating _HandMaskTex_TexelSize.
-            _blitMaterial.SetVector("_HandMaskTex_TexelSize",
-                new Vector4(1f / maskW, 1f / maskH, maskW, maskH));
+            if (_medianMat != null) _medianMat.SetTexture("_HandMaskTex", maskRT);
 
-            _handMaskMat.SetMatrix("_DepthVP", maskVP);
-            // Sample-time dilation radius (now in grid/depth-texel units), applied in MetaDepthCopy's 3x3 max.
-            _blitMaterial.SetFloat("_MaskDilateTexels", MaskDilateTexels);
+            _handMaskMat.SetMatrix("_DepthVP", depthVP);
 
             _maskCmd.Clear();
             _maskCmd.SetRenderTarget(maskRT);
