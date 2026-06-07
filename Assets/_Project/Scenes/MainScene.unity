@@ -784,9 +784,7 @@ MonoBehaviour:
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
-  maskDilateTexels: 0.8
-  depthSmoothRadius: 1
-  depthSmoothThreshold: 0.01
+  maskDilateTexels: 1
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1
@@ -876,7 +874,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.02
+  touchHoverHeight: 0.005
   touchDepth: 0.04
   maxCellSearchDist: 0.04
   showTouchDebug: 1

@@ -319,9 +319,7 @@ MonoBehaviour:
   handSkeleton: {fileID: 113860855}
   centerEyeAnchor: {fileID: 188644609}
   surfaceMaterial: {fileID: 2100000, guid: d1213e4f5a6b7c8d9e0f1a2b3c4d5e6f, type: 2}
-  maskDilateTexels: 1.2
-  depthSmoothRadius: 1
-  depthSmoothThreshold: 0.01
+  maskDilateTexels: 1
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1
@@ -1554,6 +1552,9 @@ MonoBehaviour:
   panelDistance: 0.55
   panelRightMeters: 0.22
   panelUpMeters: 0
+  minHeadHeightToAnchor: 1
+  maxAnchorWaitFrames: 300
+  fallbackEyeHeightMeters: 1.45
   panelWorldWidthMeters: 0.12
   startHue: 0.33
   saturation: 1
