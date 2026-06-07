@@ -59,8 +59,10 @@ namespace Surface.Core
         //                      frame readback latency and imperfect-mesh peek-through. Kept small (1):
         //                      large values erode real surface in a ring around the hand.
         public int MaskDilateTexels;
-        // CommandBuffer that clears and re-draws the hand mesh each frame.
-        private CommandBuffer _maskCmd;
+        // One CommandBuffer recording the whole GPU depth-reconstruction pass each frame (hand-mask
+        // draw + the three depth blits), wrapped in named samples and submitted once. The named
+        // scopes surface in RenderDoc / the GPU Profiler; the single submit replaces four separate ones.
+        private CommandBuffer _depthCmd;
         // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
         private Material _handMaskMat;
 
@@ -104,7 +106,7 @@ namespace Surface.Core
             _blitMaterial = new Material(shader);
 
             _handMaskSource = handMaskSource;
-            _maskCmd        = new CommandBuffer { name = "HandMaskRender" };
+            _depthCmd       = new CommandBuffer { name = "DepthReconstruction" };
 
             Shader maskShader = Shader.Find("Hidden/HandMaskRender");
             if (maskShader != null)
@@ -229,6 +231,10 @@ namespace Surface.Core
             // both the temporal reprojection and the main blit's _DepthInverseVP.
             Matrix4x4 depthInvVP = depthVP.inverse;
 
+            // Record the whole pass into one buffer (cleared here, submitted once at the end). Hand
+            // mask, the two median passes, and the final blit append named samples to _depthCmd.
+            _depthCmd.Clear();
+
             // Render the FULL-FRAME hand silhouette FIRST: it has two consumers this frame. (1) The
             // temporal median's extract pass samples it to carve the (dilated) hand out of depth
             // history, so the moving hand can't reproject onto clean arm and corrupt the median. (2)
@@ -258,10 +264,16 @@ namespace Surface.Core
 
             // A pooled temporary RT avoids per-frame allocation churn as the crop size changes.
             RenderTexture rt = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.ARGBFloat);
-            Graphics.Blit(null, rt, _blitMaterial);
+            _depthCmd.BeginSample("MetaDepthCopy");
+            _depthCmd.Blit(null, rt, _blitMaterial);
+            _depthCmd.EndSample("MetaDepthCopy");
 
-            // The blit has sampled the mask and the stabilized depth; return both pooled temps now
-            // (the readback reads only the world-position RT).
+            // Submit the whole recorded pass once: hand mask -> extract -> median -> blit, in order.
+            Graphics.ExecuteCommandBuffer(_depthCmd);
+
+            // Now that the GPU work is queued, the blit has sampled the mask and the stabilized depth;
+            // release both pooled temps (the readback reads only the world-position RT). Releasing
+            // before the submit would risk the pool reusing them under the still-pending GPU work.
             if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
             if (stab   != null) RenderTexture.ReleaseTemporary(stab);
 
@@ -343,7 +355,9 @@ namespace Surface.Core
 
             // Extract the current raw left-eye depth slice into the write slot (pass 0), and record
             // the pose it was captured at for reprojection.
-            Graphics.Blit(null, _depthHist[cur], _medianMat, 0);
+            _depthCmd.BeginSample("DepthExtract");
+            _depthCmd.Blit(null, _depthHist[cur], _medianMat, 0);
+            _depthCmd.EndSample("DepthExtract");
             _histVP[cur]    = depthVP;
             _histInvVP[cur] = depthInvVP;
 
@@ -354,7 +368,7 @@ namespace Surface.Core
                 for (int k = 1; k <= 2; k++)
                 {
                     int s = (cur + k) % 3;
-                    Graphics.Blit(null, _depthHist[s], _medianMat, 0);
+                    _depthCmd.Blit(null, _depthHist[s], _medianMat, 0);
                     _histVP[s]    = depthVP;
                     _histInvVP[s] = depthInvVP;
                 }
@@ -381,7 +395,9 @@ namespace Surface.Core
             // full-frame histories at reprojected UVs. Pooled temp; caller releases after the blit.
             RenderTexture stab = RenderTexture.GetTemporary(cols, rows, 0, RenderTextureFormat.RFloat);
             stab.filterMode = FilterMode.Point;
-            Graphics.Blit(null, stab, _medianMat, 1);
+            _depthCmd.BeginSample("DepthMedian");
+            _depthCmd.Blit(null, stab, _medianMat, 1);
+            _depthCmd.EndSample("DepthMedian");
 
             _histWrite = (_histWrite + 1) % 3;
 
@@ -423,7 +439,7 @@ namespace Surface.Core
             if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
             if (_handMaskMat  != null) UnityEngine.Object.Destroy(_handMaskMat);
             if (_medianMat    != null) UnityEngine.Object.Destroy(_medianMat);
-            _maskCmd?.Release();
+            _depthCmd?.Release();
 
             if (_depthHist != null)
                 foreach (var rt in _depthHist) if (rt != null) rt.Release();
@@ -463,13 +479,15 @@ namespace Surface.Core
 
             _handMaskMat.SetMatrix("_DepthVP", depthVP);
 
-            _maskCmd.Clear();
-            _maskCmd.SetRenderTarget(maskRT);
-            _maskCmd.ClearRenderTarget(false, true, Color.black);
+            // Appends to _depthCmd (cleared and submitted once by DispatchReconstruction); the mask
+            // draw is recorded first so the median's extract and the blit sample a populated mask.
+            _depthCmd.BeginSample("HandMask");
+            _depthCmd.SetRenderTarget(maskRT);
+            _depthCmd.ClearRenderTarget(false, true, Color.black);
             // DrawMesh with the CPU-baked mesh: vertex positions are already skinned.
             // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call.
-            _maskCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
-            Graphics.ExecuteCommandBuffer(_maskCmd);
+            _depthCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
+            _depthCmd.EndSample("HandMask");
             return maskRT;
         }
 
