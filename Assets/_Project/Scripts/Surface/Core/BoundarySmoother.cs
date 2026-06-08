@@ -7,11 +7,9 @@ using Surface.Buffer;
 namespace Surface.Core
 {
     /// <summary>
-    /// De-steps the forearm mesh edge. The interior is denoised on the GPU (bilateral in
-    /// MetaDepthCopy), so this stage only touches the boundary. Fully parallel/Burst: one pass marks
-    /// boundary cells, then each is averaged with nearby BOUNDARY cells only — smoothing along the
-    /// silhouette without pulling the patch inward, every cell every frame. (A sequential contour
-    /// tracer was rejected: it fragmented the noisy edge into skipped chains that flickered.)
+    /// De-steps the forearm mesh edge. Fully parallel/Burst: one pass marks boundary
+    /// cells, then each is averaged with nearby BOUNDARY cells only — smoothing along the
+    /// silhouette without pulling the patch inward, every cell every frame.
     /// </summary>
     public class BoundarySmoother
     {
