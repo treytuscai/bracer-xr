@@ -4,7 +4,8 @@
 //
 // Material properties (driven by RevisedBoundingBoxController via C#):
 //   _GridColumns / _GridRows — grid resolution. Larger = smaller squares.
-//   _StateTex                — columns x rows RGBA, point-filtered. A > 0.5 = painted.
+//   _StateTex                — columns x rows RGBA, point-filtered. A > 0.5 = occupied.
+//   _ContentAtlas            — optional per-cell image tiles (columns x rows layout in UV space).
 //   _DefaultColor            — fill for an empty cell (semi-transparent over skin).
 //   _LineColor / _LineThickness — grid line appearance.
 
@@ -15,10 +16,13 @@ Shader "Custom/ForearmGrid"
         _GridColumns   ("Grid Columns", Float) = 6
         _GridRows      ("Grid Rows",    Float) = 6
         _StateTex      ("Cell State (RGBA)", 2D) = "black" {}
+        _ContentAtlas  ("Cell Content Atlas", 2D) = "black" {}
 
         _DefaultColor  ("Default Cell Color", Color) = (1, 1, 1, 0.15)
         _LineColor     ("Grid Line Color",    Color) = (1, 1, 1, 0.6)
         _LineThickness ("Line Thickness",     Range(0, 0.5)) = 0.04
+        _HighlightCell ("Highlight Cell", Vector) = (0, 0, 0, 0)
+        _HighlightColor ("Highlight Color", Color) = (0.2, 0.9, 0.35, 0.35)
     }
 
     SubShader
@@ -39,6 +43,8 @@ Shader "Custom/ForearmGrid"
 
             TEXTURE2D(_StateTex);
             SAMPLER(sampler_StateTex);
+            TEXTURE2D(_ContentAtlas);
+            SAMPLER(sampler_ContentAtlas);
 
             CBUFFER_START(UnityPerMaterial)
                 float  _GridColumns;
@@ -46,6 +52,8 @@ Shader "Custom/ForearmGrid"
                 half4  _DefaultColor;
                 half4  _LineColor;
                 float  _LineThickness;
+                float4 _HighlightCell;
+                half4  _HighlightColor;
             CBUFFER_END
 
             struct Attributes
@@ -87,9 +95,24 @@ Shader "Custom/ForearmGrid"
                 float2 cellLocal = frac(input.uv * grid);
 
                 float2 cellCenter = (cell + 0.5) / grid;
-                half4  cellColor  = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
+                half4  cellState  = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
 
-                half4 col = (cellColor.a > 0.5) ? cellColor : _DefaultColor;
+                // Content atlas is laid out as a columns x rows tile grid in normalized UV space.
+                float2 contentUV = (cell + cellLocal) / grid;
+                half4  content   = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+
+                half4 col = _DefaultColor;
+                if (cellState.a > 0.5)
+                {
+                    col = (content.a > 0.01) ? content : cellState;
+                }
+
+                if (_HighlightCell.z > 0.5 &&
+                    cell.x == _HighlightCell.x && cell.y == _HighlightCell.y)
+                {
+                    col.rgb = lerp(col.rgb, _HighlightColor.rgb, _HighlightColor.a);
+                    col.a   = max(col.a, _HighlightColor.a);
+                }
 
                 float2 edgeDist = min(cellLocal, 1.0 - cellLocal);
                 float  d        = min(edgeDist.x, edgeDist.y);

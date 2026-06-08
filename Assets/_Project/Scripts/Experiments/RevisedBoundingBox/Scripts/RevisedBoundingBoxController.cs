@@ -44,6 +44,7 @@ public class RevisedBoundingBoxController : MonoBehaviour
 
     Material  _mat;
     Texture2D _stateTex;
+    Texture2D _emptyContentAtlas;
     Color32[] _cellColors;
     int       _builtCols = -1;
     int       _builtRows = -1;
@@ -55,6 +56,7 @@ public class RevisedBoundingBoxController : MonoBehaviour
     static readonly int GridColumnsId   = Shader.PropertyToID("_GridColumns");
     static readonly int GridRowsId      = Shader.PropertyToID("_GridRows");
     static readonly int StateTexId      = Shader.PropertyToID("_StateTex");
+    static readonly int ContentAtlasId  = Shader.PropertyToID("_ContentAtlas");
     static readonly int DefaultColorId  = Shader.PropertyToID("_DefaultColor");
     static readonly int LineColorId     = Shader.PropertyToID("_LineColor");
     static readonly int LineThicknessId = Shader.PropertyToID("_LineThickness");
@@ -86,6 +88,16 @@ public class RevisedBoundingBoxController : MonoBehaviour
         }
 
         _mat = new Material(sh) { name = "ForearmGridMat_Instance" };
+
+        _emptyContentAtlas = new Texture2D(1, 1, TextureFormat.RGBA32, false, true)
+        {
+            name = "ForearmGridEmptyContent",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        _emptyContentAtlas.SetPixel(0, 0, Color.clear);
+        _emptyContentAtlas.Apply(false);
+        _mat.SetTexture(ContentAtlasId, _emptyContentAtlas);
 
         MeshRenderer mr = surface.GetComponent<MeshRenderer>()
                        ?? surface.GetComponentInChildren<MeshRenderer>();
@@ -259,6 +271,7 @@ public class RevisedBoundingBoxController : MonoBehaviour
     void OnDestroy()
     {
         if (_stateTex != null) Destroy(_stateTex);
+        if (_emptyContentAtlas != null) Destroy(_emptyContentAtlas);
         if (_mat != null)      Destroy(_mat);
     }
 }

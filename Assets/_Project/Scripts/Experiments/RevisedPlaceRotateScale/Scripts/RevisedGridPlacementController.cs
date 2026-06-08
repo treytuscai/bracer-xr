@@ -1,0 +1,173 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>
+/// Places palette widgets into grid cells on the forearm depth-surface mesh by baking
+/// their image into the ForearmGrid shader content atlas (UV-locked, no floating canvas).
+/// Implements <see cref="IForearmWidgetPlacement"/> for <see cref="PossibleUIPaletteController"/>.
+/// </summary>
+[DefaultExecutionOrder(110)]
+public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlacement
+{
+    [Header("References")]
+    public RevisedGridController grid;
+    public ForearmDepthSurface surface;
+    public ForearmInteraction interaction;
+
+    [Header("Carry")]
+    [Min(0.005f)] public float carriedWorldWidthMeters = 0.04f;
+    [Min(0f)] public float fingerCarrySmoothTime = 0.048f;
+    public Vector3 carryAttachOffsetTipLocal = Vector3.zero;
+    public bool stickWidgetOriginToFingertip = true;
+
+    RectTransform _draggedItem;
+    Transform     _carrySavedParent;
+    Vector3       _carrySavedLocalScale;
+    bool          _destroyCarriedOnAbort;
+
+    Vector3 _holdOffsetLocalInTipSpace;
+    Quaternion _carryPickupWorldRotation;
+    Vector3 _tipFilteredPos;
+    Quaternion _tipFilteredRot;
+    Vector3 _tipPosSmoothVel;
+
+    public bool IsCarrying => _draggedItem != null;
+
+    void Start()
+    {
+        if (grid == null) grid = FindObjectOfType<RevisedGridController>();
+        if (surface == null) surface = FindObjectOfType<ForearmDepthSurface>();
+        if (interaction == null && surface != null)
+            interaction = surface.GetComponent<ForearmInteraction>();
+    }
+
+    void LateUpdate()
+    {
+        if (IsCarrying && interaction != null && interaction.IsActive)
+            grid?.SetHighlightFromUV(interaction.TouchUV, true);
+        else if (!IsCarrying)
+            grid?.ClearHighlight();
+    }
+
+    public bool BeginCarryExternal(RectTransform widget, Transform indexTipWorld, bool destroyOnAbort = true)
+    {
+        if (widget == null || indexTipWorld == null) return false;
+
+        _draggedItem = widget;
+        _destroyCarriedOnAbort = destroyOnAbort;
+        _carrySavedParent = widget.parent;
+        _carrySavedLocalScale = widget.localScale;
+
+        widget.SetParent(WidgetCarryCanvas.Root, worldPositionStays: true);
+
+        float currentWorldWidth = Mathf.Abs(widget.rect.width * widget.lossyScale.x);
+        if (currentWorldWidth > 1e-4f && carriedWorldWidthMeters > 1e-4f)
+        {
+            float scaleFactor = Mathf.Min(1f, carriedWorldWidthMeters / currentWorldWidth);
+            widget.localScale *= scaleFactor;
+        }
+
+        _carrySavedLocalScale = widget.localScale;
+
+        Quaternion tipRot = indexTipWorld.rotation;
+        _holdOffsetLocalInTipSpace = stickWidgetOriginToFingertip
+            ? carryAttachOffsetTipLocal
+            : Quaternion.Inverse(tipRot) * (widget.position - indexTipWorld.position);
+
+        _carryPickupWorldRotation = widget.rotation;
+        _tipFilteredPos = indexTipWorld.position;
+        _tipFilteredRot = indexTipWorld.rotation;
+        _tipPosSmoothVel = Vector3.zero;
+
+        TickCarryFollowFinger(indexTipWorld);
+        grid?.ClearHighlight();
+        return true;
+    }
+
+    public void TickCarryFollowFinger(Transform indexTipWorld)
+    {
+        if (_draggedItem == null || indexTipWorld == null) return;
+
+        float dt = Time.deltaTime;
+        if (fingerCarrySmoothTime <= Mathf.Epsilon)
+        {
+            _tipFilteredPos = indexTipWorld.position;
+            _tipFilteredRot = indexTipWorld.rotation;
+        }
+        else
+        {
+            _tipFilteredPos = Vector3.SmoothDamp(
+                _tipFilteredPos, indexTipWorld.position, ref _tipPosSmoothVel,
+                fingerCarrySmoothTime, Mathf.Infinity, dt);
+
+            float rotT = 1f - Mathf.Exp(-dt / Mathf.Max(fingerCarrySmoothTime * 1.25f, 1e-4f));
+            _tipFilteredRot = Quaternion.Slerp(_tipFilteredRot, indexTipWorld.rotation, rotT);
+        }
+
+        Vector3 worldPos = _tipFilteredPos + _tipFilteredRot * _holdOffsetLocalInTipSpace;
+        _draggedItem.SetPositionAndRotation(worldPos, _carryPickupWorldRotation);
+    }
+
+    public void CommitPlace(Vector3 contactWorldPoint)
+    {
+        if (_draggedItem == null || grid == null) return;
+
+        Vector2 uv;
+        if (interaction != null && interaction.IsActive)
+            uv = interaction.TouchUV;
+        else if (!TryGetUVNearWorldPoint(contactWorldPoint, out uv))
+            return;
+
+        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) return;
+
+        grid.UVToCell(uv, out int col, out int row);
+
+        if (grid.IsCellOccupied(col, row))
+            grid.ClearCell(col, row);
+
+        if (!grid.TryBakeWidgetIntoCell(_draggedItem, col, row))
+            Debug.LogWarning("[RevisedGridPlacement] Could not bake widget image into grid cell.");
+
+        Destroy(_draggedItem.gameObject);
+        _draggedItem = null;
+        grid.ClearHighlight();
+    }
+
+    public void DestroyCarriedItem()
+    {
+        if (_draggedItem == null) return;
+
+        Destroy(_draggedItem.gameObject);
+        _draggedItem = null;
+        grid?.ClearHighlight();
+    }
+
+    bool TryGetUVNearWorldPoint(Vector3 world, out Vector2 uv)
+    {
+        uv = Vector2.zero;
+        if (surface == null || !surface.IsValid) return false;
+
+        Mesh mesh = surface.SurfaceMesh;
+        if (mesh == null) return false;
+
+        Vector3[] verts = mesh.vertices;
+        Vector2[] uvs   = mesh.uv;
+        Transform t     = surface.transform;
+
+        float bestDistSq = float.MaxValue;
+        int   bestIdx    = -1;
+
+        for (int i = 0; i < verts.Length; i++)
+        {
+            Vector3 w = t.TransformPoint(verts[i]);
+            float dSq = (w - world).sqrMagnitude;
+            if (dSq >= bestDistSq) continue;
+            bestDistSq = dSq;
+            bestIdx = i;
+        }
+
+        if (bestIdx < 0) return false;
+        uv = uvs[bestIdx];
+        return true;
+    }
+}

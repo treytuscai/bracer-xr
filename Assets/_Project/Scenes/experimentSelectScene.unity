@@ -1502,8 +1502,8 @@ MonoBehaviour:
     sceneName: RevisedBoundingBox
   - label: Optimal Interface Positioning Experiment
     sceneName: placeRotateScaleInterfaces
-  - label: Choose Optimal Color
-    sceneName: Color
+  - label: New Place on Mesh
+    sceneName: RevisedPlaceRotateScale
   - label: Size Scale Pt. 2
     sceneName: SizeAndScale
   - label: Orientation Degree

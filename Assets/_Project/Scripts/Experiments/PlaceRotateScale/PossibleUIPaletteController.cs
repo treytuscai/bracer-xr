@@ -27,6 +27,29 @@ public class PossibleUIPaletteController : MonoBehaviour
     [Tooltip("ItemList controller — receives the carried clone and owns arm placement.")]
     public ArmLayoutController itemListController;
 
+    [Tooltip("Optional alternate placement handler (e.g. RevisedGridPlacementController). " +
+             "When set, palette carry/placement uses this instead of itemListController.")]
+    public MonoBehaviour widgetPlacementOverride;
+
+    IForearmWidgetPlacement Placement =>
+        ResolvePlacement(widgetPlacementOverride) ?? itemListController;
+
+    static IForearmWidgetPlacement ResolvePlacement(MonoBehaviour behaviour)
+    {
+        if (behaviour == null) return null;
+        if (behaviour is IForearmWidgetPlacement direct) return direct;
+
+        // Allow dragging the parent GameObject (e.g. SurfaceManager) instead of the
+        // specific RevisedGridPlacementController component.
+        foreach (var mb in behaviour.GetComponents<MonoBehaviour>())
+        {
+            if (mb is IForearmWidgetPlacement found)
+                return found;
+        }
+
+        return null;
+    }
+
     [Header("Delete")]
     [Tooltip("Optional trash-can sprite. If unset, a built-in X icon is shown at runtime.")]
     public Sprite deleteIconSprite;
@@ -701,7 +724,7 @@ public class PossibleUIPaletteController : MonoBehaviour
             return;
         }
 
-        if (itemListController != null && itemListController.IsCarrying)
+        if (Placement != null && Placement.IsCarrying)
         {
             SetTemplateHoverOutline(_hoveredTemplate, false);
             _hoveredTemplate = null;
@@ -728,7 +751,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (_deleteTarget == null)
             return;
 
-        bool carrying = itemListController != null && itemListController.IsCarrying;
+        bool carrying = Placement != null && Placement.IsCarrying;
         bool highlight = carrying && IsFingerOverDelete(fingerWorld);
 
         if (_deleteOutline == null)
@@ -879,10 +902,10 @@ public class PossibleUIPaletteController : MonoBehaviour
     /// </summary>
     public bool TryBeginCarryFromPalette(Transform indexTipWorld)
     {
-        if (indexTipWorld == null || itemListController == null || paletteRect == null)
+        if (indexTipWorld == null || Placement == null || paletteRect == null)
             return false;
 
-        if (itemListController.IsCarrying)
+        if (Placement.IsCarrying)
             return false;
 
         if (IsFingerOverDelete(indexTipWorld.position))
@@ -901,7 +924,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (debugLogPalette)
             Debug.Log($"[Palette] Picked template '{template.name}' at canvasLocal={fingerLocal:F1}");
 
-        return itemListController.BeginCarryExternal(clone, indexTipWorld, destroyOnAbort: true);
+        return Placement.BeginCarryExternal(clone, indexTipWorld, destroyOnAbort: true);
     }
 }
 

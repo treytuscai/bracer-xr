@@ -7,7 +7,7 @@ using UnityEngine.UI;
 /// <see cref="InteractionMode.FreePlace"/> pick presses a widget → it follows the index fingertip in world space;
 /// committing maps it back onto the decal using linear UV projection.
 /// </summary>
-public class ArmLayoutController : MonoBehaviour
+public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement
 {
     public enum InteractionMode
     {
