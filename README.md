@@ -1,28 +1,59 @@
 # Ink & Interface — XR Prototype
 
-On-body interaction for Extended Reality. Ink & Interface renders an interactive UI directly on the user's forearm through Meta Quest 3 passthrough, and detects direct-touch input from the opposite hand against a forearm surface that is reconstructed live from the headset's depth data.
+[![Unity](https://img.shields.io/badge/Unity-2022.3.62f3-000000?logo=unity&logoColor=white)](https://unity.com/releases/editor/archive)
+[![Platform](https://img.shields.io/badge/Platform-Meta%20Quest%203-0467DF?logo=meta&logoColor=white)](https://www.meta.com/quest/quest-3/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+**The forearm as a touchscreen.** A directly touchable interface, reconstructed in real time from the Meta Quest 3's environment depth. No controllers, no markers, no external hardware.
+
+Ink & Interface is an on-body interaction system for extended reality: the forearm acts as the display surface and the opposite hand as the input, bringing phone-style direct touch to bare skin.
 
 ---
 
 ## How It Works
 
-The forearm surface is continuously reconstructed from the Quest 3's environment depth API (stereo-camera computed depth). The pipeline runs on the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled and run asynchronously, and the main thread uploads the finished mesh only once they are complete.
+The forearm surface is reconstructed continuously from the Quest 3's environment depth, which the headset computes by stereo-matching its passthrough cameras. The pipeline spans the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled asynchronously, and the main thread uploads each finished mesh only once its jobs complete.
+
+**In brief:** each frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
+
+```
+depth -> hand silhouette + 3-frame median -> reconstruction blit -> async readback
+      -> seed + BFS flood -> boundary smooth -> mesh + UV + normals -> touch test
+```
 
 _(An earlier prototype approximated the forearm as a geometric cylinder fit to the arm bones; it was dropped in favor of live depth reconstruction.)_
 
-**Per-frame pipeline:**
+<details>
+<summary><b>Per-frame pipeline (step by step)</b></summary>
 
-1. Resolve wrist and elbow bones from the body skeleton to build the arm coordinate frame (axis, lateral, normal, pronation, orientation).
+1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame — axis, lateral, and normal vectors, plus pronation and orientation angles.
 2. Render the interacting hand as a full-frame GPU silhouette, then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). The hand is carved out of the depth history during stabilization.
-3. Blit the stabilized depth through a reconstruction shader at the forearm crop's native depth-texel resolution (not full screen, so only the arm region is computed). Hand pixels, plus a dilated margin that also absorbs the stereo bleed ring around a hovering finger, are rejected at the source using the same silhouette, so they never enter the reconstruction.
-4. Async GPU readback of the forearm crop; a Burst job unprojects depth texels into a world-space hit grid.
+3. Blit the stabilized depth through a reconstruction shader at the forearm crop's native depth-texel resolution (not full screen, so only the arm region is computed). Hand pixels are rejected at the source using the same silhouette, dilated by a small margin to cover the 1-2 frame readback latency, so they never enter the reconstruction.
+4. Read back the forearm crop from the GPU asynchronously; a Burst job unprojects its depth texels into a world-space hit grid.
 5. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders — the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
 6. A parallel Burst boundary smoother de-steps the extracted edge cells (the temporal median in step 2 is the depth denoise).
-7. Mesh generation via atomic parallel vertex/triangle emission with parallel grid-based normal computation, and linear, camera-fixed UV projection (plus a pronation scroll offset).
+7. Generate the mesh: vertices and triangles are emitted in parallel through atomic counters, normals are computed in parallel across the grid, and UVs follow a linear, camera-fixed projection (with a pronation scroll offset).
 
-**Touch detection:** each frame the interacting hand's skinned-mesh vertices are tested against the reconstructed surface. The nearest surface cell within range is found, the signed depth above the surface is computed, and a UV coordinate is derived at sub-cell precision from the actual finger position. Touch is live — the surface keeps updating during interaction, pronation works mid-touch, and there is no freeze step.
+</details>
 
-**UV design:** UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps the viewport upright regardless of wrist rotation, and pronation adds a U scroll offset so rotating the wrist reveals new content rather than spinning the image. Two panels: `U=[0,0.5]` dorsal, `U=[0.5,1]` palmar.
+### Touch detection
+
+Each frame, the interacting hand's skinned-mesh vertices are tested against the reconstructed surface: the nearest surface cell within range is found, the signed distance above the surface is computed, and a UV coordinate is derived at sub-cell precision from the finger position. The surface keeps updating throughout interaction (pronation included), with no freeze step.
+
+### UV design
+
+UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps the viewport upright regardless of wrist rotation, and pronation adds a U scroll offset so rotating the wrist reveals new content rather than spinning the image. Two panels: `U=[0,0.5]` dorsal, `U=[0.5,1]` palmar.
+
+---
+
+## Limitations & Scope
+
+Ink & Interface is a research prototype with a deliberately narrow scope:
+
+- **Quest 3 only.** It depends on Meta's environment depth API and Movement SDK body tracking; it does not run on other headsets.
+- **The depth source is low-resolution.** Quest's environment depth is a single ~320×320 image spread across the entire field of view, so the forearm occupies only a fraction of it. The surface captures the arm and a finger fine, but thin gaps and small, fine-grained features are below what it can resolve.
+- **One forearm, one interacting hand.** The system reconstructs a single arm and tracks a single touching hand at a time.
+- **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole where it sits. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
 
 ---
 
@@ -49,7 +80,20 @@ git clone <repo-url>
 3. Connect the Quest 3 over USB (`adb devices` to confirm).
 4. **File -> Build Settings** -> confirm Android is the active platform and the scene is listed -> **Build and Run**.
 
-All project, SDK, and OVRManager settings are committed — no manual configuration is required.
+All project, SDK, and OVRManager settings are committed. No manual configuration is required.
+
+---
+
+## Usage
+
+Once the app is running on the headset:
+
+1. **Hold out your left arm** in view of the headset. The UI appears on your forearm once body and hand tracking lock on.
+2. **Touch with your other hand.** Bring a fingertip to the surface. Contact registers from a slight hover down through a shallow press (`touchHoverHeight` / `touchDepth`).
+3. **Rotate your wrist to switch panels.** The display has two: dorsal (`U=[0,0.5]`) and palmar (`U=[0.5,1]`).
+4. **Turn your arm upright or sideways** to flip between portrait and landscape (disable with `lockOrientation`).
+
+The surface updates continuously. Keep your hand on it while moving or rotating the arm. There is no need to pull away or recalibrate.
 
 ---
 

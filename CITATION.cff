@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Ink & Interface"
+abstract: >-
+  An on-body interaction system for extended reality that renders a directly
+  touchable UI on the user's forearm, reconstructed in real time from the
+  Meta Quest 3's environment depth.
+type: software
+authors:
+  - family-names: Tuscai
+    given-names: Trey
+    affiliation: "Carnegie Mellon University"
+license: Apache-2.0
+keywords:
+  - extended reality
+  - on-body interaction
+  - depth reconstruction
+  - Meta Quest 3
+  - Unity
+# repository-code: "<repo-url>"
+# version: "1.0.0"
+# date-released: 2026-01-01
