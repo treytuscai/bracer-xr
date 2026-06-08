@@ -1,4 +1,4 @@
-# Ink & Interface — XR Prototype
+# Bracer XR
 
 [![Unity](https://img.shields.io/badge/Unity-2022.3.62f3-000000?logo=unity&logoColor=white)](https://unity.com/releases/editor/archive)
 [![Platform](https://img.shields.io/badge/Platform-Meta%20Quest%203-0467DF?logo=meta&logoColor=white)](https://www.meta.com/quest/quest-3/)
@@ -6,7 +6,9 @@
 
 **The forearm as a touchscreen.** A directly touchable interface, reconstructed in real time from the Meta Quest 3's environment depth. No controllers, no markers, no external hardware.
 
-Ink & Interface is an on-body interaction system for extended reality: the forearm acts as the display surface and the opposite hand as the input, bringing phone-style direct touch to bare skin.
+This is an on-body interaction system for extended reality: the forearm acts as the display surface and the opposite hand as the input, bringing phone-style direct touch to bare skin.
+
+_Built for the **Ink & Interface** research study, exploring how body artist principles carry over to authoring on-skin interfaces. This repository is the XR prototype behind it: the reconstructed forearm surface those interfaces build on._
 
 ---
 
@@ -21,7 +23,7 @@ depth -> hand silhouette + 3-frame median -> reconstruction blit -> async readba
       -> seed + BFS flood -> boundary smooth -> mesh + UV + normals -> touch test
 ```
 
-_(An earlier prototype approximated the forearm as a geometric cylinder fit to the arm bones; it was dropped in favor of live depth reconstruction.)_
+_(An earlier version of Bracer XR approximated the forearm as a geometric cylinder fit to the arm bones; it was dropped in favor of the live depth reconstruction it uses today.)_
 
 <details>
 <summary><b>Per-frame pipeline (step by step)</b></summary>
@@ -48,7 +50,7 @@ UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps
 
 ## Limitations & Scope
 
-Ink & Interface is a research prototype with a deliberately narrow scope:
+Bracer XR is a research prototype with a deliberately narrow scope:
 
 - **Quest 3 only.** It depends on Meta's environment depth API and Movement SDK body tracking; it does not run on other headsets.
 - **The depth source is low-resolution.** Quest's environment depth is a single ~320×320 image spread across the entire field of view, so the forearm occupies only a fraction of it. The surface captures the arm and a finger fine, but thin gaps and small, fine-grained features are below what it can resolve.
