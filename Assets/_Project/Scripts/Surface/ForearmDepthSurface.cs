@@ -55,12 +55,12 @@ public class ForearmDepthSurface : MonoBehaviour
     // pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Grid texels the hand silhouette is grown by (3x3 max). Covers the stereo bleed/lift " +
+    [Tooltip("Depth texels the hand silhouette is grown by (3x3 max). Covers the stereo bleed/lift " +
              "around the hand plus readback latency. Carved from depth history; the lifted ring inside " +
              "this margin is reconstructed from clean surface at consume, not deleted.")]
     [Range(0, 10)] public int handMarginTexels = 8;
 
-    [Tooltip("Inner cushion (grid texels) around the hand kept as a hole, covering the real hand that " +
+    [Tooltip("Inner cushion (depth texels) around the hand kept as a hole, covering the real hand that " +
              "peeks past the rendered mask. Without it, peek-through gets flattened to arm — a sliver " +
              "trailing onto the hand. Raise until the sliver clears. Must stay below handMarginTexels.")]
     [Range(0, 4)] public int occlusionMarginTexels = 1;
