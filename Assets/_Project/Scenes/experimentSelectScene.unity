@@ -1502,8 +1502,8 @@ MonoBehaviour:
     sceneName: RevisedBoundingBox
   - label: Optimal Interface Positioning Experiment
     sceneName: placeRotateScaleInterfaces
-  - label: New Place on Mesh
-    sceneName: RevisedPlaceRotateScale
+  - label: Elicitation of Placement
+    sceneName: 1d Elicitation of Placement
   - label: Size Scale Pt. 2
     sceneName: SizeAndScale
   - label: Orientation Degree
