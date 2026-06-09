@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
+using Experiments.Cli;
 
 /// <summary>
 /// RevisedBoundingBox experiment.
@@ -14,8 +17,19 @@ using UnityEngine;
 /// canvas on the arm itself.
 /// </summary>
 [DefaultExecutionOrder(110)]
-public class RevisedBoundingBoxController : MonoBehaviour
-{
+public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
+    /// <summary>
+    /// CLI hook: "clear" wipes all painted cells back to transparent (e.g. to reset a
+    /// participant's arm between trials). Declared here so the command lives with the logic it drives.
+    /// </summary>
+    public void RegisterCommands(IDictionary<string, Func<IReadOnlyDictionary<string, string>, string>> commands)
+    {
+        commands["clear"] = _ =>
+        {
+            ClearAll();
+            return "cleared painted cells";
+        };
+    }
     [Header("Surface")]
     public ForearmDepthSurface surface;
 
