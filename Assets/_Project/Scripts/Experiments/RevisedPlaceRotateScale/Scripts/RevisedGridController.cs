@@ -30,24 +30,52 @@ public class RevisedGridController : MonoBehaviour
     [Range(0f, 0.5f)] public float lineThickness = 0.04f;
     public Color highlightColor = new Color(0.2f, 0.9f, 0.35f, 0.35f);
 
+    [Header("Edit Selection")]
+    public Color editTintColor = new Color(0.2f, 0.95f, 0.35f, 0.35f);
+
     Material _mat;
     int      _effectiveRows;
     int      _builtCols = -1;
     int      _builtRows = -1;
 
+    struct CellMetadata
+    {
+        public Color[] SourcePixels;
+        public int       SourceSize;
+        public Color     Tint;
+        public float     Scale;
+        public float     RotationDegrees;
+    }
+
+    readonly System.Collections.Generic.Dictionary<int, CellMetadata> _cellMeta =
+        new System.Collections.Generic.Dictionary<int, CellMetadata>();
+
+    int _selectedCol = -1;
+    int _selectedRow = -1;
+
+    public bool HasSelectedCell => _selectedCol >= 0 && _selectedRow >= 0;
+
     Texture2D _stateTex;
     Texture2D _contentAtlas;
+    Texture2D _transformTex;
     Color32[] _cellStates;
+    Color32[] _cellTransforms;
 
-    static readonly int GridColumnsId    = Shader.PropertyToID("_GridColumns");
-    static readonly int GridRowsId       = Shader.PropertyToID("_GridRows");
-    static readonly int StateTexId       = Shader.PropertyToID("_StateTex");
-    static readonly int ContentAtlasId   = Shader.PropertyToID("_ContentAtlas");
+    const float MaxContentScale = 4f;
+
+    static readonly int GridColumnsId       = Shader.PropertyToID("_GridColumns");
+    static readonly int GridRowsId          = Shader.PropertyToID("_GridRows");
+    static readonly int StateTexId          = Shader.PropertyToID("_StateTex");
+    static readonly int ContentAtlasId      = Shader.PropertyToID("_ContentAtlas");
+    static readonly int TransformTexId      = Shader.PropertyToID("_TransformTex");
+    static readonly int MaxContentScaleId   = Shader.PropertyToID("_MaxContentScale");
     static readonly int DefaultColorId   = Shader.PropertyToID("_DefaultColor");
     static readonly int LineColorId      = Shader.PropertyToID("_LineColor");
     static readonly int LineThicknessId  = Shader.PropertyToID("_LineThickness");
-    static readonly int HighlightCellId  = Shader.PropertyToID("_HighlightCell");
-    static readonly int HighlightColorId = Shader.PropertyToID("_HighlightColor");
+    static readonly int HighlightCellId     = Shader.PropertyToID("_HighlightCell");
+    static readonly int HighlightColorId    = Shader.PropertyToID("_HighlightColor");
+    static readonly int EditSelectionCellId = Shader.PropertyToID("_EditSelectionCell");
+    static readonly int EditTintColorId     = Shader.PropertyToID("_EditTintColor");
 
     static Material _spriteBlitMat;
 
@@ -81,6 +109,7 @@ public class RevisedGridController : MonoBehaviour
         RebuildGridIfNeeded(force: true);
         PushMaterialParams();
         ClearHighlight();
+        ClearEditSelection();
     }
 
     void LateUpdate()
@@ -101,6 +130,7 @@ public class RevisedGridController : MonoBehaviour
 
         int total = columns * _effectiveRows;
         _cellStates = new Color32[total];
+        _cellTransforms = new Color32[total];
 
         _stateTex = new Texture2D(columns, _effectiveRows, TextureFormat.RGBA32, false, true)
         {
@@ -110,6 +140,16 @@ public class RevisedGridController : MonoBehaviour
         };
         _stateTex.SetPixels32(_cellStates);
         _stateTex.Apply(false);
+
+        _transformTex = new Texture2D(columns, _effectiveRows, TextureFormat.RGBA32, false, true)
+        {
+            name       = "RevisedGridTransform",
+            filterMode = FilterMode.Point,
+            wrapMode   = TextureWrapMode.Clamp
+        };
+        ClearTransformPixels();
+        _transformTex.SetPixels32(_cellTransforms);
+        _transformTex.Apply(false);
 
         int atlasW = columns * contentTileResolution;
         int atlasH = _effectiveRows * contentTileResolution;
@@ -126,7 +166,12 @@ public class RevisedGridController : MonoBehaviour
         {
             _mat.SetTexture(StateTexId, _stateTex);
             _mat.SetTexture(ContentAtlasId, _contentAtlas);
+            _mat.SetTexture(TransformTexId, _transformTex);
+            _mat.SetFloat(MaxContentScaleId, MaxContentScale);
         }
+
+        _cellMeta.Clear();
+        ClearSelection();
     }
 
     int EffectiveRows()
@@ -144,10 +189,12 @@ public class RevisedGridController : MonoBehaviour
     {
         _mat.SetFloat(GridColumnsId, columns);
         _mat.SetFloat(GridRowsId,    _effectiveRows);
+        _mat.SetFloat(MaxContentScaleId, MaxContentScale);
         _mat.SetColor(DefaultColorId, defaultColor);
         _mat.SetColor(LineColorId,    lineColor);
         _mat.SetFloat(LineThicknessId, lineThickness);
         _mat.SetColor(HighlightColorId, highlightColor);
+        _mat.SetColor(EditTintColorId, editTintColor);
     }
 
     public void UVToCell(Vector2 uv, out int col, out int row)
@@ -182,6 +229,64 @@ public class RevisedGridController : MonoBehaviour
 
     public void ClearHighlight() => SetHighlightCell(-1, -1, false);
 
+    public void SetEditSelectionCell(int col, int row, bool active)
+    {
+        if (_mat == null) return;
+        _mat.SetVector(EditSelectionCellId, active
+            ? new Vector4(col, row, 1f, 0f)
+            : new Vector4(-1f, -1f, 0f, 0f));
+    }
+
+    public void ClearEditSelection() => SetEditSelectionCell(-1, -1, false);
+
+    public bool TrySelectCell(int col, int row)
+    {
+        if (!IsCellOccupied(col, row)) return false;
+        _selectedCol = col;
+        _selectedRow = row;
+        SetEditSelectionCell(col, row, true);
+        return true;
+    }
+
+    public void ClearSelection()
+    {
+        _selectedCol = _selectedRow = -1;
+        ClearEditSelection();
+    }
+
+    public void GetSelectedTransform(out float scale, out float rotationDegrees)
+    {
+        scale = 1f;
+        rotationDegrees = 0f;
+        if (!HasSelectedCell) return;
+        int idx = CellToIndex(_selectedCol, _selectedRow);
+        if (_cellMeta.TryGetValue(idx, out CellMetadata meta))
+        {
+            scale = meta.Scale;
+            rotationDegrees = meta.RotationDegrees;
+        }
+    }
+
+    public void SetSelectedCellScale(float scale)
+    {
+        if (!HasSelectedCell) return;
+        int idx = CellToIndex(_selectedCol, _selectedRow);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta)) return;
+        meta.Scale = Mathf.Clamp(scale, 0.25f, MaxContentScale);
+        _cellMeta[idx] = meta;
+        PushCellTransform(_selectedCol, _selectedRow);
+    }
+
+    public void SetSelectedCellRotation(float rotationDegrees)
+    {
+        if (!HasSelectedCell) return;
+        int idx = CellToIndex(_selectedCol, _selectedRow);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta)) return;
+        meta.RotationDegrees = rotationDegrees;
+        _cellMeta[idx] = meta;
+        PushCellTransform(_selectedCol, _selectedRow);
+    }
+
     /// <summary>
     /// Bakes a UI widget's image into the grid cell so it moves with the mesh UVs.
     /// </summary>
@@ -189,19 +294,126 @@ public class RevisedGridController : MonoBehaviour
     {
         if (_contentAtlas == null || _stateTex == null || widget == null) return false;
 
+        var source = widget.GetComponent<RevisedGridCellSource>();
+        if (source != null && source.sourcePixels != null && source.sourceSize > 0)
+        {
+            StoreAndBake(col, row, source.sourcePixels, source.sourceSize, source.tint,
+                source.scale, source.rotationDegrees);
+            return true;
+        }
+
         if (!TryGetWidgetVisual(widget, out Sprite sprite, out Texture texture, out Color tint))
             return false;
 
-        if (sprite != null)
-            BakeSpriteIntoCell(col, row, sprite, tint);
-        else
-            BakeTextureIntoCell(col, row, texture, tint);
+        int tile = contentTileResolution;
+        bool alreadyCellSized = sprite != null &&
+            sprite.rect.width >= tile - 1f && sprite.rect.height >= tile - 1f;
+        int inner = alreadyCellSized
+            ? tile
+            : Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
 
+        Color[] pixels = sprite != null
+            ? ReadSpritePixels(sprite, inner, inner)
+            : ReadTexturePixels(texture, inner, inner);
+
+        StoreAndBake(col, row, pixels, inner, tint, 1f, 0f);
+        return true;
+    }
+
+    void StoreAndBake(int col, int row, Color[] pixels, int size, Color tint, float scale, float rotationDegrees)
+    {
+        int idx = CellToIndex(col, row);
+        _cellMeta[idx] = new CellMetadata
+        {
+            SourcePixels = pixels,
+            SourceSize = size,
+            Tint = tint,
+            Scale = scale,
+            RotationDegrees = rotationDegrees
+        };
+        RebakeCell(col, row);
+        PushCellTransform(col, row);
+        MarkCellOccupied(col, row);
+    }
+
+    void PushCellTransform(int col, int row)
+    {
+        if (_transformTex == null) return;
+
+        int idx = CellToIndex(col, row);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta))
+        {
+            _cellTransforms[idx] = new Color32(0, 0, 0, 0);
+        }
+        else
+        {
+            float rot = Mathf.Repeat(meta.RotationDegrees, 360f);
+            _cellTransforms[idx] = new Color32(
+                (byte)Mathf.Clamp(Mathf.RoundToInt(meta.Scale / MaxContentScale * 255f), 0, 255),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(rot / 360f * 255f), 0, 255),
+                0,
+                255);
+        }
+
+        _transformTex.SetPixel(col, row, _cellTransforms[idx]);
+        _transformTex.Apply(false);
+    }
+
+    void MarkCellOccupied(int col, int row)
+    {
         int idx = CellToIndex(col, row);
         _cellStates[idx] = new Color32(255, 255, 255, 255);
         _stateTex.SetPixel(col, row, _cellStates[idx]);
         _stateTex.Apply(false);
-        return true;
+    }
+
+    void RebakeCell(int col, int row)
+    {
+        int idx = CellToIndex(col, row);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta) || meta.SourcePixels == null) return;
+
+        ClearTile(col, row);
+
+        int tile = contentTileResolution;
+        int destX = col * tile;
+        int destY = row * tile;
+        int src = meta.SourceSize;
+        var dest = new Color[tile * tile];
+
+        for (int y = 0; y < tile; y++)
+        {
+            for (int x = 0; x < tile; x++)
+            {
+                float u = (x + 0.5f) / tile;
+                float v = (y + 0.5f) / tile;
+                dest[y * tile + x] = SampleSourceBilinear(meta.SourcePixels, src, src, u, v) * meta.Tint;
+            }
+        }
+
+        _contentAtlas.SetPixels(destX, destY, tile, tile, dest);
+        _contentAtlas.Apply(false);
+    }
+
+    static Color SampleSourceBilinear(Color[] pixels, int w, int h, float u, float v)
+    {
+        if (u < 0f || u > 1f || v < 0f || v > 1f) return Color.clear;
+
+        float fx = u * (w - 1);
+        float fy = v * (h - 1);
+        int x0 = Mathf.FloorToInt(fx);
+        int y0 = Mathf.FloorToInt(fy);
+        int x1 = Mathf.Min(x0 + 1, w - 1);
+        int y1 = Mathf.Min(y0 + 1, h - 1);
+        float tx = fx - x0;
+        float ty = fy - y0;
+
+        Color c00 = pixels[y0 * w + x0];
+        Color c10 = pixels[y0 * w + x1];
+        Color c01 = pixels[y1 * w + x0];
+        Color c11 = pixels[y1 * w + x1];
+        Color cx0 = Color.Lerp(c00, c10, tx);
+        Color cx1 = Color.Lerp(c01, c11, tx);
+        return Color.Lerp(cx0, cx1, ty);
     }
 
     public void ClearCell(int col, int row)
@@ -214,6 +426,16 @@ public class RevisedGridController : MonoBehaviour
         _cellStates[idx] = new Color32(0, 0, 0, 0);
         _stateTex.SetPixel(col, row, _cellStates[idx]);
         _stateTex.Apply(false);
+        _cellTransforms[idx] = new Color32(0, 0, 0, 0);
+        if (_transformTex != null)
+        {
+            _transformTex.SetPixel(col, row, _cellTransforms[idx]);
+            _transformTex.Apply(false);
+        }
+        _cellMeta.Remove(idx);
+
+        if (_selectedCol == col && _selectedRow == row)
+            ClearSelection();
     }
 
     public bool IsCellOccupied(int col, int row)
@@ -227,13 +449,22 @@ public class RevisedGridController : MonoBehaviour
         if (_cellStates == null || _stateTex == null || _contentAtlas == null) return;
 
         for (int i = 0; i < _cellStates.Length; i++)
+        {
             _cellStates[i] = new Color32(0, 0, 0, 0);
+            _cellTransforms[i] = new Color32(0, 0, 0, 0);
+        }
 
         _stateTex.SetPixels32(_cellStates);
         _stateTex.Apply(false);
+        if (_transformTex != null)
+        {
+            _transformTex.SetPixels32(_cellTransforms);
+            _transformTex.Apply(false);
+        }
         ClearAtlasPixels();
         _contentAtlas.Apply(false);
-        ClearHighlight();
+        _cellMeta.Clear();
+        ClearSelection();
     }
 
     /// <summary>
@@ -256,6 +487,9 @@ public class RevisedGridController : MonoBehaviour
         }
         if (!hasVisiblePixel) return false;
 
+        int idx = CellToIndex(col, row);
+        _cellMeta.TryGetValue(idx, out CellMetadata meta);
+
         var tex = new Texture2D(tile, tile, TextureFormat.RGBA32, false, true)
         {
             name = $"CellContent_{col}_{row}",
@@ -276,6 +510,16 @@ public class RevisedGridController : MonoBehaviour
         image.sprite = sprite;
         image.preserveAspect = true;
         image.raycastTarget = false;
+
+        if (meta.SourcePixels != null && meta.SourceSize > 0)
+        {
+            var src = go.AddComponent<RevisedGridCellSource>();
+            src.sourcePixels = (Color[])meta.SourcePixels.Clone();
+            src.sourceSize = meta.SourceSize;
+            src.tint = meta.Tint;
+            src.scale = meta.Scale;
+            src.rotationDegrees = meta.RotationDegrees;
+        }
 
         ClearCell(col, row);
         return true;
@@ -342,62 +586,6 @@ public class RevisedGridController : MonoBehaviour
         }
 
         return found;
-    }
-
-    void BakeSpriteIntoCell(int col, int row, Sprite sprite, Color tint)
-    {
-        ClearTile(col, row);
-
-        int tile = contentTileResolution;
-
-        // Cell-extracted sprites are already tile-sized; skip padding inset to avoid
-        // shrinking the image on each pick-up → place cycle.
-        bool alreadyCellSized =
-            sprite.rect.width >= tile - 1f && sprite.rect.height >= tile - 1f;
-
-        int inner = alreadyCellSized
-            ? tile
-            : Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
-        int offset = alreadyCellSized ? 0 : (tile - inner) / 2;
-
-        var srcPixels = ReadSpritePixels(sprite, inner, inner);
-        int destX = col * tile;
-        int destY = row * tile;
-
-        for (int y = 0; y < inner; y++)
-        {
-            for (int x = 0; x < inner; x++)
-            {
-                Color c = srcPixels[y * inner + x] * tint;
-                _contentAtlas.SetPixel(destX + offset + x, destY + offset + y, c);
-            }
-        }
-
-        _contentAtlas.Apply(false);
-    }
-
-    void BakeTextureIntoCell(int col, int row, Texture texture, Color tint)
-    {
-        ClearTile(col, row);
-
-        int tile = contentTileResolution;
-        int inner = Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
-        int offset = (tile - inner) / 2;
-
-        var srcPixels = ReadTexturePixels(texture, inner, inner);
-        int destX = col * tile;
-        int destY = row * tile;
-
-        for (int y = 0; y < inner; y++)
-        {
-            for (int x = 0; x < inner; x++)
-            {
-                Color c = srcPixels[y * inner + x] * tint;
-                _contentAtlas.SetPixel(destX + offset + x, destY + offset + y, c);
-            }
-        }
-
-        _contentAtlas.Apply(false);
     }
 
     static bool TryGetWidgetVisual(RectTransform widget, out Sprite sprite, out Texture texture, out Color tint)
@@ -502,6 +690,13 @@ public class RevisedGridController : MonoBehaviour
         return dst;
     }
 
+    void ClearTransformPixels()
+    {
+        if (_cellTransforms == null) return;
+        for (int i = 0; i < _cellTransforms.Length; i++)
+            _cellTransforms[i] = new Color32(0, 0, 0, 0);
+    }
+
     void ClearAtlasPixels()
     {
         var clear = new Color32(0, 0, 0, 0);
@@ -547,6 +742,7 @@ public class RevisedGridController : MonoBehaviour
     {
         if (_stateTex != null) Destroy(_stateTex);
         if (_contentAtlas != null) Destroy(_contentAtlas);
+        if (_transformTex != null) Destroy(_transformTex);
         if (_mat != null) Destroy(_mat);
     }
 }

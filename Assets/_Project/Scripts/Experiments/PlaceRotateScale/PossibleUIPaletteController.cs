@@ -92,6 +92,16 @@ public class PossibleUIPaletteController : MonoBehaviour
     [Tooltip("Space between the Clear label and clear icon.")]
     [Min(0f)] public float clearColumnSpacing = 4f;
 
+    [Header("Grid Edit")]
+    [Tooltip("Optional — enables the Edit Image column and transform sliders.")]
+    public RevisedGridEditController gridEditController;
+
+    public string editLabelText = "Edit Image\n(Resize and rotate)";
+    public Vector2 editIconSize = new Vector2(56f, 56f);
+    public int editTitleFontSize = 13;
+    [Min(0f)] public float editColumnSpacing = 4f;
+    public Color editHoverHighlightColor = new Color(0.35f, 0.95f, 0.45f, 1f);
+
     [Header("Placement")]
     [Tooltip("If true, the palette follows the head each frame. If false, it is anchored once in world space.")]
     public bool followHead = false;
@@ -175,6 +185,10 @@ public class PossibleUIPaletteController : MonoBehaviour
     RectTransform _clearSeparator;
     RectTransform _clearTitle;
     RectTransform _clearTarget;
+    RectTransform _editZone;
+    RectTransform _editSeparator;
+    RectTransform _editTitle;
+    RectTransform _editTarget;
     RectTransform _deleteZone;
     RectTransform _deleteSeparator;
     RectTransform _deleteTitle;
@@ -185,10 +199,12 @@ public class PossibleUIPaletteController : MonoBehaviour
     ContentSizeFitter _paletteSizeFitter;
     RectTransform _hoveredTemplate;
     Outline _clearOutline;
+    Outline _editOutline;
     Outline _deleteOutline;
     Vector3 _lastFingerWorld;
     bool _worldAnchorApplied;
     bool _panelLayoutLocked;
+    bool _editPressActive;
     int _anchorWaitFrames;
     int _stableHeadFrames;
     float _lastMeasuredHeadY;
@@ -217,13 +233,18 @@ public class PossibleUIPaletteController : MonoBehaviour
         else if (!_worldAnchorApplied)
             RefreshPaletteLayout();
 
+        if (gridEditController != null && _editZone == null)
+            EnsureEditZones();
+
         UpdateClearHighlight(_lastFingerWorld);
+        UpdateEditHighlight(_lastFingerWorld);
         UpdateDeleteHighlight(_lastFingerWorld);
     }
 
     void RefreshPaletteLayout()
     {
         EnsureRowChildOrder();
+        LayoutEditZoneManual();
         LayoutClearZoneManual();
         LayoutDeleteZoneManual();
         ApplyPanelScale();
@@ -232,10 +253,31 @@ public class PossibleUIPaletteController : MonoBehaviour
     void FinalizeAnchoredPaletteLayout()
     {
         EnsureRowChildOrder();
+        LayoutEditZoneManual();
         LayoutClearZoneManual();
         LayoutDeleteZoneManual();
         ApplyPanelScale();
         _panelLayoutLocked = true;
+    }
+
+    /// <summary>Creates the combined Edit Image column using the same layout as Clear/Trash.</summary>
+    public void EnsureEditZones()
+    {
+        if (paletteRect == null) return;
+
+        EnsureEditZone();
+        DisableLegacyRotateZone();
+        EnsureRowChildOrder();
+        LayoutEditZoneManual();
+    }
+
+    /// <summary>Wires edit-mode UI and rebuilds palette layout to include the Edit column.</summary>
+    public void BindGridEditController(RevisedGridEditController edit)
+    {
+        if (edit == null) return;
+        gridEditController = edit;
+        EnsureEditZones();
+        NotifyLayoutChanged();
     }
 
     void ResolveHeadAnchor()
@@ -400,10 +442,14 @@ public class PossibleUIPaletteController : MonoBehaviour
         for (int i = paletteRect.childCount - 1; i >= 0; i--)
         {
             Transform child = paletteRect.GetChild(i);
-            if (child == _templateContainer || child == _clearZone || child == _deleteZone || child == _deleteTarget)
+            if (child == _templateContainer || child == _clearZone || child == _deleteZone || child == _deleteTarget ||
+                child == _editZone)
                 continue;
             if (child.GetComponent<PaletteDeleteTarget>() != null ||
-                child.GetComponent<PaletteClearTarget>() != null)
+                child.GetComponent<PaletteClearTarget>() != null ||
+                child.GetComponent<PaletteEditTarget>() != null ||
+                child.GetComponent<PaletteResizeTarget>() != null ||
+                child.GetComponent<PaletteRotateTarget>() != null)
                 continue;
 
             child.SetParent(_templateContainer, false);
@@ -583,6 +629,142 @@ public class PossibleUIPaletteController : MonoBehaviour
         LayoutActionZoneManual(
             _clearZone, _clearSeparator, _clearTitle, _clearTarget,
             clearIconSize, clearTitleFontSize, clearColumnSpacing);
+    }
+
+    void EnsureEditZone()
+    {
+        _editZone = paletteRect.Find("EditZone") as RectTransform;
+        if (_editZone == null)
+            _editZone = paletteRect.Find("ResizeZone") as RectTransform;
+        if (_editZone == null)
+        {
+            var zoneGo = new GameObject("EditZone", typeof(RectTransform), typeof(LayoutElement));
+            _editZone = zoneGo.GetComponent<RectTransform>();
+            _editZone.SetParent(paletteRect, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(_editZone);
+        EnsureEditSeparator(_editZone, ref _editSeparator, "EditSeparator");
+        EnsureEditTitle(_editZone, ref _editTitle, "EditTitle", editLabelText, editTitleFontSize);
+        EnsureEditTarget(_editZone, ref _editTarget, "EditIcon", typeof(PaletteEditTarget),
+            new Color(0.25f, 0.85f, 0.45f, 0.85f), "\u270E");
+    }
+
+    void DisableLegacyRotateZone()
+    {
+        var legacyRotate = paletteRect.Find("RotateZone");
+        if (legacyRotate != null)
+            legacyRotate.gameObject.SetActive(false);
+        var legacyResize = paletteRect.Find("ResizeZone");
+        if (legacyResize != null && legacyResize != _editZone)
+            legacyResize.gameObject.SetActive(false);
+    }
+
+    void EnsureEditSeparator(RectTransform zone, ref RectTransform separator, string name)
+    {
+        separator = zone.Find(name) as RectTransform;
+        if (separator == null)
+        {
+            var separatorGo = new GameObject(name,
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            separator = separatorGo.GetComponent<RectTransform>();
+            separator.SetParent(zone, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(separator);
+        var separatorImage = separator.GetComponent<Image>();
+        separatorImage.sprite = null;
+        separatorImage.color = deleteSeparatorColor;
+        separatorImage.raycastTarget = false;
+    }
+
+    void EnsureEditTitle(RectTransform zone, ref RectTransform title, string name, string label, int fontSize)
+    {
+        title = zone.Find(name) as RectTransform;
+        if (title == null)
+        {
+            var titleGo = new GameObject(name,
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            title = titleGo.GetComponent<RectTransform>();
+            title.SetParent(zone, false);
+        }
+
+        var titleText = title.GetComponent<Text>();
+        titleText.text = label;
+        titleText.alignment = TextAnchor.MiddleCenter;
+        titleText.color = Color.white;
+        titleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        titleText.fontSize = fontSize;
+        titleText.raycastTarget = false;
+        titleText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        titleText.verticalOverflow = VerticalWrapMode.Overflow;
+        title.localScale = Vector3.one;
+    }
+
+    void EnsureEditTarget(RectTransform zone, ref RectTransform target, string name,
+        System.Type markerType, Color fallbackColor, string fallbackGlyph)
+    {
+        target = zone.Find(name) as RectTransform;
+        if (target == null)
+        {
+            var iconGo = new GameObject(name,
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            target = iconGo.GetComponent<RectTransform>();
+            iconGo.AddComponent(markerType);
+        }
+
+        if (target.parent != zone)
+            target.SetParent(zone, false);
+
+        if (target.GetComponent(markerType) == null)
+            target.gameObject.AddComponent(markerType);
+
+        var image = target.GetComponent<Image>();
+        if (image == null)
+            image = target.gameObject.AddComponent<Image>();
+        image.sprite = null;
+        image.color = fallbackColor;
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+
+        var label = target.Find("IconLabel") as RectTransform;
+        if (label == null)
+        {
+            var labelGo = new GameObject("IconLabel",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            label = labelGo.GetComponent<RectTransform>();
+            label.SetParent(target, false);
+            label.anchorMin = Vector2.zero;
+            label.anchorMax = Vector2.one;
+            label.offsetMin = Vector2.zero;
+            label.offsetMax = Vector2.zero;
+        }
+
+        var text = label.GetComponent<Text>();
+        text.text = fallbackGlyph;
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = Color.white;
+        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.fontSize = Mathf.RoundToInt(Mathf.Min(editIconSize.x, editIconSize.y) * 0.55f);
+        text.raycastTarget = false;
+
+        LayoutElement legacyLayout = target.GetComponent<LayoutElement>();
+        if (legacyLayout != null)
+            Destroy(legacyLayout);
+    }
+
+    void LayoutEditZoneManual()
+    {
+        if (_editZone == null) return;
+        LayoutActionZoneManual(
+            _editZone, _editSeparator, _editTitle, _editTarget,
+            editIconSize, editTitleFontSize, editColumnSpacing);
+
+        if (_editTitle == null) return;
+        int lines = Mathf.Max(1, editLabelText.Split('\n').Length);
+        float titleHeight = editTitleFontSize * lines + 4f * lines;
+        var titleSize = _editTitle.sizeDelta;
+        _editTitle.sizeDelta = new Vector2(Mathf.Max(titleSize.x, 96f), titleHeight);
     }
 
     void EnsureDeleteZone()
@@ -808,8 +990,11 @@ public class PossibleUIPaletteController : MonoBehaviour
             return;
 
         _templateContainer.SetAsFirstSibling();
+        int order = 1;
+        if (_editZone != null)
+            _editZone.SetSiblingIndex(order++);
         if (_clearZone != null)
-            _clearZone.SetSiblingIndex(1);
+            _clearZone.SetSiblingIndex(order++);
         if (_deleteZone != null)
             _deleteZone.SetAsLastSibling();
     }
@@ -853,6 +1038,19 @@ public class PossibleUIPaletteController : MonoBehaviour
         _panelLayoutLocked = false;
         _anchorWaitFrames = 0;
         _stableHeadFrames = 0;
+    }
+
+    public void NotifyLayoutChanged()
+    {
+        if (_worldAnchorApplied)
+        {
+            _panelLayoutLocked = false;
+            FinalizeAnchoredPaletteLayout();
+        }
+        else
+        {
+            RefreshPaletteLayout();
+        }
     }
 
     public bool IsWorldAnchored => _worldAnchorApplied;
@@ -904,6 +1102,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         {
             TouchState = PaletteTouchState.None;
             UpdateHoverHighlight(fingerWorld);
+            _editPressActive = false;
             return;
         }
 
@@ -916,6 +1115,21 @@ public class PossibleUIPaletteController : MonoBehaviour
             TouchState = PaletteTouchState.Hover;
 
         UpdateHoverHighlight(fingerWorld);
+        ProcessEditButtonPresses(fingerWorld);
+    }
+
+    void ProcessEditButtonPresses(Vector3 fingerWorld)
+    {
+        if (gridEditController == null || _editTarget == null)
+            return;
+
+        bool pressing = SignedDistanceToPalettePlane(fingerWorld) <= pressDistanceMeters;
+        bool onEdit = IsFingerOverEdit(fingerWorld);
+
+        if (pressing && onEdit && !_editPressActive)
+            gridEditController.ToggleEditMode();
+
+        _editPressActive = pressing && onEdit;
     }
 
     /// <summary>True when the fingertip is over the clear icon bounds.</summary>
@@ -930,6 +1144,41 @@ public class PossibleUIPaletteController : MonoBehaviour
         return IsFingerOverActionTarget(fingerWorld, _deleteTarget, _deleteTitle);
     }
 
+    public bool IsFingerOverEdit(Vector3 fingerWorld) =>
+        IsFingerOverActionTarget(fingerWorld, _editTarget, _editTitle);
+
+    /// <summary>Legacy alias kept for touch-manager checks.</summary>
+    public bool IsFingerOverResize(Vector3 fingerWorld) => IsFingerOverEdit(fingerWorld);
+
+    /// <summary>Legacy alias kept for touch-manager checks.</summary>
+    public bool IsFingerOverRotate(Vector3 fingerWorld) => IsFingerOverEdit(fingerWorld);
+
+    /// <summary>True when the finger is close enough to the panel to count as pressing a zone.</summary>
+    public bool IsFingerPressingPalette(Vector3 fingerWorld) =>
+        paletteRect != null && SignedDistanceToPalettePlane(fingerWorld) <= pressDistanceMeters;
+
+    public bool IsFingerPressingZone(Vector3 fingerWorld, RectTransform icon, RectTransform title) =>
+        IsFingerPressingPalette(fingerWorld) && IsFingerOverZoneBounds(fingerWorld, icon, title);
+
+    bool IsFingerOverZoneBounds(Vector3 fingerWorld, RectTransform target, RectTransform title)
+    {
+        if (target == null || paletteRect == null) return false;
+
+        Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
+        float pad = pickPaddingLocal;
+
+        GetBoundsInPaletteLocal(target, out float iconMnX, out float iconMxX, out float iconMnY, out float iconMxY);
+        if (fingerLocal.x >= iconMnX - pad && fingerLocal.x <= iconMxX + pad &&
+            fingerLocal.y >= iconMnY - pad && fingerLocal.y <= iconMxY + pad)
+            return true;
+
+        if (title == null) return false;
+
+        GetBoundsInPaletteLocal(title, out float titleMnX, out float titleMxX, out float titleMnY, out float titleMxY);
+        return fingerLocal.x >= titleMnX - pad && fingerLocal.x <= titleMxX + pad &&
+               fingerLocal.y >= titleMnY - pad && fingerLocal.y <= titleMxY + pad;
+    }
+
     bool IsFingerOverActionTarget(Vector3 fingerWorld, RectTransform target, RectTransform title)
     {
         if (target == null || paletteRect == null)
@@ -938,23 +1187,36 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (SignedDistanceToPalettePlane(fingerWorld) > hoverDistanceMeters)
             return false;
 
-        Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
-        float pad = pickPaddingLocal;
+        return IsFingerOverZoneBounds(fingerWorld, target, title);
+    }
 
-        GetBoundsInPaletteLocal(target, out float iconMnX, out float iconMxX, out float iconMnY, out float iconMxY);
-        bool overIcon =
-            fingerLocal.x >= iconMnX - pad && fingerLocal.x <= iconMxX + pad &&
-            fingerLocal.y >= iconMnY - pad && fingerLocal.y <= iconMxY + pad;
+    void UpdateEditHighlight(Vector3 fingerWorld)
+    {
+        if (_editTarget == null) return;
 
-        if (overIcon)
-            return true;
+        bool modeActive = gridEditController != null && gridEditController.IsEditModeActive;
+        bool highlight = modeActive || IsFingerOverEdit(fingerWorld);
+        UpdateActionOutline(_editTarget, ref _editOutline, highlight, editHoverHighlightColor);
+    }
 
-        if (title == null)
-            return false;
-
-        GetBoundsInPaletteLocal(title, out float titleMnX, out float titleMxX, out float titleMnY, out float titleMxY);
-        return fingerLocal.x >= titleMnX - pad && fingerLocal.x <= titleMxX + pad &&
-               fingerLocal.y >= titleMnY - pad && fingerLocal.y <= titleMxY + pad;
+    static void UpdateActionOutline(RectTransform target, ref Outline outline, bool enabled, Color color)
+    {
+        if (target == null) return;
+        if (enabled)
+        {
+            if (outline == null)
+            {
+                outline = target.gameObject.AddComponent<Outline>();
+                outline.useGraphicAlpha = true;
+                outline.effectDistance = new Vector2(4f, -4f);
+            }
+            outline.effectColor = color;
+            outline.enabled = true;
+        }
+        else if (outline != null)
+        {
+            outline.enabled = false;
+        }
     }
 
     void UpdateClearHighlight(Vector3 fingerWorld)
@@ -1104,6 +1366,9 @@ public class PossibleUIPaletteController : MonoBehaviour
             && childRt.gameObject.activeInHierarchy
             && childRt.GetComponent<PaletteDeleteTarget>() == null
             && childRt.GetComponent<PaletteClearTarget>() == null
+            && childRt.GetComponent<PaletteEditTarget>() == null
+            && childRt.GetComponent<PaletteResizeTarget>() == null
+            && childRt.GetComponent<PaletteRotateTarget>() == null
             && childRt.GetComponent<Graphic>() != null;
     }
 
@@ -1180,7 +1445,8 @@ public class PossibleUIPaletteController : MonoBehaviour
             return false;
 
         if (IsFingerOverDelete(indexTipWorld.position) ||
-            IsFingerOverClear(indexTipWorld.position))
+            IsFingerOverClear(indexTipWorld.position) ||
+            IsFingerOverEdit(indexTipWorld.position))
             return false;
 
         Vector2 fingerLocal = FingerLocalOnPalette(indexTipWorld.position);
@@ -1209,6 +1475,12 @@ public class PaletteDeleteTarget : MonoBehaviour { }
 /// Marks a palette UI element as the clear-all control.
 /// </summary>
 public class PaletteClearTarget : MonoBehaviour { }
+
+public class PaletteEditTarget : MonoBehaviour { }
+
+public class PaletteResizeTarget : MonoBehaviour { }
+
+public class PaletteRotateTarget : MonoBehaviour { }
 
 /// <summary>
 /// Marks a palette child as a selectable template that can be cloned onto the arm.

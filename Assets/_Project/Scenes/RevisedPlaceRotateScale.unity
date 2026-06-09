@@ -300,7 +300,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.01
+  touchHoverHeight: 0.005
   touchDepth: 0.04
   maxCellSearchDist: 0.03
   showTouchDebug: 1
@@ -321,7 +321,9 @@ MonoBehaviour:
   handSkeleton: {fileID: 113860855}
   centerEyeAnchor: {fileID: 188644609}
   surfaceMaterial: {fileID: 2100000, guid: d1213e4f5a6b7c8d9e0f1a2b3c4d5e6f, type: 2}
-  maskDilateTexels: 1
+  handMarginTexels: 8
+  occlusionMarginTexels: 1
+  borrowDepthBand: 0.03
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1
@@ -636,6 +638,20 @@ MonoBehaviour:
   deleteSeparatorWidth: 2
   deleteSeparatorColor: {r: 1, g: 1, b: 1, a: 0.85}
   deleteSeparatorPadding: 8
+  clearIconSprite: {fileID: 0}
+  clearIconSize: {x: 56, y: 56}
+  clearHoverHighlightColor: {r: 0.35, g: 0.75, b: 1, a: 1}
+  clearLabelText: Clear
+  clearTitleFontSize: 16
+  clearColumnSpacing: 4
+  gridEditController: {fileID: 0}
+  resizeLabelText: Size
+  rotateLabelText: Rotate
+  editIconSize: {x: 56, y: 56}
+  editTitleFontSize: 16
+  editColumnSpacing: 4
+  resizeHoverHighlightColor: {r: 0.35, g: 0.75, b: 1, a: 1}
+  rotateHoverHighlightColor: {r: 1, g: 0.85, b: 0.35, a: 1}
   followHead: 0
   distanceMeters: 0.55
   heightOffsetMeters: 0
@@ -1635,6 +1651,7 @@ MonoBehaviour:
   interaction: {fileID: 66024354}
   widgetPlacement: {fileID: 66024358}
   possibleUIPalette: {fileID: 182730060}
+  gridEditController: {fileID: 0}
   rightHandSkeleton: {fileID: 113860855}
   minFramesBetweenPickAndStick: 6
   palettePickHasPriority: 1

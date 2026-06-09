@@ -13,6 +13,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
     [Tooltip("RevisedGridPlacementController (or any IForearmWidgetPlacement).")]
     public MonoBehaviour widgetPlacement;
     public PossibleUIPaletteController possibleUIPalette;
+    public RevisedGridEditController gridEditController;
     public OVRSkeleton rightHandSkeleton;
 
     IForearmWidgetPlacement Placement => ResolvePlacement(widgetPlacement);
@@ -41,6 +42,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
     int  pickupFrameStamp;
     bool wasPressTouch;
     bool wasPalettePress;
+    bool wasPaletteButtonPress;
 
     const int IndexTipBone = 10;
 
@@ -55,6 +57,9 @@ public class RevisedForearmTouchManager : MonoBehaviour
 
         if (possibleUIPalette == null)
             possibleUIPalette = FindObjectOfType<PossibleUIPaletteController>();
+
+        if (gridEditController == null)
+            gridEditController = FindObjectOfType<RevisedGridEditController>();
 
         if (widgetPlacement == null)
         {
@@ -84,6 +89,9 @@ public class RevisedForearmTouchManager : MonoBehaviour
     {
         if (interaction == null || Placement == null) return;
 
+        if (gridEditController == null)
+            gridEditController = FindObjectOfType<RevisedGridEditController>();
+
         Transform indexTip = IndexTip;
         Vector2 uv = interaction.TouchUV;
         bool onSkin = interaction.IsActive
@@ -101,10 +109,16 @@ public class RevisedForearmTouchManager : MonoBehaviour
         bool palettePressBegan = palettePressHeld && !wasPalettePress;
         bool palettePressReleased = !palettePressHeld && wasPalettePress;
 
-        TickFreePlace(onSkin, uv, pressBegan, pressReleased, palettePressBegan, palettePressReleased, indexTip);
+        bool paletteButtonPress = possibleUIPalette != null && indexTip != null &&
+            possibleUIPalette.IsFingerPressingPalette(indexTip.position);
+        bool paletteButtonPressBegan = paletteButtonPress && !wasPaletteButtonPress;
+
+        TickFreePlace(onSkin, uv, pressBegan, pressReleased, palettePressBegan, palettePressReleased,
+            paletteButtonPressBegan, indexTip);
 
         wasPressTouch = pressHeld;
         wasPalettePress = palettePressHeld;
+        wasPaletteButtonPress = paletteButtonPress;
     }
 
     Transform IndexTip
@@ -128,6 +142,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
         bool pressReleased,
         bool palettePressBegan,
         bool palettePressReleased,
+        bool paletteButtonPressBegan,
         Transform indexTip)
     {
         if (!carrying && Placement.IsCarrying)
@@ -140,16 +155,26 @@ public class RevisedForearmTouchManager : MonoBehaviour
         if (!carrying && indexTip != null)
         {
             bool overPalette = possibleUIPalette != null && possibleUIPalette.IsFingerOverPalette;
+            bool onTransformPanel = gridEditController != null && gridEditController.IsFingerOnTransformPanel;
 
-            if (possibleUIPalette != null && palettePressBegan &&
+            bool actionPressBegan = paletteButtonPressBegan || palettePressBegan;
+
+            if (possibleUIPalette != null && actionPressBegan && indexTip != null &&
                 possibleUIPalette.IsFingerOverClear(indexTip.position))
             {
                 if (debugLogGestures) Debug.Log("[RevisedGesture] CLEAR all grid cells");
                 Placement.ClearAll();
+                gridEditController?.ClearEditState();
                 return;
             }
 
             bool tryPalette = overPalette && palettePressBegan;
+            if (tryPalette &&
+                (possibleUIPalette.IsFingerOverEdit(indexTip.position) ||
+                 possibleUIPalette.IsFingerOverClear(indexTip.position)))
+            {
+                return;
+            }
 
             if (tryPalette && possibleUIPalette.TryBeginCarryFromPalette(indexTip))
             {
@@ -161,7 +186,18 @@ public class RevisedForearmTouchManager : MonoBehaviour
                 return;
             }
 
-            if (onSkin && pressBegan && !overPalette &&
+            if (gridEditController != null && gridEditController.IsEditModeActive &&
+                !onTransformPanel && onSkin && pressBegan &&
+                gridEditController.TrySelectCellFromUV(touchUV))
+            {
+                if (debugLogGestures)
+                    Debug.Log("[RevisedGesture] SELECT cell for edit");
+                return;
+            }
+
+            if (!onTransformPanel &&
+                !(gridEditController != null && gridEditController.IsEditModeActive) &&
+                onSkin && pressBegan && !overPalette &&
                 Placement.TryBeginCarryFromSurface(touchUV, indexTip))
             {
                 carrying = true;
@@ -211,6 +247,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
         {
             if (debugLogGestures) Debug.Log("[RevisedGesture] CLEAR all grid cells");
             Placement.ClearAll();
+            gridEditController?.ClearEditState();
             carrying = false;
             sawReleaseSincePickup = false;
             return;

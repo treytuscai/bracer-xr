@@ -6,7 +6,7 @@ using UnityEngine.UI;
 /// their image into the ForearmGrid shader content atlas (UV-locked, no floating canvas).
 /// Implements <see cref="IForearmWidgetPlacement"/> for <see cref="PossibleUIPaletteController"/>.
 /// </summary>
-[DefaultExecutionOrder(110)]
+[DefaultExecutionOrder(105)]
 public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlacement
 {
     [Header("References")]
@@ -32,6 +32,12 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
     Vector3 _tipPosSmoothVel;
 
     public bool IsCarrying => _draggedItem != null;
+
+    void Awake()
+    {
+        if (FindObjectOfType<RevisedGridEditController>() == null)
+            gameObject.AddComponent<RevisedGridEditController>();
+    }
 
     void Start()
     {
@@ -148,6 +154,7 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
             DestroyCarriedItem();
 
         grid?.ClearAll();
+        FindObjectOfType<RevisedGridEditController>()?.ClearEditState();
     }
 
     public bool TryBeginCarryFromSurface(Vector2 surfaceUV, Transform indexTipWorld)

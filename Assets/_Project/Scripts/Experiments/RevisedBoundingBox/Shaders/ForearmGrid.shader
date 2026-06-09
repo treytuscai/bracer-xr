@@ -6,6 +6,7 @@
 //   _GridColumns / _GridRows — grid resolution. Larger = smaller squares.
 //   _StateTex                — columns x rows RGBA, point-filtered. A > 0.5 = occupied.
 //   _ContentAtlas            — optional per-cell image tiles (columns x rows layout in UV space).
+//   _TransformTex            — per-cell scale (R) and rotation (G), decoded with _MaxContentScale.
 //   _DefaultColor            — fill for an empty cell (semi-transparent over skin).
 //   _LineColor / _LineThickness — grid line appearance.
 
@@ -17,12 +18,16 @@ Shader "Custom/ForearmGrid"
         _GridRows      ("Grid Rows",    Float) = 6
         _StateTex      ("Cell State (RGBA)", 2D) = "black" {}
         _ContentAtlas  ("Cell Content Atlas", 2D) = "black" {}
+        _TransformTex  ("Cell Transform (RG)", 2D) = "black" {}
+        _MaxContentScale ("Max Content Scale", Float) = 4
 
         _DefaultColor  ("Default Cell Color", Color) = (1, 1, 1, 0.15)
         _LineColor     ("Grid Line Color",    Color) = (1, 1, 1, 0.6)
         _LineThickness ("Line Thickness",     Range(0, 0.5)) = 0.04
         _HighlightCell ("Highlight Cell", Vector) = (0, 0, 0, 0)
         _HighlightColor ("Highlight Color", Color) = (0.2, 0.9, 0.35, 0.35)
+        _EditSelectionCell ("Edit Selection Cell", Vector) = (0, 0, 0, 0)
+        _EditTintColor ("Edit Tint Color", Color) = (0.2, 0.95, 0.35, 0.35)
     }
 
     SubShader
@@ -45,16 +50,96 @@ Shader "Custom/ForearmGrid"
             SAMPLER(sampler_StateTex);
             TEXTURE2D(_ContentAtlas);
             SAMPLER(sampler_ContentAtlas);
+            TEXTURE2D(_TransformTex);
+            SAMPLER(sampler_TransformTex);
 
             CBUFFER_START(UnityPerMaterial)
                 float  _GridColumns;
                 float  _GridRows;
+                float  _MaxContentScale;
                 half4  _DefaultColor;
                 half4  _LineColor;
                 float  _LineThickness;
                 float4 _HighlightCell;
                 half4  _HighlightColor;
+                float4 _EditSelectionCell;
+                half4  _EditTintColor;
             CBUFFER_END
+
+            half GetEditSelectionContentAlpha(float2 grid, float2 meshUV)
+            {
+                if (_EditSelectionCell.z <= 0.5)
+                    return 0.0;
+
+                int2 coord = int2(_EditSelectionCell.xy);
+                float2 cellCenter = (float2(coord) + 0.5) / grid;
+                half4 cellState = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
+                if (cellState.a <= 0.5)
+                    return 0.0;
+
+                half4 xf = SAMPLE_TEXTURE2D(_TransformTex, sampler_TransformTex, cellCenter);
+                float scale = max(xf.r * _MaxContentScale, 0.01);
+                float rotRad = xf.g * 6.2831853;
+
+                float2 editCellLocal = meshUV * grid - float2(coord);
+                float2 p = editCellLocal - 0.5;
+                float cosR = cos(-rotRad);
+                float sinR = sin(-rotRad);
+                float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
+
+                float2 contentUV = (float2(coord) + srcLocal) / grid;
+                half4 content = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+                return content.a;
+            }
+
+            half4 SampleTransformedCellContent(float2 grid, float2 meshUV, int2 cellCoord)
+            {
+                float2 cellCenter = (float2(cellCoord) + 0.5) / grid;
+                half4 cellState = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
+                if (cellState.a <= 0.5)
+                    return half4(0, 0, 0, 0);
+
+                half4 xf = SAMPLE_TEXTURE2D(_TransformTex, sampler_TransformTex, cellCenter);
+                float scale = max(xf.r * _MaxContentScale, 0.01);
+                float rotRad = xf.g * 6.2831853;
+
+                float2 cellLocal = meshUV * grid - float2(cellCoord);
+                float2 p = cellLocal - 0.5;
+                float cosR = cos(-rotRad);
+                float sinR = sin(-rotRad);
+                float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
+
+                float2 contentUV = (float2(cellCoord) + srcLocal) / grid;
+                return SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+            }
+
+            half4 CompositeCellContent(float2 grid, float2 meshUV, float2 primaryCell)
+            {
+                half4 composite = half4(0, 0, 0, 0);
+                int2 primary = int2(primaryCell);
+
+                [unroll]
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    [unroll]
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        int2 cellCoord = primary + int2(dx, dy);
+                        if (cellCoord.x < 0 || cellCoord.y < 0 ||
+                            cellCoord.x >= (int)grid.x || cellCoord.y >= (int)grid.y)
+                            continue;
+
+                        half4 tex = SampleTransformedCellContent(grid, meshUV, cellCoord);
+                        if (tex.a <= 0.01)
+                            continue;
+
+                        composite.rgb = tex.rgb * tex.a + composite.rgb * (1.0 - tex.a);
+                        composite.a   = tex.a + composite.a * (1.0 - tex.a);
+                    }
+                }
+
+                return composite;
+            }
 
             struct Attributes
             {
@@ -96,15 +181,17 @@ Shader "Custom/ForearmGrid"
 
                 float2 cellCenter = (cell + 0.5) / grid;
                 half4  cellState  = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
-
-                // Content atlas is laid out as a columns x rows tile grid in normalized UV space.
-                float2 contentUV = (cell + cellLocal) / grid;
-                half4  content   = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+                half4  content    = CompositeCellContent(grid, input.uv, cell);
 
                 half4 col = _DefaultColor;
-                if (cellState.a > 0.5)
+                if (content.a > 0.01)
                 {
-                    col = (content.a > 0.01) ? content : cellState;
+                    col.rgb = content.rgb * content.a + _DefaultColor.rgb * (1.0 - content.a);
+                    col.a   = max(_DefaultColor.a, content.a);
+                }
+                else if (cellState.a > 0.5)
+                {
+                    col = cellState;
                 }
 
                 if (_HighlightCell.z > 0.5 &&
@@ -112,6 +199,13 @@ Shader "Custom/ForearmGrid"
                 {
                     col.rgb = lerp(col.rgb, _HighlightColor.rgb, _HighlightColor.a);
                     col.a   = max(col.a, _HighlightColor.a);
+                }
+
+                half editMask = GetEditSelectionContentAlpha(grid, input.uv);
+                if (editMask > 0.01)
+                {
+                    col.rgb = lerp(col.rgb, _EditTintColor.rgb, _EditTintColor.a * editMask);
+                    col.a   = max(col.a, editMask * _EditTintColor.a);
                 }
 
                 float2 edgeDist = min(cellLocal, 1.0 - cellLocal);

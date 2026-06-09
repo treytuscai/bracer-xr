@@ -45,6 +45,7 @@ public class RevisedBoundingBoxController : MonoBehaviour
     Material  _mat;
     Texture2D _stateTex;
     Texture2D _emptyContentAtlas;
+    Texture2D _emptyTransformTex;
     Color32[] _cellColors;
     int       _builtCols = -1;
     int       _builtRows = -1;
@@ -56,10 +57,14 @@ public class RevisedBoundingBoxController : MonoBehaviour
     static readonly int GridColumnsId   = Shader.PropertyToID("_GridColumns");
     static readonly int GridRowsId      = Shader.PropertyToID("_GridRows");
     static readonly int StateTexId      = Shader.PropertyToID("_StateTex");
-    static readonly int ContentAtlasId  = Shader.PropertyToID("_ContentAtlas");
+    static readonly int ContentAtlasId     = Shader.PropertyToID("_ContentAtlas");
+    static readonly int TransformTexId     = Shader.PropertyToID("_TransformTex");
+    static readonly int MaxContentScaleId  = Shader.PropertyToID("_MaxContentScale");
     static readonly int DefaultColorId  = Shader.PropertyToID("_DefaultColor");
     static readonly int LineColorId     = Shader.PropertyToID("_LineColor");
-    static readonly int LineThicknessId = Shader.PropertyToID("_LineThickness");
+    static readonly int LineThicknessId  = Shader.PropertyToID("_LineThickness");
+    static readonly int EditSelectionCellId = Shader.PropertyToID("_EditSelectionCell");
+    static readonly int EditTintColorId     = Shader.PropertyToID("_EditTintColor");
 
     // ── Unity lifecycle ───────────────────────────────────────────────────────
 
@@ -98,6 +103,19 @@ public class RevisedBoundingBoxController : MonoBehaviour
         _emptyContentAtlas.SetPixel(0, 0, Color.clear);
         _emptyContentAtlas.Apply(false);
         _mat.SetTexture(ContentAtlasId, _emptyContentAtlas);
+
+        _emptyTransformTex = new Texture2D(1, 1, TextureFormat.RGBA32, false, true)
+        {
+            name = "ForearmGridEmptyTransform",
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        _emptyTransformTex.SetPixel(0, 0, Color.clear);
+        _emptyTransformTex.Apply(false);
+        _mat.SetTexture(TransformTexId, _emptyTransformTex);
+        _mat.SetFloat(MaxContentScaleId, 4f);
+        _mat.SetVector(EditSelectionCellId, new Vector4(-1f, -1f, 0f, 0f));
+        _mat.SetColor(EditTintColorId, new Color(0.2f, 0.95f, 0.35f, 0.35f));
 
         MeshRenderer mr = surface.GetComponent<MeshRenderer>()
                        ?? surface.GetComponentInChildren<MeshRenderer>();
@@ -272,6 +290,7 @@ public class RevisedBoundingBoxController : MonoBehaviour
     {
         if (_stateTex != null) Destroy(_stateTex);
         if (_emptyContentAtlas != null) Destroy(_emptyContentAtlas);
+        if (_emptyTransformTex != null) Destroy(_emptyTransformTex);
         if (_mat != null)      Destroy(_mat);
     }
 }
