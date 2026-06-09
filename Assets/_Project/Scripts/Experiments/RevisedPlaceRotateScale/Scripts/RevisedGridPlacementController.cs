@@ -1,14 +1,29 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using Experiments.Cli;
 
 /// <summary>
 /// Places palette widgets into grid cells on the forearm depth-surface mesh by baking
 /// their image into the ForearmGrid shader content atlas (UV-locked, no floating canvas).
 /// Implements <see cref="IForearmWidgetPlacement"/> for <see cref="PossibleUIPaletteController"/>.
+/// /// Also exposes a "clear" verb to the ExperimentCommandServer CLI via <see cref="IExperimentCommands"/>.
 /// </summary>
 [DefaultExecutionOrder(105)]
-public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlacement
-{
+public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlacement, IExperimentCommands {
+    /// <summary>
+    /// CLI hook: "clear" erases all placed widgets from the grid (e.g. to reset a participant's
+    /// arm between trials). Declared here so the command lives with the logic it drives.
+    /// </summary>
+    public void RegisterCommands(IDictionary<string, Func<IReadOnlyDictionary<string, string>, string>> commands)
+    {
+        commands["clear"] = _ =>
+        {
+            ClearAll();
+            return "cleared placed widgets";
+        };
+    }
     [Header("References")]
     public RevisedGridController grid;
     public ForearmDepthSurface surface;
