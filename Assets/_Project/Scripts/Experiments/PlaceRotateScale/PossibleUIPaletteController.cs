@@ -70,7 +70,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     [Tooltip("Width of the vertical separator bar beside the delete zone.")]
     [Min(1f)] public float deleteSeparatorWidth = 2f;
 
-    public Color deleteSeparatorColor = new Color(1f, 1f, 1f, 0.85f);
+    public Color deleteSeparatorColor = new Color(1f, 1f, 1f, 0f);
 
     [Tooltip("Space between the separator bar and delete column.")]
     [Min(0f)] public float deleteSeparatorPadding = 14f;
@@ -161,13 +161,22 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     [Header("Touch")]
     [Tooltip("Finger within this distance (meters) of the palette plane counts as hovering.")]
-    [Min(0.001f)] public float hoverDistanceMeters = 0.035f;
+    [Min(0.001f)] public float hoverDistanceMeters = 0.055f;
 
     [Tooltip("Finger within this distance (meters) of the palette plane counts as pressing.")]
-    [Min(0.001f)] public float pressDistanceMeters = 0.018f;
+    [Min(0.001f)] public float pressDistanceMeters = 0.048f;
+
+    [Tooltip("Looser depth tolerance for template hover/pick (helps top-row items when the finger is angled).")]
+    [Min(0.001f)] public float templatePickDepthMeters = 0.09f;
+
+    [Tooltip("Project the fingertip onto the palette plane before hit-testing X/Y.")]
+    public bool projectFingerOntoPalettePlane = true;
 
     [Tooltip("Extra padding (canvas-local units) when picking a template.")]
-    [Min(0f)] public float pickPaddingLocal = 8f;
+    [Min(0f)] public float pickPaddingLocal = 12f;
+
+    [Tooltip("Additional pick padding above templates in the top third of the grid.")]
+    [Min(0f)] public float extraTopPickPadding = 10f;
 
     [Header("Hover highlight")]
     [Tooltip("Show a green outline on the template under the fingertip before pickup.")]
@@ -183,7 +192,11 @@ public class PossibleUIPaletteController : MonoBehaviour
     public bool blockWorldAnchor;
 
     public PaletteTouchState TouchState { get; private set; }
-    public bool IsFingerOverPalette => TouchState != PaletteTouchState.None;
+    public bool IsFingerOverPalette => _menuVisible && TouchState != PaletteTouchState.None;
+    public bool IsMenuVisible => _menuVisible;
+
+    bool _menuVisible = true;
+    Image _paletteBackground;
 
     RectTransform _templateContainer;
     RectTransform _clearZone;
@@ -260,6 +273,8 @@ public class PossibleUIPaletteController : MonoBehaviour
         LayoutEditZoneManual();
         LayoutClearZoneManual();
         LayoutDeleteZoneManual();
+        HideActionSeparators();
+        ApplyTemplateAspectFits();
         ApplyPanelScale();
     }
 
@@ -269,6 +284,8 @@ public class PossibleUIPaletteController : MonoBehaviour
         LayoutEditZoneManual();
         LayoutClearZoneManual();
         LayoutDeleteZoneManual();
+        HideActionSeparators();
+        ApplyTemplateAspectFits();
         ApplyPanelScale();
         _panelLayoutLocked = true;
     }
@@ -448,6 +465,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         EnsureClearZone();
         EnsureDeleteZone();
         EnsureRowChildOrder();
+        HideActionSeparators();
     }
 
     void MigrateTemplatesIntoContainer()
@@ -456,7 +474,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         {
             Transform child = paletteRect.GetChild(i);
             if (child == _templateContainer || child == _clearZone || child == _deleteZone || child == _deleteTarget ||
-                child == _editZone)
+                child == _editZone || child.GetComponent<PaletteTemplateAspectSlot>() != null)
                 continue;
             if (child.GetComponent<PaletteDeleteTarget>() != null ||
                 child.GetComponent<PaletteClearTarget>() != null ||
@@ -499,6 +517,9 @@ public class PossibleUIPaletteController : MonoBehaviour
 
         _lastAppliedTemplateCellSize = EffectiveTemplateCellSize;
         _lastAppliedTemplateDisplayScale = templateDisplayScale;
+
+        EnsureAllTemplatesInAspectSlots();
+        ApplyTemplateAspectFits();
     }
 
     void RefreshTemplateGridIfNeeded()
@@ -520,6 +541,9 @@ public class PossibleUIPaletteController : MonoBehaviour
         _gridLayout.cellSize = cellSize;
         _lastAppliedTemplateCellSize = cellSize;
         _lastAppliedTemplateDisplayScale = templateDisplayScale;
+
+        EnsureAllTemplatesInAspectSlots();
+        ApplyTemplateAspectFits();
 
         if (_worldAnchorApplied)
         {
@@ -610,7 +634,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
-        _clearSeparator.gameObject.SetActive(false);
+        HideSeparator(_clearSeparator);
     }
 
     void EnsureClearTitle()
@@ -763,7 +787,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
-        separator.gameObject.SetActive(false);
+        HideSeparator(separator);
     }
 
     void EnsureEditTitle(RectTransform zone, ref RectTransform title, string name, string label, int fontSize)
@@ -925,7 +949,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
-        _deleteSeparator.gameObject.SetActive(false);
+        HideSeparator(_deleteSeparator);
     }
 
     void EnsureDeleteTitle()
@@ -977,7 +1001,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         float columnCenterX = columnWidth * 0.5f;
 
         if (separator != null)
-            separator.gameObject.SetActive(false);
+            HideSeparator(separator);
 
         var zoneLayout = zone.GetComponent<LayoutElement>();
         if (zoneLayout == null)
@@ -1157,6 +1181,220 @@ public class PossibleUIPaletteController : MonoBehaviour
         }
     }
 
+    /// <summary>Hides or shows template thumbnails and action buttons (Edit/Clear/Trash).</summary>
+    public void SetMenuVisible(bool visible)
+    {
+        _menuVisible = visible;
+        if (_templateContainer != null)
+            _templateContainer.gameObject.SetActive(visible);
+        if (_editZone != null)
+            _editZone.gameObject.SetActive(visible);
+        if (_clearZone != null)
+            _clearZone.gameObject.SetActive(visible);
+        if (_deleteZone != null)
+            _deleteZone.gameObject.SetActive(visible);
+
+        if (_paletteBackground == null && paletteRect != null)
+            _paletteBackground = paletteRect.GetComponent<Image>();
+        if (_paletteBackground != null)
+            _paletteBackground.enabled = visible;
+
+        if (!visible)
+        {
+            SetTemplateHoverOutline(_hoveredTemplate, false);
+            _hoveredTemplate = null;
+            TouchState = PaletteTouchState.None;
+        }
+        else
+        {
+            HideActionSeparators();
+        }
+    }
+
+    void HideActionSeparators()
+    {
+        HideSeparator(_clearSeparator);
+        HideSeparator(_editSeparator);
+        HideSeparator(_deleteSeparator);
+    }
+
+    static void HideSeparator(RectTransform separator)
+    {
+        if (separator == null)
+            return;
+
+        separator.gameObject.SetActive(false);
+        var image = separator.GetComponent<Image>();
+        if (image != null)
+            image.color = Color.clear;
+    }
+
+    void EnsureAllTemplatesInAspectSlots()
+    {
+        if (_templateContainer == null)
+            return;
+
+        var children = new System.Collections.Generic.List<RectTransform>(_templateContainer.childCount);
+        for (int i = 0; i < _templateContainer.childCount; i++)
+        {
+            if (_templateContainer.GetChild(i) is RectTransform rt)
+                children.Add(rt);
+        }
+
+        foreach (RectTransform child in children)
+        {
+            if (IsAspectSlot(child))
+                continue;
+
+            if (!IsSelectableTemplate(child))
+                continue;
+
+            WrapTemplateInAspectSlot(child);
+        }
+    }
+
+    static bool IsAspectSlot(RectTransform rt) =>
+        rt != null && rt.GetComponent<PaletteTemplateAspectSlot>() != null;
+
+    void WrapTemplateInAspectSlot(RectTransform template)
+    {
+        int siblingIndex = template.GetSiblingIndex();
+        var slotGo = new GameObject(template.name + "_Slot", typeof(RectTransform));
+        slotGo.AddComponent<PaletteTemplateAspectSlot>();
+        var slot = slotGo.GetComponent<RectTransform>();
+        slot.SetParent(_templateContainer, false);
+        slot.SetSiblingIndex(siblingIndex);
+        template.SetParent(slot, false);
+
+        template.anchorMin = template.anchorMax = new Vector2(0.5f, 0.5f);
+        template.pivot = new Vector2(0.5f, 0.5f);
+        template.anchoredPosition = Vector2.zero;
+    }
+
+    void ApplyTemplateAspectFits()
+    {
+        if (_templateContainer == null)
+            return;
+
+        Vector2 slot = EffectiveTemplateCellSize;
+        for (int i = 0; i < _templateContainer.childCount; i++)
+        {
+            if (!(_templateContainer.GetChild(i) is RectTransform gridChild))
+                continue;
+
+            RectTransform template = ResolveTemplateFromGridChild(gridChild);
+            if (template == null)
+                continue;
+
+            template.sizeDelta = ComputeAspectFitSize(template, slot);
+            ConfigureTemplateImages(template);
+        }
+    }
+
+    static RectTransform ResolveTemplateFromGridChild(RectTransform gridChild)
+    {
+        if (gridChild == null)
+            return null;
+
+        if (IsAspectSlot(gridChild))
+        {
+            if (gridChild.childCount == 0)
+                return null;
+
+            var inner = gridChild.GetChild(0) as RectTransform;
+            return IsSelectableTemplate(inner) ? inner : null;
+        }
+
+        return IsSelectableTemplate(gridChild) ? gridChild : null;
+    }
+
+    static RectTransform ResolvePickTargetFromGridChild(RectTransform gridChild)
+    {
+        if (gridChild == null)
+            return null;
+
+        if (IsAspectSlot(gridChild))
+            return gridChild;
+
+        return IsSelectableTemplate(gridChild) ? gridChild : null;
+    }
+
+    static Vector2 ComputeAspectFitSize(RectTransform template, Vector2 maxSize)
+    {
+        float aspect = 1f;
+        Image primary = FindPrimaryTemplateImage(template);
+        if (primary != null && primary.sprite != null)
+        {
+            Rect spriteRect = primary.sprite.rect;
+            aspect = spriteRect.width / Mathf.Max(1f, spriteRect.height);
+        }
+        else if (template.rect.width > 1f && template.rect.height > 1f)
+        {
+            aspect = template.rect.width / template.rect.height;
+        }
+
+        float maxW = maxSize.x;
+        float maxH = maxSize.y;
+        if (aspect >= maxW / maxH)
+            return new Vector2(maxW, maxW / aspect);
+
+        return new Vector2(maxH * aspect, maxH);
+    }
+
+    static Image FindPrimaryTemplateImage(RectTransform template)
+    {
+        if (template == null)
+            return null;
+
+        Image rootImage = template.GetComponent<Image>();
+        if (rootImage != null && rootImage.sprite != null && rootImage.enabled)
+            return rootImage;
+
+        Image bestChild = null;
+        float bestArea = 0f;
+        foreach (var img in template.GetComponentsInChildren<Image>(true))
+        {
+            if (img.sprite == null || !img.enabled)
+                continue;
+            if (img.GetComponent<PaletteDeleteTarget>() != null ||
+                img.GetComponent<PaletteClearTarget>() != null ||
+                img.GetComponent<PaletteEditTarget>() != null)
+                continue;
+
+            float area = img.sprite.rect.width * img.sprite.rect.height;
+            if (area > bestArea)
+            {
+                bestArea = area;
+                bestChild = img;
+            }
+        }
+
+        return bestChild ?? rootImage;
+    }
+
+    static void ConfigureTemplateImages(RectTransform template)
+    {
+        foreach (var img in template.GetComponentsInChildren<Image>(true))
+        {
+            if (img.GetComponent<PaletteDeleteTarget>() != null ||
+                img.GetComponent<PaletteClearTarget>() != null ||
+                img.GetComponent<PaletteEditTarget>() != null)
+                continue;
+
+            img.preserveAspect = true;
+        }
+
+        Image primary = FindPrimaryTemplateImage(template);
+        if (primary == null)
+            return;
+
+        RectTransform imageRect = primary.rectTransform;
+        imageRect.anchorMin = Vector2.zero;
+        imageRect.anchorMax = Vector2.one;
+        imageRect.offsetMin = Vector2.zero;
+        imageRect.offsetMax = Vector2.zero;
+    }
+
     public bool IsWorldAnchored => _worldAnchorApplied;
 
     /// <summary>
@@ -1202,6 +1440,13 @@ public class PossibleUIPaletteController : MonoBehaviour
             return;
         }
 
+        if (!_menuVisible)
+        {
+            TouchState = PaletteTouchState.None;
+            _editPressActive = false;
+            return;
+        }
+
         if (!followHead && !_worldAnchorApplied)
         {
             TouchState = PaletteTouchState.None;
@@ -1211,15 +1456,23 @@ public class PossibleUIPaletteController : MonoBehaviour
         }
 
         float signedDistance = SignedDistanceToPalettePlane(fingerWorld);
-        if (signedDistance > hoverDistanceMeters)
+        float pickDepth = Mathf.Max(hoverDistanceMeters, templatePickDepthMeters);
+        if (signedDistance > pickDepth)
             TouchState = PaletteTouchState.None;
-        else if (signedDistance <= pressDistanceMeters)
+        else if (signedDistance <= pressDistanceMeters ||
+                 (signedDistance <= templatePickDepthMeters &&
+                  IsFingerOverTemplateAtDepth(fingerWorld, signedDistance)))
             TouchState = PaletteTouchState.Press;
-        else
+        else if (signedDistance <= hoverDistanceMeters)
             TouchState = PaletteTouchState.Hover;
+        else
+            TouchState = IsFingerOverTemplateAtDepth(fingerWorld, signedDistance)
+                ? PaletteTouchState.Hover
+                : PaletteTouchState.None;
 
         UpdateHoverHighlight(fingerWorld);
-        ProcessEditButtonPresses(fingerWorld);
+        if (_menuVisible)
+            ProcessEditButtonPresses(fingerWorld);
     }
 
     void ProcessEditButtonPresses(Vector3 fingerWorld)
@@ -1353,7 +1606,7 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     void UpdateHoverHighlight(Vector3 fingerWorld)
     {
-        if (!showHoverOutline)
+        if (!showHoverOutline || !_menuVisible)
         {
             SetTemplateHoverOutline(_hoveredTemplate, false);
             _hoveredTemplate = null;
@@ -1368,7 +1621,13 @@ public class PossibleUIPaletteController : MonoBehaviour
         }
 
         RectTransform next = null;
-        if (TouchState != PaletteTouchState.None)
+        float depth = SignedDistanceToPalettePlane(fingerWorld);
+        if (depth <= templatePickDepthMeters)
+        {
+            Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
+            TryPickTemplate(fingerLocal, out next);
+        }
+        else if (TouchState != PaletteTouchState.None)
         {
             Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
             TryPickTemplate(fingerLocal, out next);
@@ -1460,8 +1719,29 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     Vector2 FingerLocalOnPalette(Vector3 fingerWorld)
     {
-        Vector3 local = paletteRect.InverseTransformPoint(fingerWorld);
+        Vector3 sample = projectFingerOntoPalettePlane
+            ? ProjectOntoPalettePlane(fingerWorld)
+            : fingerWorld;
+        Vector3 local = paletteRect.InverseTransformPoint(sample);
         return new Vector2(local.x, local.y);
+    }
+
+    Vector3 ProjectOntoPalettePlane(Vector3 fingerWorld)
+    {
+        Vector3 normal = GetTowardUserNormal();
+        float signed = Vector3.Dot(fingerWorld - paletteRect.position, normal);
+        if (signed < 0f)
+            signed = 0f;
+        return fingerWorld - normal * signed;
+    }
+
+    bool IsFingerOverTemplateAtDepth(Vector3 fingerWorld, float signedDistance)
+    {
+        if (signedDistance > templatePickDepthMeters || !_menuVisible || _templateContainer == null)
+            return false;
+
+        Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
+        return TryPickTemplate(fingerLocal, out _);
     }
 
     static bool IsSelectableTemplate(RectTransform childRt)
@@ -1482,6 +1762,9 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (_templateContainer == null)
             return false;
 
+        GetBoundsInPaletteLocal(_templateContainer, out _, out _, out float gridMnY, out float gridMxY);
+        float topRowThreshold = gridMnY + (gridMxY - gridMnY) * 0.66f;
+
         RectTransform bestOverlap = null;
         float bestOverlapDistSq = float.MaxValue;
 
@@ -1489,15 +1772,20 @@ public class PossibleUIPaletteController : MonoBehaviour
         {
             if (!(_templateContainer.GetChild(i) is RectTransform childRt))
                 continue;
-            if (!IsSelectableTemplate(childRt))
+
+            RectTransform pickRect = ResolvePickTargetFromGridChild(childRt);
+            RectTransform template = ResolveTemplateFromGridChild(childRt);
+            if (pickRect == null || template == null)
                 continue;
 
-            GetBoundsInPaletteLocal(childRt, out float mnX, out float mxX, out float mnY, out float mxY);
+            GetBoundsInPaletteLocal(pickRect, out float mnX, out float mxX, out float mnY, out float mxY);
 
             float paddedMnX = mnX - pickPaddingLocal;
             float paddedMxX = mxX + pickPaddingLocal;
             float paddedMnY = mnY - pickPaddingLocal;
             float paddedMxY = mxY + pickPaddingLocal;
+            if (mnY >= topRowThreshold)
+                paddedMxY += extraTopPickPadding;
 
             bool overlaps =
                 fingerLocal.x >= paddedMnX && fingerLocal.x <= paddedMxX &&
@@ -1511,7 +1799,7 @@ public class PossibleUIPaletteController : MonoBehaviour
             if (distSq < bestOverlapDistSq)
             {
                 bestOverlapDistSq = distSq;
-                bestOverlap = childRt;
+                bestOverlap = template;
             }
         }
 
@@ -1543,6 +1831,9 @@ public class PossibleUIPaletteController : MonoBehaviour
     public bool TryBeginCarryFromPalette(Transform indexTipWorld)
     {
         if (indexTipWorld == null || Placement == null || paletteRect == null)
+            return false;
+
+        if (!_menuVisible)
             return false;
 
         if (Placement.IsCarrying)
@@ -1585,6 +1876,11 @@ public class PaletteEditTarget : MonoBehaviour { }
 public class PaletteResizeTarget : MonoBehaviour { }
 
 public class PaletteRotateTarget : MonoBehaviour { }
+
+/// <summary>
+/// Grid slot wrapper that keeps a fixed cell while the inner template keeps its aspect ratio.
+/// </summary>
+public class PaletteTemplateAspectSlot : MonoBehaviour { }
 
 /// <summary>
 /// Marks a palette child as a selectable template that can be cloned onto the arm.

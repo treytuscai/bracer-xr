@@ -27,6 +27,10 @@ public class RevisedGridTransformPanel : MonoBehaviour
     [Min(1)] public int maxAnchorWaitFrames = 300;
     [Min(0.5f)] public float fallbackEyeHeightMeters = 1.45f;
     [Min(0.05f)] public float panelWorldWidthMeters = 0.16f;
+    [Tooltip("World-space scale when docked to the palette (1 = match palette width).")]
+    [Range(0.1f, 1f)] public float palettePlacementScale = 0.333f;
+    [Tooltip("When set, the edit panel uses this rect's world pose instead of the head-offset placement.")]
+    public bool usePalettePlacementWhenAvailable = true;
 
     [Header("Ranges")]
     [Min(0.1f)] public float minScale = 0.25f;
@@ -39,15 +43,16 @@ public class RevisedGridTransformPanel : MonoBehaviour
     [Min(0.01f)] public float releaseDistanceMeters = 0.07f;
 
     const int PanelW = 160;
-    const int PanelH = 300;
+    const int PanelH = 360;
     const int TopPad = 44;
-    const int BottomPad = 20;
+    const int BottomPad = 68;
     const int TrackW = 22;
     const int HandleW = 44;
     const int HandleH = 18;
     const int TrackHitHalfWidth = 38;
     const int TrackHitYPad = 16;
     const int IndexTipBone = 10;
+    const float BackButtonY = -162f;
 
     // Layout X for tracks, labels, and handles (canvas-local).
     const float ScaleLayoutX = -TrackW * 2f;
@@ -58,7 +63,10 @@ public class RevisedGridTransformPanel : MonoBehaviour
     RectTransform _rotateTrack;
     RectTransform _scaleHandle;
     RectTransform _rotateHandle;
+    RectTransform _backButton;
+    RectTransform _placementReference;
     bool _panelPlaced;
+    bool _backPressActive;
     int _anchorWaitFrames;
     ActiveSlider _activeSlider = ActiveSlider.None;
     ActiveSlider _capturedSlider = ActiveSlider.None;
@@ -67,10 +75,12 @@ public class RevisedGridTransformPanel : MonoBehaviour
 
     public bool IsVisible => _root != null && _root.gameObject.activeSelf;
     public bool IsFingerOnPanel { get; private set; }
+    public bool IsFingerOnBackButton { get; private set; }
     public ActiveSlider FocusedSlider => _activeSlider;
 
     public event Action<float> ScaleChanged;
     public event Action<float> RotationChanged;
+    public event Action BackToMenuRequested;
 
     void Awake()
     {
@@ -111,29 +121,35 @@ public class RevisedGridTransformPanel : MonoBehaviour
         if (!IsVisible)
         {
             IsFingerOnPanel = false;
+            IsFingerOnBackButton = false;
             _activeSlider = ActiveSlider.None;
             _capturedSlider = ActiveSlider.None;
+            _backPressActive = false;
             return;
         }
 
         UpdateFingerInteraction();
     }
 
-    public void SetVisible(bool visible)
+    public void SetVisible(bool visible, RectTransform placementReference = null)
     {
         if (_root == null) return;
         _root.gameObject.SetActive(visible);
         if (visible)
         {
+            _placementReference = usePalettePlacementWhenAvailable ? placementReference : null;
             if (_root.parent != null)
                 _root.SetParent(null, true);
             _panelPlaced = false;
             _capturedSlider = ActiveSlider.None;
+            _backPressActive = false;
             TryPlacePanel();
         }
         else
         {
+            _placementReference = null;
             _capturedSlider = ActiveSlider.None;
+            _backPressActive = false;
         }
     }
 
@@ -162,8 +178,10 @@ public class RevisedGridTransformPanel : MonoBehaviour
         if (tip == null || _root == null)
         {
             IsFingerOnPanel = false;
+            IsFingerOnBackButton = false;
             _activeSlider = ActiveSlider.None;
             _capturedSlider = ActiveSlider.None;
+            _backPressActive = false;
             return;
         }
 
@@ -171,6 +189,24 @@ public class RevisedGridTransformPanel : MonoBehaviour
         if (planeDist > releaseDistanceMeters)
         {
             IsFingerOnPanel = false;
+            IsFingerOnBackButton = false;
+            _activeSlider = ActiveSlider.None;
+            _capturedSlider = ActiveSlider.None;
+            _backPressActive = false;
+            return;
+        }
+
+        bool onBack = IsFingerOverBackButton(tip);
+        IsFingerOnBackButton = onBack;
+        bool pressing = planeDist <= pressDistanceMeters;
+
+        if (pressing && onBack && !_backPressActive)
+            BackToMenuRequested?.Invoke();
+        _backPressActive = pressing && onBack;
+
+        if (onBack)
+        {
+            IsFingerOnPanel = pressing;
             _activeSlider = ActiveSlider.None;
             _capturedSlider = ActiveSlider.None;
             return;
@@ -201,6 +237,18 @@ public class RevisedGridTransformPanel : MonoBehaviour
             SetScaleFromTrack(tip.position);
         else
             SetRotationFromTrack(tip.position);
+    }
+
+    bool IsFingerOverBackButton(Transform finger)
+    {
+        if (finger == null || _backButton == null) return false;
+        Vector3 local = _backButton.InverseTransformPoint(finger.position);
+        Rect r = _backButton.rect;
+        r.xMin -= 8f;
+        r.xMax += 8f;
+        r.yMin -= 8f;
+        r.yMax += 8f;
+        return r.Contains(new Vector2(local.x, local.y));
     }
 
     void SetScaleFromTrack(Vector3 fingerWorld)
@@ -234,9 +282,6 @@ public class RevisedGridTransformPanel : MonoBehaviour
     static float TrackTopY() => PanelH * 0.5f - TopPad;
     static float TrackBottomY() => -PanelH * 0.5f + BottomPad;
 
-    /// <summary>
-    /// Hit-tests in each track's local space so negative panel scale cannot swap columns.
-    /// </summary>
     static bool IsFingerOverTrack(Transform finger, RectTransform track)
     {
         if (finger == null || track == null) return false;
@@ -264,7 +309,19 @@ public class RevisedGridTransformPanel : MonoBehaviour
 
     void TryPlacePanel()
     {
-        if (headAnchor == null || _root == null) return;
+        if (_root == null) return;
+
+        if (_placementReference != null)
+        {
+            _root.SetPositionAndRotation(_placementReference.position, _placementReference.rotation);
+            float paletteWorldWidth = _placementReference.rect.width * Mathf.Abs(_placementReference.lossyScale.x);
+            float scale = paletteWorldWidth * palettePlacementScale / PanelW;
+            _root.localScale = new Vector3(-scale, scale, scale);
+            _panelPlaced = true;
+            return;
+        }
+
+        if (headAnchor == null) return;
 
         float headY = headAnchor.position.y;
         if (headY < minHeadHeightToAnchor)
@@ -296,8 +353,8 @@ public class RevisedGridTransformPanel : MonoBehaviour
         face.y = 0f;
         if (face.sqrMagnitude < 1e-6f) face = -flatForward;
         _root.SetPositionAndRotation(pos, Quaternion.LookRotation(face.normalized, Vector3.up));
-        float scale = panelWorldWidthMeters / PanelW;
-        _root.localScale = new Vector3(-scale, scale, scale);
+        float headScale = panelWorldWidthMeters / PanelW;
+        _root.localScale = new Vector3(-headScale, headScale, headScale);
         _panelPlaced = true;
     }
 
@@ -345,6 +402,37 @@ public class RevisedGridTransformPanel : MonoBehaviour
             new Color(0.35f, 0.85f, 1f, 0.55f));
         CreateTrack(_root, RotateLayoutX, trackMidY, trackHeight, out _rotateTrack, out _rotateHandle,
             new Color(1f, 0.75f, 0.25f, 0.55f));
+
+        CreateBackButton(_root);
+    }
+
+    void CreateBackButton(RectTransform parent)
+    {
+        var go = new GameObject("BackToMenuButton", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        _backButton = go.GetComponent<RectTransform>();
+        _backButton.SetParent(parent, false);
+        _backButton.sizeDelta = new Vector2(140f, 34f);
+        _backButton.anchoredPosition = new Vector2(0f, BackButtonY);
+
+        var image = go.GetComponent<Image>();
+        image.color = new Color(0.22f, 0.55f, 0.95f, 0.95f);
+        image.raycastTarget = false;
+
+        var labelGo = new GameObject("Label", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+        var labelRt = labelGo.GetComponent<RectTransform>();
+        labelRt.SetParent(_backButton, false);
+        labelRt.anchorMin = Vector2.zero;
+        labelRt.anchorMax = Vector2.one;
+        labelRt.offsetMin = Vector2.zero;
+        labelRt.offsetMax = Vector2.zero;
+
+        var text = labelGo.GetComponent<Text>();
+        text.text = "Back to menu";
+        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.fontSize = 15;
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = Color.white;
+        text.raycastTarget = false;
     }
 
     static void AddLabel(RectTransform parent, string text, Vector2 pos, int fontSize, float width = 72f)

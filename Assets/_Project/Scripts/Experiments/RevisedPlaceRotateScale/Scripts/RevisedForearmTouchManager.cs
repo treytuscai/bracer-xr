@@ -154,7 +154,9 @@ public class RevisedForearmTouchManager : MonoBehaviour
 
         if (!carrying && indexTip != null)
         {
-            bool overPalette = possibleUIPalette != null && possibleUIPalette.IsFingerOverPalette;
+            bool menuVisible = possibleUIPalette == null || possibleUIPalette.IsMenuVisible;
+            bool overPalette = menuVisible &&
+                possibleUIPalette != null && possibleUIPalette.IsFingerOverPalette;
             bool onTransformPanel = gridEditController != null && gridEditController.IsFingerOnTransformPanel;
 
             bool actionPressBegan = paletteButtonPressBegan || palettePressBegan;
@@ -241,7 +243,8 @@ public class RevisedForearmTouchManager : MonoBehaviour
             onSkin &&
             pressBegan &&
             Time.frameCount - pickupFrameStamp >= minFramesBetweenPickAndStick &&
-            (possibleUIPalette == null || !possibleUIPalette.IsFingerOverPalette);
+            (possibleUIPalette == null || !possibleUIPalette.IsMenuVisible ||
+             !possibleUIPalette.IsFingerOverPalette);
 
         if (readyForClear)
         {

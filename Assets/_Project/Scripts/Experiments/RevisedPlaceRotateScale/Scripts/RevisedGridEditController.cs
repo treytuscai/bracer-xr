@@ -30,6 +30,7 @@ public class RevisedGridEditController : MonoBehaviour
 
         transformPanel.ScaleChanged += OnScaleChanged;
         transformPanel.RotationChanged += OnRotationChanged;
+        transformPanel.BackToMenuRequested += OnBackToMenuRequested;
 
         if (palette != null)
             palette.BindGridEditController(this);
@@ -67,7 +68,8 @@ public class RevisedGridEditController : MonoBehaviour
     }
 
     public bool IsFingerOnTransformPanel =>
-        transformPanel != null && transformPanel.IsFingerOnPanel;
+        transformPanel != null &&
+        (transformPanel.IsFingerOnPanel || transformPanel.IsFingerOnBackButton);
 
     public void ToggleEditMode()
     {
@@ -109,11 +111,20 @@ public class RevisedGridEditController : MonoBehaviour
         transformPanel.SyncValues(scale, rotation);
     }
 
+    void OnBackToMenuRequested()
+    {
+        ClearEditState();
+    }
+
     void UpdatePanelVisibility()
     {
         if (transformPanel == null) return;
-        transformPanel.SetVisible(IsEditModeActive);
-        if (IsEditModeActive && grid != null && grid.HasSelectedCell)
+
+        bool showEditUi = IsEditModeActive;
+        palette?.SetMenuVisible(!showEditUi);
+        transformPanel.SetVisible(showEditUi, showEditUi ? palette?.paletteRect : null);
+
+        if (showEditUi && grid != null && grid.HasSelectedCell)
             SyncPanelToSelection();
     }
 
