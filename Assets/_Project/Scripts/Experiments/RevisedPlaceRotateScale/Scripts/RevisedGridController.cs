@@ -371,7 +371,6 @@ public class RevisedGridController : MonoBehaviour
 
     void StoreAndBake(int col, int row, Color[] pixels, int size, Color tint, float scale, float rotationDegrees)
     {
-        pixels = HardenPixelArray(pixels);
         int idx = CellToIndex(col, row);
         _cellMeta[idx] = new CellMetadata
         {
@@ -675,7 +674,7 @@ public class RevisedGridController : MonoBehaviour
         texture = null;
         tint = Color.white;
 
-        var image = widget.GetComponentInChildren<Image>(true);
+        var image = FindPrimaryWidgetImage(widget);
         if (image != null && image.sprite != null)
         {
             sprite = image.sprite;
@@ -692,6 +691,39 @@ public class RevisedGridController : MonoBehaviour
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Prefers a child icon Image over a solid background Image on the template root.
+    /// </summary>
+    static Image FindPrimaryWidgetImage(RectTransform widget)
+    {
+        if (widget == null) return null;
+
+        Image rootImage = null;
+        Image bestChild = null;
+        float bestChildArea = 0f;
+
+        foreach (var img in widget.GetComponentsInChildren<Image>(true))
+        {
+            if (img.sprite == null) continue;
+
+            if (img.transform == widget)
+            {
+                rootImage = img;
+                continue;
+            }
+
+            var rt = img.rectTransform;
+            float area = Mathf.Abs(rt.rect.width * rt.rect.height);
+            if (bestChild == null || area > bestChildArea)
+            {
+                bestChild = img;
+                bestChildArea = area;
+            }
+        }
+
+        return bestChild != null ? bestChild : rootImage;
     }
 
     static Color[] ReadSpritePixels(Sprite sprite, int width, int height)

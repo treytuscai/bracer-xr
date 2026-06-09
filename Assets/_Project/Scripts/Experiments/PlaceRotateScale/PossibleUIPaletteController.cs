@@ -65,7 +65,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public int deleteTitleFontSize = 16;
 
     [Tooltip("Space between the Trash label and delete icon.")]
-    [Min(0f)] public float deleteColumnSpacing = 4f;
+    [Min(0f)] public float deleteColumnSpacing = 10f;
 
     [Tooltip("Width of the vertical separator bar beside the delete zone.")]
     [Min(1f)] public float deleteSeparatorWidth = 2f;
@@ -73,7 +73,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public Color deleteSeparatorColor = new Color(1f, 1f, 1f, 0.85f);
 
     [Tooltip("Space between the separator bar and delete column.")]
-    [Min(0f)] public float deleteSeparatorPadding = 8f;
+    [Min(0f)] public float deleteSeparatorPadding = 14f;
 
     [Header("Clear")]
     [Tooltip("Optional clear-all icon. If unset, a built-in eraser-style label is shown.")]
@@ -90,7 +90,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public int clearTitleFontSize = 16;
 
     [Tooltip("Space between the Clear label and clear icon.")]
-    [Min(0f)] public float clearColumnSpacing = 4f;
+    [Min(0f)] public float clearColumnSpacing = 10f;
 
     [Header("Grid Edit")]
     [Tooltip("Optional — enables the Edit Image column and transform sliders.")]
@@ -99,7 +99,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public string editLabelText = "Resize/Rotate Image";
     public Vector2 editIconSize = new Vector2(56f, 56f);
     public int editTitleFontSize = 13;
-    [Min(0f)] public float editColumnSpacing = 4f;
+    [Min(0f)] public float editColumnSpacing = 10f;
     public Color editHoverHighlightColor = new Color(0.35f, 0.95f, 0.45f, 1f);
 
     [Header("Placement")]
@@ -524,6 +524,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        _clearSeparator.gameObject.SetActive(false);
     }
 
     void EnsureClearTitle()
@@ -676,6 +677,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        separator.gameObject.SetActive(false);
     }
 
     void EnsureEditTitle(RectTransform zone, ref RectTransform title, string name, string label, int fontSize)
@@ -762,9 +764,20 @@ public class PossibleUIPaletteController : MonoBehaviour
 
         if (_editTitle == null) return;
         int lines = Mathf.Max(1, editLabelText.Split('\n').Length);
-        float titleHeight = editTitleFontSize * lines + 4f * lines;
+        float titleHeight = editTitleFontSize * lines + 6f * lines;
         var titleSize = _editTitle.sizeDelta;
-        _editTitle.sizeDelta = new Vector2(Mathf.Max(titleSize.x, 96f), titleHeight);
+        _editTitle.sizeDelta = new Vector2(Mathf.Max(titleSize.x, 118f), titleHeight);
+
+        var zoneLayout = _editZone.GetComponent<LayoutElement>();
+        if (zoneLayout != null)
+        {
+            float columnWidth = Mathf.Max(_editTitle.sizeDelta.x, editIconSize.x);
+            zoneLayout.minWidth = columnWidth;
+            zoneLayout.preferredWidth = columnWidth;
+            float columnHeight = titleHeight + editColumnSpacing + editIconSize.y + 6f;
+            zoneLayout.minHeight = columnHeight;
+            zoneLayout.preferredHeight = columnHeight;
+        }
     }
 
     void EnsureDeleteZone()
@@ -826,6 +839,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        _deleteSeparator.gameObject.SetActive(false);
     }
 
     void EnsureDeleteTitle()
@@ -870,11 +884,14 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (zone == null || separator == null || title == null || target == null)
             return;
 
-        float columnWidth = Mathf.Max(iconSize.x, 48f);
-        float titleHeight = titleFontSize + 4f;
-        float columnHeight = titleHeight + columnSpacing + iconSize.y;
-        float zoneWidth = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth;
-        float columnCenterX = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth * 0.5f;
+        float columnWidth = Mathf.Max(iconSize.x, titleFontSize * 7.5f, 72f);
+        float titleHeight = titleFontSize + 8f;
+        float columnHeight = titleHeight + columnSpacing + iconSize.y + 4f;
+        float zoneWidth = columnWidth;
+        float columnCenterX = columnWidth * 0.5f;
+
+        if (separator != null)
+            separator.gameObject.SetActive(false);
 
         var zoneLayout = zone.GetComponent<LayoutElement>();
         if (zoneLayout == null)
@@ -900,7 +917,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         title.anchorMax = new Vector2(0f, 1f);
         title.pivot = new Vector2(0.5f, 1f);
         title.sizeDelta = new Vector2(columnWidth, titleHeight);
-        title.anchoredPosition = new Vector2(columnCenterX, 0f);
+        title.anchoredPosition = new Vector2(columnCenterX, -2f);
 
         target.anchorMin = new Vector2(0f, 1f);
         target.anchorMax = new Vector2(0f, 1f);
