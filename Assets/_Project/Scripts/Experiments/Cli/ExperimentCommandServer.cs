@@ -12,23 +12,23 @@ using UnityEngine.SceneManagement;
 namespace Experiments.Cli
 {
     /// <summary>
-    /// In-app command CLI for driving experiments from a laptop. Listens on a loopback TCP
-    /// port; a connection sends newline-delimited commands ("load chooseColorWithColorwheel",
-    /// "clear", "screenshot") and reads back a one-line reply. Reach it over adb with no IP
-    /// discovery: `adb forward tcp:9999 tcp:9999`, then talk to localhost. See Tools/expctl.
+    /// In-app HTTP command server for driving experiments from a laptop.
+    /// Listens on loopback HTTP; send commands with curl via adb forward:
+    ///   adb forward tcp:9999 tcp:9999
+    ///   curl -s http://localhost:9999/ -d "ping"
+    /// See Tools/expctl for the wrapper script.
     ///
-    /// Why TCP over a loopback socket rather than an Android broadcast intent: a BroadcastReceiver
-    /// can't be authored in C# (AndroidJavaProxy proxies interfaces, not the abstract Receiver
-    /// class), so intents would force a Java/AAR plugin. A TcpListener is pure C#, gives a return
-    /// channel for free, and `adb forward` makes it work tethered or over wifi.
+    /// Transport: HttpListener (plain HTTP POST, command in body, response as plain text).
+    /// curl is reliable where nc is not — it handles the full request/response cycle correctly
+    /// regardless of macOS version.
     ///
-    /// Threading: the accept/read loop runs on a background thread and only enqueues requests.
-    /// Every handler runs on the Unity main thread (drained in Update), because they touch the
-    /// scene graph. The connection thread blocks on each request until the main thread answers.
+    /// Threading: HttpListener.GetContext() blocks on a background thread. Each request is
+    /// dispatched synchronously: the bg thread enqueues it, blocks until Unity's Update()
+    /// answers, then writes the HTTP response. Handlers run on the main thread.
     ///
-    /// Commands are split in two: GLOBAL verbs owned here (load/reload/scenes/screenshot/ping/
-    /// quit/help) and SCENE verbs contributed by controllers via <see cref="IExperimentCommands"/>,
-    /// rescanned on every scene load. The server never references an experiment's type.
+    /// Commands: GLOBAL verbs (load/reload/scenes/screenshot/ping/quit/help) live here.
+    /// SCENE verbs are contributed by controllers via <see cref="IExperimentCommands"/>,
+    /// rescanned on every scene load — the server never references an experiment type.
     /// </summary>
     public sealed class ExperimentCommandServer : MonoBehaviour
     {
@@ -37,8 +37,8 @@ namespace Experiments.Cli
 
         delegate string Handler(IReadOnlyDictionary<string, string> args);
 
-        // Global verbs survive scene loads; scene verbs are rebuilt by the active scene's providers.
-        readonly Dictionary<string, Handler> _global = new Dictionary<string, Handler>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, Handler> _global =
+            new Dictionary<string, Handler>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, Func<IReadOnlyDictionary<string, string>, string>> _scene =
             new Dictionary<string, Func<IReadOnlyDictionary<string, string>, string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -48,10 +48,6 @@ namespace Experiments.Cli
         Thread _acceptThread;
         volatile bool _running;
 
-        /// <summary>
-        /// Spawns the server automatically once the first scene is up, with no GameObject to place
-        /// in any scene. Survives scene changes via DontDestroyOnLoad.
-        /// </summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
         {
@@ -121,7 +117,8 @@ namespace Experiments.Cli
                 int n = SceneManager.sceneCountInBuildSettings;
                 var names = new string[n];
                 for (int i = 0; i < n; i++)
-                    names[i] = Path.GetFileNameWithoutExtension(SceneUtility.GetScenePathByBuildIndex(i));
+                    names[i] = Path.GetFileNameWithoutExtension(
+                        SceneUtility.GetScenePathByBuildIndex(i));
                 return string.Join(", ", names);
             };
 
@@ -150,58 +147,40 @@ namespace Experiments.Cli
                 return CaptureScreenshot(name);
             };
 
-            _global["quit"] = _ =>
-            {
-                Application.Quit();
-                return "quitting";
-            };
+            _global["quit"] = _ => { Application.Quit(); return "quitting"; };
         }
 
         void OnSceneLoaded(Scene scene, LoadSceneMode mode) => RebuildSceneCommands(scene);
 
-        /// <summary>
-        /// Rebuilds the scene-scoped verb table by asking every <see cref="IExperimentCommands"/>
-        /// provider in the freshly loaded scene to register its commands. Called on each load so
-        /// stale verbs from the previous experiment don't linger.
-        /// </summary>
         void RebuildSceneCommands(Scene scene)
         {
             _scene.Clear();
             if (!scene.IsValid()) return;
 
-            // FindObjectsOfType is fine here: scene loads are rare and operator-driven.
             var providers = FindObjectsOfType<MonoBehaviour>(includeInactive: true);
             foreach (MonoBehaviour mb in providers)
             {
-                if (mb is IExperimentCommands provider)
-                    provider.RegisterCommands(_scene);
+                if (mb is IExperimentCommands p)
+                    p.RegisterCommands(_scene);
             }
         }
 
         // ------------------------------------------------------------------
         // SCREENSHOT
-        // Render the active camera to an offscreen target and write a PNG to persistentDataPath
-        // (/sdcard/Android/data/<pkg>/files on Quest), so `adb pull` can fetch it without root.
-        // ScreenCapture.CaptureScreenshot is avoided: in XR it captures the distorted eye buffer.
         // ------------------------------------------------------------------
 
         string CaptureScreenshot(string fileName)
         {
             Camera cam = Camera.main;
             if (cam == null)
-            {
                 foreach (Camera c in Camera.allCameras)
-                {
                     if (c.isActiveAndEnabled) { cam = c; break; }
-                }
-            }
             if (cam == null) return "error: no active camera";
 
             const int w = 1280, h = 720;
             var rt = RenderTexture.GetTemporary(w, h, 24, RenderTextureFormat.ARGB32);
             RenderTexture prevTarget = cam.targetTexture;
             RenderTexture prevActive = RenderTexture.active;
-
             var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
             try
             {
@@ -225,9 +204,7 @@ namespace Experiments.Cli
         }
 
         // ------------------------------------------------------------------
-        // PARSING
-        // "verb a b key=val" -> verb, { "0":"a", "1":"b", "key":"val" }.
-        // Positional args after the verb are indexed from 0; key=value pairs keep their key.
+        // PARSING — "verb a b key=val" -> verb + positional/named args dict
         // ------------------------------------------------------------------
 
         static string ParseCommand(string line, out IReadOnlyDictionary<string, string> args)
@@ -238,20 +215,18 @@ namespace Experiments.Cli
             string[] tokens = line.Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
             if (tokens.Length == 0) return null;
 
-            int positional = 0;
+            int pos = 0;
             for (int i = 1; i < tokens.Length; i++)
             {
                 int eq = tokens[i].IndexOf('=');
-                if (eq > 0)
-                    map[tokens[i].Substring(0, eq)] = tokens[i].Substring(eq + 1);
-                else
-                    map[(positional++).ToString()] = tokens[i];
+                if (eq > 0) map[tokens[i].Substring(0, eq)] = tokens[i].Substring(eq + 1);
+                else        map[(pos++).ToString()] = tokens[i];
             }
             return tokens[0];
         }
 
         // ------------------------------------------------------------------
-        // TCP LISTENER (background thread)
+        // HTTP LISTENER (background thread)
         // ------------------------------------------------------------------
 
         void StartListener()
@@ -268,9 +243,7 @@ namespace Experiments.Cli
         void StopListener()
         {
             _running = false;
-            try { _listener?.Stop(); } catch { /* shutting down */ }
-
-            // Release any connection thread blocked waiting on the main thread.
+            try { _listener?.Stop(); } catch { }
             while (_inbox.TryDequeue(out Request req)) req.Done.Set();
             _acceptThread?.Join(200);
         }
@@ -281,31 +254,89 @@ namespace Experiments.Cli
             {
                 TcpClient client;
                 try { client = _listener.AcceptTcpClient(); }
-                catch { break; } // listener stopped
+                catch { break; }
 
-                using (client)
-                using (NetworkStream stream = client.GetStream())
-                using (var reader = new StreamReader(stream, Encoding.UTF8))
-                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true })
-                {
-                    string line;
-                    while (_running && (line = reader.ReadLine()) != null)
-                    {
-                        if (line.Length == 0) continue;
-
-                        var req = new Request(line);
-                        _inbox.Enqueue(req);
-
-                        // Block until Update() answers (or the app is tearing down / hung).
-                        string reply = req.Done.Wait(RequestTimeoutMs) ? req.Response : "error: timeout";
-                        try { writer.WriteLine(reply); }
-                        catch { break; } // client gone
-                    }
-                }
+                try { HandleClient(client); }
+                catch { }
+                finally { client.Close(); }
             }
         }
 
-        /// <summary>One queued command awaiting a main-thread answer.</summary>
+        // Minimal HTTP/1.1 server: reads headers to find Content-Length, reads the body
+        // as the command, dispatches on the main thread, writes a plain-text 200 response.
+        // Bypasses Mono's HttpListener entirely — no host-matching quirks.
+        void HandleClient(TcpClient client)
+        {
+            NetworkStream stream = client.GetStream();
+
+            // Read request line + headers into a byte buffer until \r\n\r\n.
+            var headerBuf = new List<byte>(512);
+            int b;
+            while ((b = stream.ReadByte()) != -1)
+            {
+                headerBuf.Add((byte)b);
+                if (headerBuf.Count >= 4)
+                {
+                    int n = headerBuf.Count;
+                    if (headerBuf[n-4] == '\r' && headerBuf[n-3] == '\n' &&
+                        headerBuf[n-2] == '\r' && headerBuf[n-1] == '\n')
+                        break;
+                }
+            }
+
+            string headers = Encoding.UTF8.GetString(headerBuf.ToArray());
+
+            // Extract Content-Length from headers.
+            int contentLength = 0;
+            foreach (string headerLine in headers.Split('\n'))
+            {
+                if (headerLine.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    int.TryParse(headerLine.Substring(15).Trim(), out contentLength);
+                    break;
+                }
+            }
+
+            // Read body.
+            string body = "";
+            if (contentLength > 0)
+            {
+                byte[] bodyBytes = new byte[contentLength];
+                int total = 0;
+                while (total < contentLength)
+                {
+                    int read = stream.Read(bodyBytes, total, contentLength - total);
+                    if (read == 0) break;
+                    total += read;
+                }
+                body = Encoding.UTF8.GetString(bodyBytes, 0, total).Trim();
+            }
+
+            string reply;
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                reply = "error: empty command";
+            }
+            else
+            {
+                var req = new Request(body);
+                _inbox.Enqueue(req);
+                reply = req.Done.Wait(RequestTimeoutMs) ? req.Response : "error: timeout";
+            }
+
+            byte[] replyBytes = Encoding.UTF8.GetBytes(reply + "\n");
+            string httpResponse =
+                "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: text/plain; charset=utf-8\r\n" +
+                $"Content-Length: {replyBytes.Length}\r\n" +
+                "Connection: close\r\n" +
+                "\r\n";
+            byte[] responseHeader = Encoding.UTF8.GetBytes(httpResponse);
+            stream.Write(responseHeader, 0, responseHeader.Length);
+            stream.Write(replyBytes, 0, replyBytes.Length);
+            stream.Flush();
+        }
+
         sealed class Request
         {
             public readonly string Line;

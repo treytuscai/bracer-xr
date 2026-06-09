@@ -2,36 +2,24 @@
 #
 # expctl — drive the running experiment build over adb.
 #
-# Talks to ExperimentCommandServer (loopback TCP 9999 in the app) through an
-# adb port-forward, so there is no headset IP to discover — works tethered or
-# over `adb connect`. Each invocation sends one command and prints the reply.
-#
 # Setup (once per device session):  ./expctl forward
 # Usage:                            ./expctl <command> [args...]
 #
 # Examples:
-#   ./expctl ping
-#   ./expctl scenes
-#   ./expctl load chooseColorWithColorwheel
-#   ./expctl reload
-#   ./expctl clear
-#   ./expctl screenshot              # captures + pulls the PNG to ./
-#   ./expctl help
+#   ./Tools/expctl ping
+#   ./Tools/expctl scenes
+#   ./Tools/expctl load RevisedPlaceRotateScale
+#   ./Tools/expctl reload
+#   ./Tools/expctl clear
+#   ./Tools/expctl screenshot
+#   ./Tools/expctl help
 #
-set -euo pipefail
+set -u
 
 PORT="${EXPCTL_PORT:-9999}"
 
 send() {
-  # Prefer nc; fall back to bash's /dev/tcp if netcat is missing.
-  if command -v nc >/dev/null 2>&1; then
-    printf '%s\n' "$*" | nc -w 5 localhost "$PORT"
-  else
-    exec 3<>"/dev/tcp/localhost/$PORT"
-    printf '%s\n' "$*" >&3
-    head -n 1 <&3
-    exec 3>&-
-  fi
+  curl -s "http://localhost:$PORT/" -d "$*"
 }
 
 case "${1:-}" in
@@ -43,14 +31,13 @@ case "${1:-}" in
   screenshot)
     reply="$(send screenshot "${2:-}")"
     echo "$reply"
-    # Reply is "saved <device-path>"; pull it next to the script.
     if [[ "$reply" == saved\ * ]]; then
       devpath="${reply#saved }"
       adb pull "$devpath" ./ && echo "pulled $(basename "$devpath")"
     fi
     ;;
 
-  "" )
+  "")
     echo "usage: expctl <command> [args...]   (try: expctl help)" >&2
     exit 1
     ;;
