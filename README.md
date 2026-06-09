@@ -149,7 +149,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
-| `orientationMode` | Auto | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
+| `orientationMode` | Portrait | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
 | `portraitTexture` | none | Image shown upright; drives the material's UI Texture |
 | `landscapeTexture` | none | Image shown sideways (author it already sideways) |
 
