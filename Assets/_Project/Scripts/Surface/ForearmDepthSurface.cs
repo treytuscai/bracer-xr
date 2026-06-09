@@ -13,22 +13,20 @@ using Surface.Core;
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up) and smooth pronation/orientation.
 ///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
-///                     render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh), blit
-///                     through MetaDepthCopy.shader (hand pixels -> w=-1 -> HasDepth=false),
-///                     GPU-readback the forearm crop, and unproject each sampled pixel into a
-///                     flat world-space hit grid (rows × cols).
-///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh)
-///                     into a screen-space mask texture before the depth blit. MetaDepthCopy
-///                     rejects masked pixels (w=-1) so hand depth arrives as HasDepth=false,
-///                     naturally excluding it from extraction and touch detection.
+///                     blit the stabilized depth through MetaDepthCopy.shader, GPU-readback the forearm
+///                     crop, and unproject each sampled pixel into a flat world-space hit grid (rows × cols).
+///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh) into a
+///                     depth-frame mask before stabilization. The median's extract pass carves the finger
+///                     to invalid (a hole the rest of the pipeline skips) and reconstructs the bleed it
+///                     lifts around itself — excluding the hand from extraction and touch without raising
+///                     the mesh at the contact point.
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
 ///                     (maxFloodDist) to grow the full forearm patch (IsSurface flags).
-///   5. Smoothing:     The interior is denoised on the GPU (bilateral depth blur in
-///                     MetaDepthCopy); the boundary flicker is already removed upstream by the
-///                     temporal median (step 2). A parallel boundary smoother then de-steps the
-///                     mesh edge by averaging each boundary cell with its boundary neighbors.
+///   5. Smoothing:     Boundary flicker is removed upstream by the temporal median (step 2); a parallel
+///                     boundary smoother de-steps the mesh edge by averaging each boundary cell with its
+///                     boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
 ///                     an edge-length rejection pass, compute UVs corrected for arm twist
 ///                     and orientation, and upload to the GPU mesh.
@@ -57,10 +55,20 @@ public class ForearmDepthSurface : MonoBehaviour
     // pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Mask dilation radius in grid texels, applied at sample time (3x3 max). Grows the " +
-             "effective hand mask to cover readback latency and imperfect-mesh peek-through. Keep " +
-             "small (1) — large values eat real surface around the hand.")]
-    [Range(0, 4)] public int maskDilateTexels = 1;
+    [Tooltip("Grid texels the hand silhouette is grown by (3x3 max). Covers the stereo bleed/lift " +
+             "around the hand plus readback latency. Carved from depth history; the lifted ring inside " +
+             "this margin is reconstructed from clean surface at consume, not deleted.")]
+    [Range(0, 10)] public int handMarginTexels = 8;
+
+    [Tooltip("Inner cushion (grid texels) around the hand kept as a hole, covering the real hand that " +
+             "peeks past the rendered mask. Without it, peek-through gets flattened to arm — a sliver " +
+             "trailing onto the hand. Raise until the sliver clears. Must stay below handMarginTexels.")]
+    [Range(0, 4)] public int occlusionMarginTexels = 1;
+
+    [Tooltip("Depth window (m) behind the nearest borrowed sample that still counts as the same " +
+             "surface when reconstructing the lifted ring. Wide enough to span the forearm, tight " +
+             "enough to reject a farther surface (e.g. a table behind the arm).")]
+    [Range(0.005f, 0.1f)] public float borrowDepthBand = 0.03f;
 
     // ------------------------------------------------------------------
     // SEED + FLOOD - The depth crop pads by maxFloodDist so the readback
@@ -173,7 +181,7 @@ public class ForearmDepthSurface : MonoBehaviour
     {
         _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation, enablePalm);
         _handMask = new HandMask(handMesh, handSkeleton);
-        _depthReadback = new DepthReadback(_handMask, maskDilateTexels);
+        _depthReadback = new DepthReadback(_handMask, handMarginTexels, occlusionMarginTexels, borrowDepthBand);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
