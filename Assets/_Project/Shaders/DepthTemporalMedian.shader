@@ -1,10 +1,11 @@
 // DepthTemporalMedian.shader
 // Two-pass depth stabilization that removes the forearm-boundary flicker (see DepthReadback).
 //
-// Pass 0 EXTRACT: copy the left-eye slice (index 0) of Meta's _EnvironmentDepthTexture array
-//   into a plain 2D R-channel target, so it can be kept as frame history. The (dilated) hand
-//   silhouette is carved out here (written invalid) so the moving hand can never reproject onto
-//   clean arm and corrupt the median in pass 1 — see _HandMaskTex below.
+// Pass 0 EXTRACT: copy the left-eye slice (index 0) of Meta's _EnvironmentDepthTexture array into a
+//   plain 2D R-channel target kept as frame history. Hand handling happens here so it lands in history:
+//   the finger is carved to invalid (a moving hand must not reproject onto clean arm and corrupt the
+//   pass-1 median), and the stereo bleed ring it lifts around itself is reconstructed from clean arm
+//   (TryBorrowArmDepth). Both are then medianed in pass 1. See _HandMaskTex below.
 // Pass 1 MEDIAN3: per-texel median of the current frame + two history frames REPROJECTED into the
 //   current head pose -> stabilized depth. The median rejects stereo "flying pixels" because they
 //   are temporal OUTLIERS (a pixel that jumps to a wrong intermediate depth one frame is discarded),
@@ -35,19 +36,30 @@ Shader "Hidden/DepthTemporalMedian"
             TEXTURE2D_ARRAY(_EnvironmentDepthTexture);
             SAMPLER(sampler_EnvironmentDepthTexture);
 
-            // Full depth-frame hand silhouette (1 = hand), rendered by DepthReadback BEFORE this pass.
-            // Hand texels are written invalid (0) into history so they can't become a pass-1 median
-            // sample: the hand MOVES, but pass 1 reprojects history as a static world, so last frame's
-            // hand would otherwise land on this frame's clean arm and lift the edge.
+            // Full depth-frame hand silhouette (1 = hand), rendered by DepthReadback BEFORE this pass. The
+            // finger is written invalid into history so it can't become a pass-1 median sample: pass 1
+            // reprojects history as a static world, so a moving hand's old position would otherwise land
+            // on this frame's clean arm and lift the edge.
             TEXTURE2D(_HandMaskTex);
             SAMPLER(sampler_HandMaskTex);
 
-            // Dilation kernel, set per frame to MATCH MetaDepthCopy's reject exactly, so the carved-out
-            // region equals the rejected one. One grid texel in depth UV = _CropUVScaleOffset.xy *
-            // _GridTexelSize.xy; the radius is _MaskDilateTexels of those.
+            // NDC->metres params (global, set by Meta). Used by the lifted-edge borrow to tell arm
+            // from a farther background; matches MetaDepthCopy's LinearizeDepth.
+            float4 _EnvironmentDepthZBufferParams;
+
+            // Hand-margin grow, set per frame. One grid texel in depth UV = _CropUVScaleOffset.xy *
+            // _GridTexelSize.xy; the margin is _HandMarginTexels of those (grows the finger to cover the
+            // stereo bleed/lift plus readback latency).
             float4 _CropUVScaleOffset;
             float4 _GridTexelSize;
-            int    _MaskDilateTexels;
+            int    _HandMarginTexels;
+            // Inner cushion (grid texels) kept as a hole: covers the real hand peeking past the rendered
+            // mask (imperfect mesh + readback latency), so peek-through is occluded, not flattened to arm.
+            // Stays below _HandMarginTexels so a reconstruct band remains.
+            int    _OcclusionMarginTexels;
+            // Depth window (m): a borrowed sample within this of the nearest still counts as the same
+            // surface when reconstructing the ring (rejects a farther background).
+            float  _BorrowDepthBand;
 
             struct Attributes { float4 positionOS : POSITION; float2 uv : TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
             struct Varyings   { float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; UNITY_VERTEX_OUTPUT_STEREO };
@@ -62,10 +74,26 @@ Shader "Hidden/DepthTemporalMedian"
                 return output;
             }
 
-            // 3x3 dilated hand-mask test in depth UV, matching MetaDepthCopy's SampleHandMaskDilated.
-            float HandMaskDilated(float2 duv)
+            // Left-eye (slice 0) raw NDC depth at a depth UV. LOD 0 — no mips.
+            float SampleDepthRaw(float2 duv)
             {
-                float2 texelStep = _CropUVScaleOffset.xy * _GridTexelSize.xy * _MaskDilateTexels;
+                return SAMPLE_TEXTURE2D_ARRAY_LOD(_EnvironmentDepthTexture,
+                                                  sampler_EnvironmentDepthTexture, duv, 0, 0).r;
+            }
+
+            // NDC [0,1] -> linear metres (Meta's global ZBuffer params; matches MetaDepthCopy).
+            float LinearizeDepth(float raw)
+            {
+                float ndc = raw * 2.0 - 1.0;
+                return (1.0 / (ndc + _EnvironmentDepthZBufferParams.y)) * _EnvironmentDepthZBufferParams.x;
+            }
+
+            // 3x3 hand-mask test in depth UV, silhouette grown by `marginTexels` (the 3 taps per axis
+            // sit at -m, 0, +m grid texels, so 9 taps approximate a radius-m dilation). m = 0 reduces to a
+            // single-tap test of the rendered silhouette itself.
+            float HandMaskGrown(float2 duv, int marginTexels)
+            {
+                float2 texelStep = _CropUVScaleOffset.xy * _GridTexelSize.xy * marginTexels;
                 float m = 0.0;
                 UNITY_UNROLL
                 for (int dy = -1; dy <= 1; dy++)
@@ -76,16 +104,97 @@ Shader "Hidden/DepthTemporalMedian"
                 return m;
             }
 
+            // LIFTED-EDGE RECONSTRUCTION: estimate the local arm depth for a ring texel. March 8 rays
+            // outward, each stopping at the first texel past the margin mask (O(margin) per ray, so a wide
+            // margin stays cheap) — that first clean sample is the arm in that direction, with the lift
+            // skipped. Take the nearest of the 8 and average the ones within _BorrowDepthBand of it (a
+            // farther sample is background). Returns false when no ray reaches clean arm (finger off arm).
+            bool TryBorrowArmDepth(float2 duv, out float armRaw)
+            {
+                float2 stepUV   = _CropUVScaleOffset.xy * _GridTexelSize.xy;   // one grid texel in depth UV
+                int    maxSteps = _HandMarginTexels + 2;                       // far enough to clear the ring
+
+                // 8 outward directions (integer steps, so a fixed maxSteps clears the ring in every one).
+                float2 dirs[8] = {
+                    float2( 1, 0), float2(-1, 0), float2( 0, 1), float2( 0,-1),
+                    float2( 1, 1), float2( 1,-1), float2(-1, 1), float2(-1,-1)
+                };
+
+                float found[8];          // first clean depth on each ray, -1 if the ray never cleared
+                float minLin = 1e30;
+
+                [unroll]
+                for (int i = 0; i < 8; i++)
+                {
+                    found[i] = -1.0;
+                    [loop]
+                    for (int s = 1; s <= maxSteps; s++)
+                    {
+                        float2 o = duv + dirs[i] * float(s) * stepUV;
+                        if (HandMaskGrown(o, _HandMarginTexels) > 0.5) continue;   // still in ring -> keep going
+                        float r = SampleDepthRaw(o);
+                        if (r > 0.0 && r < 1.0)                                    // first clean, valid arm
+                        {
+                            found[i] = r;
+                            minLin   = min(minLin, LinearizeDepth(r));
+                        }
+                        break;                                                    // cleared the ring -> stop ray
+                    }
+                }
+
+                if (minLin > 1e29) { armRaw = -1.0; return false; }   // no ray reached clean arm
+
+                // Average the boundary samples on the nearest surface; drop any that sit a background away.
+                float sumRaw = 0.0;
+                float count  = 0.0;
+                [unroll]
+                for (int j = 0; j < 8; j++)
+                {
+                    if (found[j] < 0.0) continue;
+                    if (LinearizeDepth(found[j]) > minLin + _BorrowDepthBand) continue;
+                    sumRaw += found[j];
+                    count  += 1.0;
+                }
+                armRaw = sumRaw / count;   // count >= 1: the nearest sample always qualifies
+                return true;
+            }
+
             float frag(Varyings input) : SV_Target
             {
-                // Carve the (dilated) hand out of history: store 0 (invalid) where the silhouette covers
-                // this texel. Pass 1's invalid->fallback check (dh <= 0) then drops it. input.uv is depth UV.
-                if (HandMaskDilated(input.uv) > 0.5)
+                float2 duv = input.uv;   // pass 0 renders full-frame, so input.uv IS depth UV
+
+                // Hand + occlusion cushion: the silhouette grown by _OcclusionMarginTexels to also cover
+                // the real hand peeking past the mask. Carved to 0 -> a hole that occludes (the consumer
+                // rejects 0), so peek-through isn't flattened to arm. Pass 1 keeps it via its invalid-input
+                // fallback (dCur <= 0).
+                if (HandMaskGrown(duv, _OcclusionMarginTexels) > 0.5)
                     return 0.0;
 
-                // Slice 0 = left eye. LOD 0 (no derivatives) — no mips on the depth texture.
-                return SAMPLE_TEXTURE2D_ARRAY_LOD(
-                    _EnvironmentDepthTexture, sampler_EnvironmentDepthTexture, input.uv, 0, 0).r;
+                // Margin ring (inside the margin, outside the occlusion cushion): a mix of lifted bleed and
+                // real surface the wide margin reaches over (e.g. the arm in the gap to the thumb). Estimate
+                // the local arm, then decide per cell by depth so only raised cells move:
+                //   - nearer than the arm -> lifted bleed -> pull onto the arm.
+                //   - at/behind the arm   -> real surface -> keep its own depth (no bridging across gaps).
+                //   - invalid             -> fill from the estimate.
+                // The result enters history, so pass 1 medians it.
+                if (HandMaskGrown(duv, _HandMarginTexels) > 0.5)
+                {
+                    float cellRaw   = SampleDepthRaw(duv);
+                    bool  cellValid = (cellRaw > 0.0 && cellRaw < 1.0);
+
+                    float armRaw;
+                    if (TryBorrowArmDepth(duv, armRaw))
+                    {
+                        if (cellValid && LinearizeDepth(cellRaw) >= LinearizeDepth(armRaw))
+                            return cellRaw;   // real surface at/behind arm (gap to thumb/fist) -> keep
+                        return armRaw;        // lifted (or invalid) -> flatten to the local arm
+                    }
+                    // Nothing clean to borrow: keep real surface if present (don't bridge), else hole.
+                    return cellValid ? cellRaw : 0.0;
+                }
+
+                // Clean: left-eye (slice 0) raw depth.
+                return SampleDepthRaw(duv);
             }
             ENDHLSL
         }

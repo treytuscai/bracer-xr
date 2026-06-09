@@ -784,7 +784,9 @@ MonoBehaviour:
   handSkeleton: {fileID: 2123695743}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 2100000, guid: ea2c4772acd4543f087a6b8a7307b1f1, type: 2}
-  maskDilateTexels: 1
+  handMarginTexels: 8
+  occlusionMarginTexels: 1
+  borrowDepthBand: 0.03
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1

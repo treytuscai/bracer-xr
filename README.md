@@ -29,8 +29,8 @@ _(An earlier version of Bracer XR approximated the forearm as a geometric cylind
 <summary><b>Per-frame pipeline (step by step)</b></summary>
 
 1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame — axis, lateral, and normal vectors, plus pronation and orientation angles.
-2. Render the interacting hand as a full-frame GPU silhouette, then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). The hand is carved out of the depth history during stabilization.
-3. Blit the stabilized depth through a reconstruction shader at the forearm crop's native depth-texel resolution (not full screen, so only the arm region is computed). Hand pixels are rejected at the source using the same silhouette, dilated by a small margin to cover the 1-2 frame readback latency, so they never enter the reconstruction.
+2. Render the interacting hand as a full-frame GPU silhouette, then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the finger is carved out of the depth history, and the stereo "bleed" ring it lifts around itself is reconstructed from the clean arm just outside it, so that fix enters history and stays temporally stable.
+3. Blit the stabilized depth through a reconstruction shader at the forearm crop's native depth-texel resolution (not full screen, so only the arm region is computed). All hand handling already happened during stabilization, so this stage just unprojects each depth texel to a world position; the carved finger arrives invalid and drops out as a hole.
 4. Read back the forearm crop from the GPU asynchronously; a Burst job unprojects its depth texels into a world-space hit grid.
 5. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders — the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
 6. A parallel Burst boundary smoother de-steps the extracted edge cells (the temporal median in step 2 is the depth denoise).
@@ -54,6 +54,8 @@ Bracer XR is a research prototype with a deliberately narrow scope:
 
 - **Quest 3 only.** It depends on Meta's environment depth API and Movement SDK body tracking; it does not run on other headsets.
 - **The depth source is low-resolution.** Quest's environment depth is a single ~320×320 image spread across the entire field of view, so the forearm occupies only a fraction of it. The surface captures the arm and a finger fine, but thin gaps and small, fine-grained features are below what it can resolve.
+- **A hovering finger lifts the depth around itself.** Quest's stereo depth pulls arm texels toward a nearby finger (a mixed-pixel "bleed"), which would raise the reconstructed surface at the contact point. The pipeline reconstructs that ring from the clean arm just outside it, but a slight residual raise remains at the resolution limit.
+- **The arm patch is found from depth, not trusted from the skeleton.** Wrist and elbow bone tracking is only a rough starting point and can be inaccurate, so the patch is seeded from a tight, confident region near the bone axis and grown by a BFS flood through depth-connected cells. The flood is walled to forearm and palm cylinders because, left unbounded, BFS can leak across depth-continuous neighbours into surfaces that are not the arm.
 - **One forearm, one interacting hand.** The system reconstructs a single arm and tracks a single touching hand at a time.
 - **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole where it sits. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
 
@@ -135,7 +137,9 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `maskDilateTexels` | 1 | Hand-mask dilation radius (grid texels); carved from the depth history and rejected at consume with the same radius. Keep small — large values erode surface in a ring around the hand |
+| `handMarginTexels` | 8 | Grid texels the hand silhouette is grown by, covering the stereo bleed/lift around the hand. The finger inside it is carved from depth history; the bleed ring is reconstructed from clean arm. Raise until the lift clears (cheap — the borrow is a per-ray march, linear in the margin) |
+| `occlusionMarginTexels` | 1 | Inner cushion (grid texels) around the hand kept as a hole, covering the real hand peeking past the rendered mask so it isn't flattened to arm. Stays below `handMarginTexels` |
+| `borrowDepthBand` | 0.03 m | When reconstructing the bleed ring, the depth window behind the nearest borrowed sample that still counts as the same surface (rejects a farther background, e.g. a table behind the arm) |
 | `enablePalm` | true | Include the palm (wrist -> middle-finger MCP) in the reconstruction; off = forearm only |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
 | `maxFloodDist` | 0.1 m | Outer wall that caps BFS flood growth away from the arm |
