@@ -137,8 +137,8 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `handMarginTexels` | 8 | Grid texels the hand silhouette is grown by, covering the stereo bleed/lift around the hand. The finger inside it is carved from depth history; the bleed ring is reconstructed from clean arm. Raise until the lift clears (cheap — the borrow is a per-ray march, linear in the margin) |
-| `occlusionMarginTexels` | 1 | Inner cushion (grid texels) around the hand kept as a hole, covering the real hand peeking past the rendered mask so it isn't flattened to arm. Stays below `handMarginTexels` |
+| `handMarginTexels` | 8 | Depth texels the hand silhouette is grown by, covering the stereo bleed/lift around the hand. The finger inside it is carved from depth history; the bleed ring is reconstructed from clean arm. Raise until the lift clears. |
+| `occlusionMarginTexels` | 1 | Inner cushion (depth texels) around the hand kept as a hole, covering the real hand peeking past the rendered mask so it isn't flattened to arm. Stays below `handMarginTexels` |
 | `borrowDepthBand` | 0.03 m | When reconstructing the bleed ring, the depth window behind the nearest borrowed sample that still counts as the same surface (rejects a farther background, e.g. a table behind the arm) |
 | `enablePalm` | true | Include the palm (wrist -> middle-finger MCP) in the reconstruction; off = forearm only |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
