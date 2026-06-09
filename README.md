@@ -28,7 +28,7 @@ _(An earlier version of Bracer XR approximated the forearm as a geometric cylind
 <details>
 <summary><b>Per-frame pipeline (step by step)</b></summary>
 
-1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame — axis, lateral, and normal vectors, plus pronation and orientation angles.
+1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame — axis, lateral, and normal vectors, plus the pronation angle and a portrait/landscape orientation.
 2. Render the interacting hand as a full-frame GPU silhouette, then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the finger is carved out of the depth history, and the stereo "bleed" ring it lifts around itself is reconstructed from the clean arm just outside it, so that fix enters history and stays temporally stable.
 3. Blit the stabilized depth through a reconstruction shader at the forearm crop's native depth-texel resolution (not full screen, so only the arm region is computed). All hand handling already happened during stabilization, so this stage just unprojects each depth texel to a world position; the carved finger arrives invalid and drops out as a hole.
 4. Read back the forearm crop from the GPU asynchronously; a Burst job unprojects its depth texels into a world-space hit grid.
@@ -95,7 +95,7 @@ Once the app is running on the headset:
 1. **Hold out your left arm** in view of the headset. The UI appears on your forearm once body and hand tracking lock on.
 2. **Touch with your other hand.** Bring a fingertip to the surface. Contact registers from a slight hover down through a shallow press (`touchHoverHeight` / `touchDepth`).
 3. **Rotate your wrist to switch panels.** The display has two: dorsal (`U=[0,0.5]`) and palmar (`U=[0.5,1]`).
-4. **Turn your arm upright or sideways** to flip between portrait and landscape (disable with `lockOrientation`).
+4. **Turn your arm upright or sideways** to swap between the portrait and landscape images (`portraitTexture` / `landscapeTexture`). Set `orientationMode` to lock to one. The image is swapped, not rotated, so author each one in its own orientation.
 
 The surface updates continuously. Keep your hand on it while moving or rotating the arm. There is no need to pull away or recalibrate.
 
@@ -149,7 +149,9 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
-| `lockOrientation` | false | Prevents the portrait to landscape rotation flip |
+| `orientationMode` | Auto | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
+| `portraitTexture` | none | Image shown upright; drives the material's UI Texture |
+| `landscapeTexture` | none | Image shown sideways (author it already sideways) |
 
 Touch tuning, on the `ForearmInteraction` component:
 

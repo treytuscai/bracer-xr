@@ -169,11 +169,7 @@ public class ForearmInteraction : MonoBehaviour
 
         u += _surface.PronationAngle / (2f * Mathf.PI);
 
-        // 2D rotation around (0.5, 0.5) for portrait/landscape orientation.
-        float cu = u - 0.5f, cv = v - 0.5f;
-        float cosA = Mathf.Cos(_surface.OrientationAngle);
-        float sinA = Mathf.Sin(_surface.OrientationAngle);
-        return new Vector2(cu * cosA - cv * sinA + 0.5f, cu * sinA + cv * cosA + 0.5f);
+        return new Vector2(u, v);
     }
 
     /// <summary>

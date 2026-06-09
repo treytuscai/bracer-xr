@@ -11,7 +11,7 @@ using Surface.Core;
 ///
 /// Pipeline (runs every LateUpdate, asynchronously via AsyncGPUReadback + Burst):
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
-///                     (axis, right, up) and smooth pronation/orientation.
+///                     (axis, right, up), smooth pronation, and the portrait/landscape orientation.
 ///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
 ///                     blit the stabilized depth through MetaDepthCopy.shader, GPU-readback the forearm
 ///                     crop, and unproject each sampled pixel into a flat world-space hit grid (rows × cols).
@@ -28,8 +28,8 @@ using Surface.Core;
 ///                     boundary smoother de-steps the mesh edge by averaging each boundary cell with its
 ///                     boundary neighbors.
 ///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
-///                     an edge-length rejection pass, compute UVs corrected for arm twist
-///                     and orientation, and upload to the GPU mesh.
+///                     an edge-length rejection pass, compute UVs corrected for arm twist,
+///                     and upload to the GPU mesh.
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -115,9 +115,13 @@ public class ForearmDepthSurface : MonoBehaviour
     public float displayWidth = 0.4f;
     [Tooltip("Center of the display window along the arm axis from the wrist (m).")]
     public float displayOffset = 0.08f;
-    [Tooltip("Prevent the portrait to landscape rotation flip: keep the display upright (portrait) " +
-             "regardless of arm orientation.")]
-    public bool lockOrientation = false;
+    [Tooltip("Auto = swap portrait/landscape image with the arm's pitch. Portrait/Landscape = lock to " +
+             "one image, no swap.")]
+    public DisplayOrientation orientationMode = DisplayOrientation.Auto;
+    [Tooltip("Image shown when the arm is upright (portrait). Drives the material's UI Texture.")]
+    public Texture portraitTexture;
+    [Tooltip("Image shown when the arm is horizontal (landscape). Author it sideways: orientation swaps the texture.")]
+    public Texture landscapeTexture;
 
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES — shared NativeArrays flowing between stages each frame (SurfaceBuffer =
@@ -153,6 +157,8 @@ public class ForearmDepthSurface : MonoBehaviour
     private MeshRenderer _meshRenderer;
     private Mesh _mesh;
     private Material _mat;
+    // UI texture currently bound to the material; the orientation swap only writes on a change.
+    private Texture _activeTexture;
 
     // ------------------------------------------------------------------
     // PER-FRAME STATE
@@ -179,7 +185,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void Awake()
     {
-        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, lockOrientation, enablePalm);
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, orientationMode, enablePalm);
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask, handMarginTexels, occlusionMarginTexels, borrowDepthBand);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
@@ -211,6 +217,14 @@ public class ForearmDepthSurface : MonoBehaviour
         // Use assigned material if provided, otherwise a transparent cyan fallback for debug
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
         _mat = _meshRenderer.material;
+
+        // Show the portrait image until the arm frame reports an orientation. If unset, leave the
+        // material's own UI Texture untouched.
+        if (portraitTexture != null && _mat.HasProperty("_MainTex"))
+        {
+            _mat.SetTexture("_MainTex", portraitTexture);
+            _activeTexture = portraitTexture;
+        }
     }
 
     /// <summary>
@@ -259,6 +273,15 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _hasFrame = false;
             return;
+        }
+
+        // Swap the displayed image to match the arm's orientation. ArmFrame decides portrait vs
+        // landscape; the consumer supplies both textures.
+        Texture target = _armFrame.IsLandscape ? landscapeTexture : portraitTexture;
+        if (target != _activeTexture)
+        {
+            _activeTexture = target;
+            _mat.SetTexture("_MainTex", target);
         }
 
         // Only request a new GPU readback if the previous frame's pipeline has finished.
@@ -334,7 +357,7 @@ public class ForearmDepthSurface : MonoBehaviour
         h = _meshGenerator.Schedule(
             _meshBuffer, _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.Axis, _armFrame.AxisRight,
-            _armFrame.Pronation, _armFrame.Orientation,
+            _armFrame.Pronation,
             transform.worldToLocalMatrix,
             h);
 
@@ -392,7 +415,7 @@ public class ForearmDepthSurface : MonoBehaviour
     public Vector3 AxisRight        => _armFrame.AxisRight;
     public Vector3 AxisUp           => _armFrame.AxisUp;
     public float   PronationAngle   => _armFrame.Pronation;
-    public float   OrientationAngle => _armFrame.Orientation;
+    public bool    IsLandscape      => _armFrame.IsLandscape;
     public Mesh    SurfaceMesh      => _mesh;
 
     // ------------------------------------------------------------------
