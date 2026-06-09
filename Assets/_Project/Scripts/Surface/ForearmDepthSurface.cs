@@ -159,6 +159,8 @@ public class ForearmDepthSurface : MonoBehaviour
     private Material _mat;
     // UI texture currently bound to the material; the orientation swap only writes on a change.
     private Texture _activeTexture;
+    // Cached in Start: true if the material exposes _MainTex (false for the debug cyan fallback).
+    private bool _hasMainTex;
 
     // ------------------------------------------------------------------
     // PER-FRAME STATE
@@ -218,9 +220,11 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
         _mat = _meshRenderer.material;
 
+        _hasMainTex = _mat.HasProperty("_MainTex");
+
         // Show the portrait image until the arm frame reports an orientation. If unset, leave the
         // material's own UI Texture untouched.
-        if (portraitTexture != null && _mat.HasProperty("_MainTex"))
+        if (_hasMainTex && portraitTexture != null)
         {
             _mat.SetTexture("_MainTex", portraitTexture);
             _activeTexture = portraitTexture;
@@ -228,7 +232,7 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Creates a semi-transparent cyan material for visualizing the mesh
+    /// Creates a semi-transparent cyan material for debug visualization of the mesh
     /// when no surface material is assigned in the Inspector.
     /// </summary>
     Material MakeFallback()
@@ -276,12 +280,15 @@ public class ForearmDepthSurface : MonoBehaviour
         }
 
         // Swap the displayed image to match the arm's orientation. ArmFrame decides portrait vs
-        // landscape; the consumer supplies both textures.
-        Texture target = _armFrame.IsLandscape ? landscapeTexture : portraitTexture;
-        if (target != _activeTexture)
+        // landscape; the consumer supplies both textures. Skipped on the debug fallback (no _MainTex).
+        if (_hasMainTex)
         {
-            _activeTexture = target;
-            _mat.SetTexture("_MainTex", target);
+            Texture target = _armFrame.IsLandscape ? landscapeTexture : portraitTexture;
+            if (target != _activeTexture)
+            {
+                _activeTexture = target;
+                _mat.SetTexture("_MainTex", target);
+            }
         }
 
         // Only request a new GPU readback if the previous frame's pipeline has finished.
