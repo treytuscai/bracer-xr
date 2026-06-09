@@ -112,6 +112,9 @@ Shader "Custom/ForearmGrid"
                 float sinR = sin(-rotRad);
                 float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
 
+                if (srcLocal.x < 0.0 || srcLocal.x > 1.0 || srcLocal.y < 0.0 || srcLocal.y > 1.0)
+                    return 0.0;
+
                 float2 contentUV = (float2(coord) + srcLocal) / grid;
                 half4 content = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
                 return (content.a <= _ContentAlphaCutoff) ? 0.0 : content.a;
@@ -133,6 +136,12 @@ Shader "Custom/ForearmGrid"
                 float cosR = cos(-rotRad);
                 float sinR = sin(-rotRad);
                 float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
+
+                // Stay inside this cell's atlas tile — overflow onto the mesh is handled by the
+                // neighbor composite loop, not by sampling adjacent tiles in the atlas (which
+                // looks like every other image rotating with the selection).
+                if (srcLocal.x < 0.0 || srcLocal.x > 1.0 || srcLocal.y < 0.0 || srcLocal.y > 1.0)
+                    return half4(0, 0, 0, 0);
 
                 float2 contentUV = (float2(cellCoord) + srcLocal) / grid;
                 return ApplyContentAlpha(
