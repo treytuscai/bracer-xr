@@ -29,6 +29,12 @@ public class RevisedGridController : MonoBehaviour
     [Tooltip("Feathers content edges between cutoff and cutoff + this value.")]
     [Range(0.02f, 0.3f)] public float contentAlphaSoftness = 0.14f;
 
+    [Header("Placed Image Scale")]
+    [Tooltip("Initial scale when a widget is placed on the grid. 1 = one cell; 2 = twice the cell width/height.")]
+    [Min(0.25f)] public float defaultPlacedScale = 2f;
+    [Tooltip("Maximum scale allowed via the edit sliders and transform texture.")]
+    [Min(1f)] public float maxContentScale = 4f;
+
     [Header("Appearance")]
     public Color defaultColor = new Color(1f, 1f, 1f, 0.15f);
     public Color lineColor     = new Color(1f, 1f, 1f, 0.6f);
@@ -66,8 +72,6 @@ public class RevisedGridController : MonoBehaviour
     Texture2D _transformTex;
     Color32[] _cellStates;
     Color32[] _cellTransforms;
-
-    const float MaxContentScale = 4f;
 
     static readonly int GridColumnsId       = Shader.PropertyToID("_GridColumns");
     static readonly int GridRowsId          = Shader.PropertyToID("_GridRows");
@@ -188,7 +192,7 @@ public class RevisedGridController : MonoBehaviour
             _mat.SetTexture(StateTexId, _stateTex);
             _mat.SetTexture(ContentAtlasId, _contentAtlas);
             _mat.SetTexture(TransformTexId, _transformTex);
-            _mat.SetFloat(MaxContentScaleId, MaxContentScale);
+            _mat.SetFloat(MaxContentScaleId, maxContentScale);
         }
 
         if (savedMeta != null)
@@ -236,7 +240,7 @@ public class RevisedGridController : MonoBehaviour
     {
         _mat.SetFloat(GridColumnsId, columns);
         _mat.SetFloat(GridRowsId,    _effectiveRows);
-        _mat.SetFloat(MaxContentScaleId, MaxContentScale);
+        _mat.SetFloat(MaxContentScaleId, maxContentScale);
         _mat.SetColor(DefaultColorId, defaultColor);
         _mat.SetColor(LineColorId,    lineColor);
         _mat.SetFloat(LineThicknessId, lineThickness);
@@ -321,7 +325,7 @@ public class RevisedGridController : MonoBehaviour
         if (!HasSelectedCell) return;
         int idx = CellToIndex(_selectedCol, _selectedRow);
         if (!_cellMeta.TryGetValue(idx, out CellMetadata meta)) return;
-        meta.Scale = Mathf.Clamp(scale, 0.25f, MaxContentScale);
+        meta.Scale = Mathf.Clamp(scale, 0.25f, maxContentScale);
         _cellMeta[idx] = meta;
         PushCellTransform(_selectedCol, _selectedRow);
     }
@@ -365,13 +369,12 @@ public class RevisedGridController : MonoBehaviour
             ? ReadSpritePixels(sprite, inner, inner)
             : ReadTexturePixels(texture, inner, inner);
 
-        StoreAndBake(col, row, pixels, inner, tint, 1f, 0f);
+        StoreAndBake(col, row, pixels, inner, tint, defaultPlacedScale, 0f);
         return true;
     }
 
     void StoreAndBake(int col, int row, Color[] pixels, int size, Color tint, float scale, float rotationDegrees)
     {
-        pixels = HardenPixelArray(pixels);
         int idx = CellToIndex(col, row);
         _cellMeta[idx] = new CellMetadata
         {
@@ -399,7 +402,7 @@ public class RevisedGridController : MonoBehaviour
         {
             float rot = Mathf.Repeat(meta.RotationDegrees, 360f);
             _cellTransforms[idx] = new Color32(
-                (byte)Mathf.Clamp(Mathf.RoundToInt(meta.Scale / MaxContentScale * 255f), 0, 255),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(meta.Scale / maxContentScale * 255f), 0, 255),
                 (byte)Mathf.Clamp(Mathf.RoundToInt(rot / 360f * 255f), 0, 255),
                 0,
                 255);
@@ -675,7 +678,7 @@ public class RevisedGridController : MonoBehaviour
         texture = null;
         tint = Color.white;
 
-        var image = widget.GetComponentInChildren<Image>(true);
+        var image = FindPrimaryWidgetImage(widget);
         if (image != null && image.sprite != null)
         {
             sprite = image.sprite;
@@ -692,6 +695,39 @@ public class RevisedGridController : MonoBehaviour
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Prefers a child icon Image over a solid background Image on the template root.
+    /// </summary>
+    static Image FindPrimaryWidgetImage(RectTransform widget)
+    {
+        if (widget == null) return null;
+
+        Image rootImage = null;
+        Image bestChild = null;
+        float bestChildArea = 0f;
+
+        foreach (var img in widget.GetComponentsInChildren<Image>(true))
+        {
+            if (img.sprite == null) continue;
+
+            if (img.transform == widget)
+            {
+                rootImage = img;
+                continue;
+            }
+
+            var rt = img.rectTransform;
+            float area = Mathf.Abs(rt.rect.width * rt.rect.height);
+            if (bestChild == null || area > bestChildArea)
+            {
+                bestChild = img;
+                bestChildArea = area;
+            }
+        }
+
+        return bestChild != null ? bestChild : rootImage;
     }
 
     static Color[] ReadSpritePixels(Sprite sprite, int width, int height)
@@ -817,6 +853,14 @@ public class RevisedGridController : MonoBehaviour
 
         bary = new Vector3(w0, w1, w2);
         return true;
+    }
+
+    void OnValidate()
+    {
+        defaultPlacedScale = Mathf.Max(0.25f, defaultPlacedScale);
+        maxContentScale = Mathf.Max(1f, maxContentScale);
+        if (defaultPlacedScale > maxContentScale)
+            defaultPlacedScale = maxContentScale;
     }
 
     void OnDestroy()

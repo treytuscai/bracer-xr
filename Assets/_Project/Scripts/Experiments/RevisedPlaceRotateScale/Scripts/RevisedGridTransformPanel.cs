@@ -146,6 +146,16 @@ public class RevisedGridTransformPanel : MonoBehaviour
         RefreshHandles();
     }
 
+    /// <summary>Syncs slider limits from <see cref="RevisedGridController"/> at runtime.</summary>
+    public void ConfigureScaleRange(float min, float max, float defaultValue)
+    {
+        minScale = Mathf.Max(0.1f, min);
+        maxScale = Mathf.Max(minScale + 0.01f, max);
+        defaultScale = Mathf.Clamp(defaultValue, minScale, maxScale);
+        _scaleValue = Mathf.Clamp(_scaleValue, minScale, maxScale);
+        RefreshHandles();
+    }
+
     void UpdateFingerInteraction()
     {
         Transform tip = IndexTip;

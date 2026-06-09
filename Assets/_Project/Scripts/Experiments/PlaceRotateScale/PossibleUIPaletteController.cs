@@ -65,7 +65,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public int deleteTitleFontSize = 16;
 
     [Tooltip("Space between the Trash label and delete icon.")]
-    [Min(0f)] public float deleteColumnSpacing = 4f;
+    [Min(0f)] public float deleteColumnSpacing = 10f;
 
     [Tooltip("Width of the vertical separator bar beside the delete zone.")]
     [Min(1f)] public float deleteSeparatorWidth = 2f;
@@ -73,7 +73,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public Color deleteSeparatorColor = new Color(1f, 1f, 1f, 0.85f);
 
     [Tooltip("Space between the separator bar and delete column.")]
-    [Min(0f)] public float deleteSeparatorPadding = 8f;
+    [Min(0f)] public float deleteSeparatorPadding = 14f;
 
     [Header("Clear")]
     [Tooltip("Optional clear-all icon. If unset, a built-in eraser-style label is shown.")]
@@ -90,7 +90,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public int clearTitleFontSize = 16;
 
     [Tooltip("Space between the Clear label and clear icon.")]
-    [Min(0f)] public float clearColumnSpacing = 4f;
+    [Min(0f)] public float clearColumnSpacing = 10f;
 
     [Header("Grid Edit")]
     [Tooltip("Optional — enables the Edit Image column and transform sliders.")]
@@ -99,7 +99,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public string editLabelText = "Resize/Rotate Image";
     public Vector2 editIconSize = new Vector2(56f, 56f);
     public int editTitleFontSize = 13;
-    [Min(0f)] public float editColumnSpacing = 4f;
+    [Min(0f)] public float editColumnSpacing = 10f;
     public Color editHoverHighlightColor = new Color(0.35f, 0.95f, 0.45f, 1f);
 
     [Header("Placement")]
@@ -142,7 +142,12 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     [Range(1, 8)] public int gridColumns = 3;
 
+    [Tooltip("Base canvas size for each selectable template cell.")]
     public Vector2 gridCellSize = new Vector2(70f, 70f);
+
+    [Tooltip("Scales template previews in the palette. Also scales palette world width so thumbnails stay readable.")]
+    [Min(0.25f)] public float templateDisplayScale = 1.5f;
+
     public Vector2 gridSpacing = new Vector2(12f, 12f);
 
     [Tooltip("Inner padding around the palette grid (canvas-local units).")]
@@ -208,6 +213,12 @@ public class PossibleUIPaletteController : MonoBehaviour
     int _anchorWaitFrames;
     int _stableHeadFrames;
     float _lastMeasuredHeadY;
+    Vector2 _lastAppliedTemplateCellSize = new Vector2(-1f, -1f);
+    float _lastAppliedTemplateDisplayScale = -1f;
+    float _lastAppliedPanelWorldWidth = -1f;
+
+    Vector2 EffectiveTemplateCellSize => gridCellSize * templateDisplayScale;
+    float EffectivePanelWorldWidth => panelWorldWidthMeters * templateDisplayScale;
 
     void Awake()
     {
@@ -222,6 +233,8 @@ public class PossibleUIPaletteController : MonoBehaviour
     void LateUpdate()
     {
         ResolveHeadAnchor();
+        RefreshTemplateGridIfNeeded();
+        RefreshPanelWorldScaleIfNeeded();
 
         if (!followHead && !_worldAnchorApplied)
             AnchorPaletteInWorldOnce();
@@ -468,7 +481,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (_gridLayout == null)
             _gridLayout = _templateContainer.gameObject.AddComponent<GridLayoutGroup>();
 
-        _gridLayout.cellSize = gridCellSize;
+        _gridLayout.cellSize = EffectiveTemplateCellSize;
         _gridLayout.spacing = gridSpacing;
         _gridLayout.padding = new RectOffset(
             gridPaddingLeft, gridPaddingRight, gridPaddingTop, gridPaddingBottom);
@@ -483,6 +496,79 @@ public class PossibleUIPaletteController : MonoBehaviour
             _templateSizeFitter = _templateContainer.gameObject.AddComponent<ContentSizeFitter>();
         _templateSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
         _templateSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        _lastAppliedTemplateCellSize = EffectiveTemplateCellSize;
+        _lastAppliedTemplateDisplayScale = templateDisplayScale;
+    }
+
+    void RefreshTemplateGridIfNeeded()
+    {
+        if (!useGridLayout || _templateContainer == null)
+            return;
+
+        Vector2 cellSize = EffectiveTemplateCellSize;
+        if (_gridLayout == null)
+        {
+            EnsureGridLayout();
+            return;
+        }
+
+        if (cellSize == _lastAppliedTemplateCellSize &&
+            Mathf.Approximately(templateDisplayScale, _lastAppliedTemplateDisplayScale))
+            return;
+
+        _gridLayout.cellSize = cellSize;
+        _lastAppliedTemplateCellSize = cellSize;
+        _lastAppliedTemplateDisplayScale = templateDisplayScale;
+
+        if (_worldAnchorApplied)
+        {
+            _panelLayoutLocked = false;
+            FinalizeAnchoredPaletteLayout();
+        }
+        else
+        {
+            RefreshPaletteLayout();
+        }
+    }
+
+    void RefreshPanelWorldScaleIfNeeded()
+    {
+        float target = EffectivePanelWorldWidth;
+        if (Mathf.Approximately(target, _lastAppliedPanelWorldWidth))
+            return;
+
+        _lastAppliedPanelWorldWidth = target;
+
+        if (_worldAnchorApplied)
+        {
+            _panelLayoutLocked = false;
+            FinalizeAnchoredPaletteLayout();
+        }
+        else
+        {
+            RefreshPaletteLayout();
+        }
+    }
+
+    void OnValidate()
+    {
+        templateDisplayScale = Mathf.Max(0.25f, templateDisplayScale);
+        gridColumns = Mathf.Max(1, gridColumns);
+
+        if (paletteRect == null)
+            paletteRect = transform as RectTransform;
+
+        if (paletteRect == null)
+            return;
+
+        var container = paletteRect.Find("TemplateContainer") as RectTransform;
+        if (container != null)
+        {
+            var grid = container.GetComponent<GridLayoutGroup>();
+            if (grid != null)
+                grid.cellSize = gridCellSize * templateDisplayScale;
+        }
     }
 
     void EnsureClearZone()
@@ -524,6 +610,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        _clearSeparator.gameObject.SetActive(false);
     }
 
     void EnsureClearTitle()
@@ -676,6 +763,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        separator.gameObject.SetActive(false);
     }
 
     void EnsureEditTitle(RectTransform zone, ref RectTransform title, string name, string label, int fontSize)
@@ -762,9 +850,20 @@ public class PossibleUIPaletteController : MonoBehaviour
 
         if (_editTitle == null) return;
         int lines = Mathf.Max(1, editLabelText.Split('\n').Length);
-        float titleHeight = editTitleFontSize * lines + 4f * lines;
+        float titleHeight = editTitleFontSize * lines + 6f * lines;
         var titleSize = _editTitle.sizeDelta;
-        _editTitle.sizeDelta = new Vector2(Mathf.Max(titleSize.x, 96f), titleHeight);
+        _editTitle.sizeDelta = new Vector2(Mathf.Max(titleSize.x, 118f), titleHeight);
+
+        var zoneLayout = _editZone.GetComponent<LayoutElement>();
+        if (zoneLayout != null)
+        {
+            float columnWidth = Mathf.Max(_editTitle.sizeDelta.x, editIconSize.x);
+            zoneLayout.minWidth = columnWidth;
+            zoneLayout.preferredWidth = columnWidth;
+            float columnHeight = titleHeight + editColumnSpacing + editIconSize.y + 6f;
+            zoneLayout.minHeight = columnHeight;
+            zoneLayout.preferredHeight = columnHeight;
+        }
     }
 
     void EnsureDeleteZone()
@@ -826,6 +925,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         separatorImage.sprite = null;
         separatorImage.color = deleteSeparatorColor;
         separatorImage.raycastTarget = false;
+        _deleteSeparator.gameObject.SetActive(false);
     }
 
     void EnsureDeleteTitle()
@@ -870,11 +970,14 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (zone == null || separator == null || title == null || target == null)
             return;
 
-        float columnWidth = Mathf.Max(iconSize.x, 48f);
-        float titleHeight = titleFontSize + 4f;
-        float columnHeight = titleHeight + columnSpacing + iconSize.y;
-        float zoneWidth = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth;
-        float columnCenterX = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth * 0.5f;
+        float columnWidth = Mathf.Max(iconSize.x, titleFontSize * 7.5f, 72f);
+        float titleHeight = titleFontSize + 8f;
+        float columnHeight = titleHeight + columnSpacing + iconSize.y + 4f;
+        float zoneWidth = columnWidth;
+        float columnCenterX = columnWidth * 0.5f;
+
+        if (separator != null)
+            separator.gameObject.SetActive(false);
 
         var zoneLayout = zone.GetComponent<LayoutElement>();
         if (zoneLayout == null)
@@ -900,7 +1003,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         title.anchorMax = new Vector2(0f, 1f);
         title.pivot = new Vector2(0.5f, 1f);
         title.sizeDelta = new Vector2(columnWidth, titleHeight);
-        title.anchoredPosition = new Vector2(columnCenterX, 0f);
+        title.anchoredPosition = new Vector2(columnCenterX, -2f);
 
         target.anchorMin = new Vector2(0f, 1f);
         target.anchorMax = new Vector2(0f, 1f);
@@ -1013,7 +1116,8 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (rectWidth < 1f)
             return;
 
-        float scale = panelWorldWidthMeters / rectWidth;
+        float targetWorldWidth = EffectivePanelWorldWidth;
+        float scale = targetWorldWidth / rectWidth;
         Vector3 worldPos = paletteRect.position;
         Quaternion worldRot = paletteRect.rotation;
 
