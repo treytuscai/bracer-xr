@@ -319,7 +319,9 @@ MonoBehaviour:
   handSkeleton: {fileID: 113860855}
   centerEyeAnchor: {fileID: 188644609}
   surfaceMaterial: {fileID: 2100000, guid: d1213e4f5a6b7c8d9e0f1a2b3c4d5e6f, type: 2}
-  maskDilateTexels: 1
+  handMarginTexels: 8
+  occlusionMarginTexels: 1
+  borrowDepthBand: 0.03
   enablePalm: 1
   seedRadialDist: 0.05
   maxFloodDist: 0.1
@@ -1546,15 +1548,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 29503ba72197d3f48909645131dab8c2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  headAnchor: {fileID: 0}
-  rightHandSkeleton: {fileID: 0}
+  surface: {fileID: 66024355}
+  rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.02
   panelDistance: 0.55
   panelRightMeters: 0.22
   panelUpMeters: 0
-  minHeadHeightToAnchor: 1
-  maxAnchorWaitFrames: 300
-  fallbackEyeHeightMeters: 1.45
   panelWorldWidthMeters: 0.12
   startHue: 0.33
   saturation: 1

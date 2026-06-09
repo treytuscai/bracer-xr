@@ -15,9 +15,7 @@ using UnityEngine.UI;
 public class RevisedBoundingBoxColorSlider : MonoBehaviour
 {
     [Header("References")]
-    [Tooltip("Eye anchor used for one-time panel placement. Auto-resolved from " +
-             "ForearmDepthSurface.centerEyeAnchor if empty.")]
-    public Transform headAnchor;
+    public ForearmDepthSurface surface;
 
     [Header("Input")]
     [Tooltip("Right-hand OVRSkeleton for fingertip interaction.")]
@@ -26,15 +24,10 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
     [Tooltip("How close to the panel plane the fingertip must be to register (m).")]
     [Min(0.005f)] public float pressDistanceMeters = 0.02f;
 
-    [Header("Placement (one-time snap once tracking is ready)")]
+    [Header("Placement")]
     [Min(0.2f)] public float panelDistance   = 0.55f;
     public float             panelRightMeters = 0.22f;
     public float             panelUpMeters    = 0f;
-    [Tooltip("Don't place until the eye anchor is at least this high (m). " +
-             "Prevents snapping to floor level before tracking initializes.")]
-    [Min(0.5f)] public float minHeadHeightToAnchor = 1.0f;
-    [Min(1)] public int maxAnchorWaitFrames = 300;
-    [Min(0.5f)] public float fallbackEyeHeightMeters = 1.45f;
 
     [Header("Layout")]
     [Min(0.05f)] public float panelWorldWidthMeters = 0.12f;
@@ -64,7 +57,6 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
     Image         _swatchImg;
     float         _hue;
     bool          _panelPlaced;
-    int           _anchorWaitFrames;
 
     /// <summary>True while the right index finger is actively on the slider track.</summary>
     public bool IsFingerOnPanel { get; private set; }
@@ -93,13 +85,8 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
 
     void Start()
     {
-        if (headAnchor == null)
-        {
-            var surface = FindObjectOfType<ForearmDepthSurface>();
-            if (surface != null) headAnchor = surface.centerEyeAnchor;
-        }
-        if (headAnchor == null && Camera.main != null)
-            headAnchor = Camera.main.transform;
+        if (surface == null)
+            surface = FindObjectOfType<ForearmDepthSurface>();
 
         if (rightHandSkeleton == null)
         {
@@ -117,7 +104,7 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
     void LateUpdate()
     {
         if (!_panelPlaced)
-            TryPlacePanel();
+            PositionHUD();
 
         IsFingerOnPanel = false;
         HandleInteraction();
@@ -125,52 +112,20 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
 
     // ── Placement ─────────────────────────────────────────────────────────────
 
-    Transform GetEyeAnchor()
+    void PositionHUD()
     {
-        if (headAnchor == null) return null;
+        Transform eye = surface != null ? surface.centerEyeAnchor : null;
+        if (eye == null || eye.position.sqrMagnitude < 0.01f) return;
 
-        Camera eyeCam = headAnchor.GetComponent<Camera>()
-                     ?? headAnchor.GetComponentInChildren<Camera>();
-        return eyeCam != null ? eyeCam.transform : headAnchor;
-    }
+        transform.SetPositionAndRotation(
+            eye.position
+                + eye.forward * panelDistance
+                + eye.right   * panelRightMeters
+                + eye.up      * panelUpMeters,
+            Quaternion.LookRotation(eye.forward, eye.up));
 
-    void TryPlacePanel()
-    {
-        Transform eye = GetEyeAnchor();
-        if (eye == null) return;
-
-        bool headHeightValid = eye.position.y >= minHeadHeightToAnchor;
-        if (!headHeightValid)
-        {
-            _anchorWaitFrames++;
-            if (_anchorWaitFrames < maxAnchorWaitFrames)
-                return;
-        }
-
-        SnapPanelToUser(eye, useFallbackHeight: !headHeightValid);
         if (_root != null) _root.gameObject.SetActive(true);
         _panelPlaced = true;
-    }
-
-    void SnapPanelToUser(Transform eye, bool useFallbackHeight)
-    {
-        Vector3 forward = eye.forward.sqrMagnitude > 1e-6f ? eye.forward.normalized : Vector3.forward;
-
-        Vector3 targetPos = eye.position
-            + forward * panelDistance
-            + eye.right   * panelRightMeters
-            + eye.up      * panelUpMeters;
-
-        if (useFallbackHeight)
-            targetPos.y = fallbackEyeHeightMeters + panelUpMeters;
-
-        transform.position = targetPos;
-
-        Vector3 faceDir = eye.position - targetPos;
-        if (faceDir.sqrMagnitude < 1e-6f)
-            faceDir = -forward;
-
-        transform.rotation = Quaternion.LookRotation(faceDir.normalized, eye.up);
     }
 
     // ── Interaction ───────────────────────────────────────────────────────────
