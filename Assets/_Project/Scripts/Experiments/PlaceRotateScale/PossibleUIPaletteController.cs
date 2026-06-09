@@ -142,7 +142,12 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     [Range(1, 8)] public int gridColumns = 3;
 
+    [Tooltip("Base canvas size for each selectable template cell.")]
     public Vector2 gridCellSize = new Vector2(70f, 70f);
+
+    [Tooltip("Scales template previews in the palette. Also scales palette world width so thumbnails stay readable.")]
+    [Min(0.25f)] public float templateDisplayScale = 1.5f;
+
     public Vector2 gridSpacing = new Vector2(12f, 12f);
 
     [Tooltip("Inner padding around the palette grid (canvas-local units).")]
@@ -208,6 +213,12 @@ public class PossibleUIPaletteController : MonoBehaviour
     int _anchorWaitFrames;
     int _stableHeadFrames;
     float _lastMeasuredHeadY;
+    Vector2 _lastAppliedTemplateCellSize = new Vector2(-1f, -1f);
+    float _lastAppliedTemplateDisplayScale = -1f;
+    float _lastAppliedPanelWorldWidth = -1f;
+
+    Vector2 EffectiveTemplateCellSize => gridCellSize * templateDisplayScale;
+    float EffectivePanelWorldWidth => panelWorldWidthMeters * templateDisplayScale;
 
     void Awake()
     {
@@ -222,6 +233,8 @@ public class PossibleUIPaletteController : MonoBehaviour
     void LateUpdate()
     {
         ResolveHeadAnchor();
+        RefreshTemplateGridIfNeeded();
+        RefreshPanelWorldScaleIfNeeded();
 
         if (!followHead && !_worldAnchorApplied)
             AnchorPaletteInWorldOnce();
@@ -468,7 +481,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (_gridLayout == null)
             _gridLayout = _templateContainer.gameObject.AddComponent<GridLayoutGroup>();
 
-        _gridLayout.cellSize = gridCellSize;
+        _gridLayout.cellSize = EffectiveTemplateCellSize;
         _gridLayout.spacing = gridSpacing;
         _gridLayout.padding = new RectOffset(
             gridPaddingLeft, gridPaddingRight, gridPaddingTop, gridPaddingBottom);
@@ -483,6 +496,79 @@ public class PossibleUIPaletteController : MonoBehaviour
             _templateSizeFitter = _templateContainer.gameObject.AddComponent<ContentSizeFitter>();
         _templateSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
         _templateSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        _lastAppliedTemplateCellSize = EffectiveTemplateCellSize;
+        _lastAppliedTemplateDisplayScale = templateDisplayScale;
+    }
+
+    void RefreshTemplateGridIfNeeded()
+    {
+        if (!useGridLayout || _templateContainer == null)
+            return;
+
+        Vector2 cellSize = EffectiveTemplateCellSize;
+        if (_gridLayout == null)
+        {
+            EnsureGridLayout();
+            return;
+        }
+
+        if (cellSize == _lastAppliedTemplateCellSize &&
+            Mathf.Approximately(templateDisplayScale, _lastAppliedTemplateDisplayScale))
+            return;
+
+        _gridLayout.cellSize = cellSize;
+        _lastAppliedTemplateCellSize = cellSize;
+        _lastAppliedTemplateDisplayScale = templateDisplayScale;
+
+        if (_worldAnchorApplied)
+        {
+            _panelLayoutLocked = false;
+            FinalizeAnchoredPaletteLayout();
+        }
+        else
+        {
+            RefreshPaletteLayout();
+        }
+    }
+
+    void RefreshPanelWorldScaleIfNeeded()
+    {
+        float target = EffectivePanelWorldWidth;
+        if (Mathf.Approximately(target, _lastAppliedPanelWorldWidth))
+            return;
+
+        _lastAppliedPanelWorldWidth = target;
+
+        if (_worldAnchorApplied)
+        {
+            _panelLayoutLocked = false;
+            FinalizeAnchoredPaletteLayout();
+        }
+        else
+        {
+            RefreshPaletteLayout();
+        }
+    }
+
+    void OnValidate()
+    {
+        templateDisplayScale = Mathf.Max(0.25f, templateDisplayScale);
+        gridColumns = Mathf.Max(1, gridColumns);
+
+        if (paletteRect == null)
+            paletteRect = transform as RectTransform;
+
+        if (paletteRect == null)
+            return;
+
+        var container = paletteRect.Find("TemplateContainer") as RectTransform;
+        if (container != null)
+        {
+            var grid = container.GetComponent<GridLayoutGroup>();
+            if (grid != null)
+                grid.cellSize = gridCellSize * templateDisplayScale;
+        }
     }
 
     void EnsureClearZone()
@@ -1030,7 +1116,8 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (rectWidth < 1f)
             return;
 
-        float scale = panelWorldWidthMeters / rectWidth;
+        float targetWorldWidth = EffectivePanelWorldWidth;
+        float scale = targetWorldWidth / rectWidth;
         Vector3 worldPos = paletteRect.position;
         Quaternion worldRot = paletteRect.rotation;
 

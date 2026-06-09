@@ -13,6 +13,9 @@ public class RevisedGridEditController : MonoBehaviour
 
     public bool IsEditModeActive { get; private set; }
 
+    float _configuredMaxScale = -1f;
+    float _configuredDefaultScale = -1f;
+
     void Awake()
     {
         if (grid == null) grid = FindObjectOfType<RevisedGridController>();
@@ -30,6 +33,8 @@ public class RevisedGridEditController : MonoBehaviour
 
         if (palette != null)
             palette.BindGridEditController(this);
+
+        ConfigureTransformPanelFromGrid();
     }
 
     void Start()
@@ -39,7 +44,26 @@ public class RevisedGridEditController : MonoBehaviour
         if (palette != null && palette.gridEditController != this)
             palette.BindGridEditController(this);
 
+        ConfigureTransformPanelFromGrid();
         UpdatePanelVisibility();
+    }
+
+    void LateUpdate()
+    {
+        if (grid == null) return;
+        if (Mathf.Approximately(grid.maxContentScale, _configuredMaxScale) &&
+            Mathf.Approximately(grid.defaultPlacedScale, _configuredDefaultScale))
+            return;
+
+        ConfigureTransformPanelFromGrid();
+    }
+
+    void ConfigureTransformPanelFromGrid()
+    {
+        if (transformPanel == null || grid == null) return;
+        transformPanel.ConfigureScaleRange(0.25f, grid.maxContentScale, grid.defaultPlacedScale);
+        _configuredMaxScale = grid.maxContentScale;
+        _configuredDefaultScale = grid.defaultPlacedScale;
     }
 
     public bool IsFingerOnTransformPanel =>

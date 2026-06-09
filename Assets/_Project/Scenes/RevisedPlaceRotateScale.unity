@@ -402,6 +402,8 @@ MonoBehaviour:
   surface: {fileID: 66024355}
   interaction: {fileID: 66024354}
   carriedWorldWidthMeters: 0.04
+  scaleCarryPreviewWithPlacedScale: 1
+  carryPreviewScaleMultiplier: 1
   fingerCarrySmoothTime: 0.048
   carryAttachOffsetTipLocal: {x: 0, y: 0, z: 0}
   stickWidgetOriginToFingertip: 1
@@ -426,6 +428,8 @@ MonoBehaviour:
   cellContentPadding: 0.08
   contentAlphaCutoff: 0.15
   contentAlphaSoftness: 0.14
+  defaultPlacedScale: 2
+  maxContentScale: 4
   defaultColor: {r: 1, g: 1, b: 1, a: 0}
   lineColor: {r: 1, g: 1, b: 1, a: 0.12941177}
   lineThickness: 0.02
@@ -741,7 +745,8 @@ MonoBehaviour:
   panelWorldWidthMeters: 0.28
   useGridLayout: 1
   gridColumns: 3
-  gridCellSize: {x: 70, y: 70}
+  gridCellSize: {x: 100, y: 100}
+  templateDisplayScale: 1.5
   gridSpacing: {x: 12, y: 12}
   gridPaddingLeft: 12
   gridPaddingRight: 12

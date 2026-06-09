@@ -31,6 +31,9 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
     [Header("Carry")]
     [Min(0.005f)] public float carriedWorldWidthMeters = 0.04f;
+    [Tooltip("When enabled, the carried preview scales with RevisedGridController.defaultPlacedScale.")]
+    public bool scaleCarryPreviewWithPlacedScale = true;
+    [Min(0.25f)] public float carryPreviewScaleMultiplier = 1f;
     [Min(0f)] public float fingerCarrySmoothTime = 0.048f;
     public Vector3 carryAttachOffsetTipLocal = Vector3.zero;
     public bool stickWidgetOriginToFingertip = true;
@@ -85,7 +88,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
         float canvasScale = Mathf.Max(Mathf.Abs(WidgetCarryCanvas.Root.lossyScale.x), 1e-6f);
         float baseWorldWidth = Mathf.Max(widget.rect.width * canvasScale, 1e-6f);
-        float uniform = carriedWorldWidthMeters / baseWorldWidth;
+        float carryScale = ResolveCarryPreviewScale();
+        float uniform = carriedWorldWidthMeters * carryScale / baseWorldWidth;
         widget.localScale = new Vector3(uniform, uniform, uniform);
 
         _carrySavedLocalScale = widget.localScale;
@@ -127,6 +131,14 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
         Vector3 worldPos = _tipFilteredPos + _tipFilteredRot * _holdOffsetLocalInTipSpace;
         _draggedItem.SetPositionAndRotation(worldPos, _carryPickupWorldRotation);
+    }
+
+    float ResolveCarryPreviewScale()
+    {
+        float scale = carryPreviewScaleMultiplier;
+        if (scaleCarryPreviewWithPlacedScale && grid != null)
+            scale *= grid.defaultPlacedScale;
+        return Mathf.Max(0.25f, scale);
     }
 
     public void CommitPlace(Vector3 contactWorldPoint)
