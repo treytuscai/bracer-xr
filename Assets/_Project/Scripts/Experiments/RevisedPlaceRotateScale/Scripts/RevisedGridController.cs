@@ -53,7 +53,8 @@ public class RevisedGridController : MonoBehaviour
     struct CellMetadata
     {
         public Color[] SourcePixels;
-        public int       SourceSize;
+        public int       SourceWidth;
+        public int       SourceHeight;
         public Color     Tint;
         public float     Scale;
         public float     RotationDegrees;
@@ -348,10 +349,10 @@ public class RevisedGridController : MonoBehaviour
         if (_contentAtlas == null || _stateTex == null || widget == null) return false;
 
         var source = widget.GetComponent<RevisedGridCellSource>();
-        if (source != null && source.sourcePixels != null && source.sourceSize > 0)
+        if (source != null && source.sourcePixels != null && source.SourcePixelWidth > 0 && source.SourcePixelHeight > 0)
         {
-            StoreAndBake(col, row, source.sourcePixels, source.sourceSize, source.tint,
-                source.scale, source.rotationDegrees);
+            StoreAndBake(col, row, source.sourcePixels, source.SourcePixelWidth, source.SourcePixelHeight,
+                source.tint, source.scale, source.rotationDegrees);
             return true;
         }
 
@@ -359,27 +360,33 @@ public class RevisedGridController : MonoBehaviour
             return false;
 
         int tile = contentTileResolution;
-        bool alreadyCellSized = sprite != null &&
-            sprite.rect.width >= tile - 1f && sprite.rect.height >= tile - 1f;
-        int inner = alreadyCellSized
-            ? tile
-            : Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
+        int inner = Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
+        if (sprite != null &&
+            sprite.rect.width >= tile - 1f && sprite.rect.height >= tile - 1f)
+        {
+            inner = tile;
+        }
+
+        int srcW = sprite != null ? (int)sprite.rect.width : texture.width;
+        int srcH = sprite != null ? (int)sprite.rect.height : texture.height;
+        ComputeAspectFitPixelDimensions(srcW, srcH, inner, out int dstW, out int dstH);
 
         Color[] pixels = sprite != null
-            ? ReadSpritePixels(sprite, inner, inner)
-            : ReadTexturePixels(texture, inner, inner);
+            ? ReadSpritePixels(sprite, dstW, dstH)
+            : ReadTexturePixels(texture, dstW, dstH);
 
-        StoreAndBake(col, row, pixels, inner, tint, defaultPlacedScale, 0f);
+        StoreAndBake(col, row, pixels, dstW, dstH, tint, defaultPlacedScale, 0f);
         return true;
     }
 
-    void StoreAndBake(int col, int row, Color[] pixels, int size, Color tint, float scale, float rotationDegrees)
+    void StoreAndBake(int col, int row, Color[] pixels, int width, int height, Color tint, float scale, float rotationDegrees)
     {
         int idx = CellToIndex(col, row);
         _cellMeta[idx] = new CellMetadata
         {
             SourcePixels = pixels,
-            SourceSize = size,
+            SourceWidth = width,
+            SourceHeight = height,
             Tint = tint,
             Scale = scale,
             RotationDegrees = rotationDegrees
@@ -430,17 +437,32 @@ public class RevisedGridController : MonoBehaviour
         int tile = contentTileResolution;
         int destX = col * tile;
         int destY = row * tile;
-        int src = meta.SourceSize;
+        int srcW = Mathf.Max(1, meta.SourceWidth);
+        int srcH = Mathf.Max(1, meta.SourceHeight);
         var dest = new Color[tile * tile];
+
+        float fit = Mathf.Min((float)tile / srcW, (float)tile / srcH);
+        int drawnW = Mathf.Max(1, Mathf.RoundToInt(srcW * fit));
+        int drawnH = Mathf.Max(1, Mathf.RoundToInt(srcH * fit));
+        int offsetX = (tile - drawnW) / 2;
+        int offsetY = (tile - drawnH) / 2;
 
         for (int y = 0; y < tile; y++)
         {
             for (int x = 0; x < tile; x++)
             {
-                float u = (x + 0.5f) / tile;
-                float v = (y + 0.5f) / tile;
+                int localX = x - offsetX;
+                int localY = y - offsetY;
+                if (localX < 0 || localY < 0 || localX >= drawnW || localY >= drawnH)
+                {
+                    dest[y * tile + x] = Color.clear;
+                    continue;
+                }
+
+                float u = (localX + 0.5f) / drawnW;
+                float v = (localY + 0.5f) / drawnH;
                 dest[y * tile + x] = HardenContentPixel(
-                    SampleSourceBilinear(meta.SourcePixels, src, src, u, v) * meta.Tint);
+                    SampleSourceBilinear(meta.SourcePixels, srcW, srcH, u, v) * meta.Tint);
             }
         }
 
@@ -585,21 +607,26 @@ public class RevisedGridController : MonoBehaviour
 
         var sprite = Sprite.Create(tex, new Rect(0f, 0f, tile, tile), new Vector2(0.5f, 0.5f), tile);
 
+        int metaW = meta.SourceWidth > 0 ? meta.SourceWidth : tile;
+        int metaH = meta.SourceHeight > 0 ? meta.SourceHeight : tile;
+        ComputeAspectFitPixelDimensions(metaW, metaH, 100, out int displayW, out int displayH);
+
         var go = new GameObject($"CellContent_{col}_{row}",
             typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
         widget = go.GetComponent<RectTransform>();
-        widget.sizeDelta = new Vector2(100f, 100f);
+        widget.sizeDelta = new Vector2(displayW, displayH);
 
         var image = go.GetComponent<Image>();
         image.sprite = sprite;
         image.preserveAspect = true;
         image.raycastTarget = false;
 
-        if (meta.SourcePixels != null && meta.SourceSize > 0)
+        if (meta.SourcePixels != null && meta.SourceWidth > 0 && meta.SourceHeight > 0)
         {
             var src = go.AddComponent<RevisedGridCellSource>();
             src.sourcePixels = (Color[])meta.SourcePixels.Clone();
-            src.sourceSize = meta.SourceSize;
+            src.sourceWidth = meta.SourceWidth;
+            src.sourceHeight = meta.SourceHeight;
             src.tint = meta.Tint;
             src.scale = meta.Scale;
             src.rotationDegrees = meta.RotationDegrees;
@@ -788,6 +815,25 @@ public class RevisedGridController : MonoBehaviour
         _spriteBlitMat.mainTextureOffset = new Vector2(rect.x / tex.width, rect.y / tex.height);
         _spriteBlitMat.color = Color.white;
         return _spriteBlitMat;
+    }
+
+    static void ComputeAspectFitPixelDimensions(int srcW, int srcH, int maxDim, out int dstW, out int dstH)
+    {
+        srcW = Mathf.Max(1, srcW);
+        srcH = Mathf.Max(1, srcH);
+        maxDim = Mathf.Max(1, maxDim);
+
+        float aspect = (float)srcW / srcH;
+        if (aspect >= 1f)
+        {
+            dstW = maxDim;
+            dstH = Mathf.Max(1, Mathf.RoundToInt(maxDim / aspect));
+        }
+        else
+        {
+            dstH = maxDim;
+            dstW = Mathf.Max(1, Mathf.RoundToInt(maxDim * aspect));
+        }
     }
 
     static Color[] ScalePixels(Color[] src, int srcW, int srcH, int dstW, int dstH)

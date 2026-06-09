@@ -7,8 +7,14 @@ using UnityEngine;
 public class RevisedGridCellSource : MonoBehaviour
 {
     public Color[] sourcePixels;
-    public int     sourceSize;
-    public Color   tint = Color.white;
-    public float   scale = 1f;
-    public float   rotationDegrees;
+    [Tooltip("Legacy square size — used only when sourceWidth/sourceHeight are unset.")]
+    public int sourceSize;
+    public int sourceWidth;
+    public int sourceHeight;
+    public Color tint = Color.white;
+    public float scale = 1f;
+    public float rotationDegrees;
+
+    public int SourcePixelWidth => sourceWidth > 0 ? sourceWidth : sourceSize;
+    public int SourcePixelHeight => sourceHeight > 0 ? sourceHeight : sourceSize;
 }
