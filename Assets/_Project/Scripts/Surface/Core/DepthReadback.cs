@@ -56,8 +56,8 @@ namespace Surface.Core
         private HandMask _handMaskSource;
         // Tuning, set once via the constructor from ForearmDepthSurface Inspector values. All three feed
         // the median's extract pass (pass 0), where all hand handling lives:
-        //   HandMarginTexels      — grid texels the hand silhouette is grown by (3x3 max), covering the
-        //                            stereo bleed/lift. The bleed ring inside it is reconstructed. Small (1).
+        //   HandMarginTexels      — native depth texels the hand silhouette is grown by (3x3 max), covering
+        //                            the stereo bleed/lift. The bleed ring inside it is reconstructed.
         //   OcclusionMarginTexels — inner cushion (texels) kept as a hole, covering the real hand peeking
         //                            past the mask so peek-through isn't flattened to arm. Below the margin.
         //   BorrowDepthBand       — depth window (m) for the ring reconstruction: a borrowed sample within
@@ -346,12 +346,13 @@ namespace Surface.Core
 
             EnsureTemporalRTs();
 
-            // Pass 0 (extract) is where all hand handling lives: it carves the finger out of history AND
-            // reconstructs the bleed ring around it (estimated from clean arm), so the stabilized depth the
-            // blit consumes already has the finger as 0 and the lift as arm. _HandMaskTex itself is already
-            // bound on _medianMat by RenderHandMask. These must be set before the pass-0 blits below.
+            // Pass 0 (extract) carves the finger and reconstructs the bleed ring around it (estimated from
+            // clean arm), so the stabilized depth already has the finger as 0 and the lift as arm. Pass 0
+            // is full-frame, so its margins step in native depth texels (_DepthTexelSize); _CropUVScaleOffset
+            // is the pass-1 crop->depth remap. _HandMaskTex is already bound on _medianMat by RenderHandMask.
+            // All set before the blits below.
             _medianMat.SetVector("_CropUVScaleOffset", cropUVScaleOffset);
-            _medianMat.SetVector("_GridTexelSize", new Vector4(1f / cols, 1f / rows, cols, rows));
+            _medianMat.SetVector("_DepthTexelSize", new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
             _medianMat.SetInteger("_HandMarginTexels", HandMarginTexels);
             _medianMat.SetInteger("_OcclusionMarginTexels", OcclusionMarginTexels);
             _medianMat.SetFloat("_BorrowDepthBand", BorrowDepthBand);

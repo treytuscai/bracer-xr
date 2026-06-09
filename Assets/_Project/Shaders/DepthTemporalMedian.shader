@@ -47,13 +47,14 @@ Shader "Hidden/DepthTemporalMedian"
             // from a farther background; matches MetaDepthCopy's LinearizeDepth.
             float4 _EnvironmentDepthZBufferParams;
 
-            // Hand-margin grow, set per frame. One grid texel in depth UV = _CropUVScaleOffset.xy *
-            // _GridTexelSize.xy; the margin is _HandMarginTexels of those (grows the finger to cover the
-            // stereo bleed/lift plus readback latency).
-            float4 _CropUVScaleOffset;
-            float4 _GridTexelSize;
+            // One native depth texel in depth UV: _DepthTexelSize.xy = (1/_depthTexW, 1/_depthTexH). The
+            // margins and the borrow march step by this, so pass 0 stays fully full-frame native — the crop
+            // is only a spatial restriction on later passes, never a unit in here.
+            float4 _DepthTexelSize;
+            // Grow the silhouette by _HandMarginTexels depth texels, covering the stereo bleed/lift the
+            // sensor adds around the hand plus readback latency.
             int    _HandMarginTexels;
-            // Inner cushion (grid texels) kept as a hole: covers the real hand peeking past the rendered
+            // Inner cushion (depth texels) kept as a hole: covers the real hand peeking past the rendered
             // mask (imperfect mesh + readback latency), so peek-through is occluded, not flattened to arm.
             // Stays below _HandMarginTexels so a reconstruct band remains.
             int    _OcclusionMarginTexels;
@@ -88,12 +89,12 @@ Shader "Hidden/DepthTemporalMedian"
                 return (1.0 / (ndc + _EnvironmentDepthZBufferParams.y)) * _EnvironmentDepthZBufferParams.x;
             }
 
-            // 3x3 hand-mask test in depth UV, silhouette grown by `marginTexels` (the 3 taps per axis
-            // sit at -m, 0, +m grid texels, so 9 taps approximate a radius-m dilation). m = 0 reduces to a
+            // 3x3 hand-mask test in depth UV, silhouette grown by `marginTexels` depth texels (the 3 taps
+            // per axis sit at -m, 0, +m, so 9 taps approximate a radius-m dilation). m = 0 reduces to a
             // single-tap test of the rendered silhouette itself.
             float HandMaskGrown(float2 duv, int marginTexels)
             {
-                float2 texelStep = _CropUVScaleOffset.xy * _GridTexelSize.xy * marginTexels;
+                float2 texelStep = _DepthTexelSize.xy * marginTexels;
                 float m = 0.0;
                 UNITY_UNROLL
                 for (int dy = -1; dy <= 1; dy++)
@@ -111,8 +112,8 @@ Shader "Hidden/DepthTemporalMedian"
             // farther sample is background). Returns false when no ray reaches clean arm (finger off arm).
             bool TryBorrowArmDepth(float2 duv, out float armRaw)
             {
-                float2 stepUV   = _CropUVScaleOffset.xy * _GridTexelSize.xy;   // one grid texel in depth UV
-                int    maxSteps = _HandMarginTexels + 2;                       // far enough to clear the ring
+                float2 stepUV   = _DepthTexelSize.xy;       // one native depth texel
+                int    maxSteps = _HandMarginTexels + 2;    // far enough to clear the ring
 
                 // 8 outward directions (integer steps, so a fixed maxSteps clears the ring in every one).
                 float2 dirs[8] = {
