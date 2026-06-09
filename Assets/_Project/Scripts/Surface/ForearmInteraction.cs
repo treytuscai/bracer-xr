@@ -26,7 +26,7 @@ public class ForearmInteraction : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Touch")]
     [Tooltip("How far above the surface a finger can hover and still register as a touch (m)")]
-    [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.02f;
+    [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.005f;
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
     [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
@@ -169,11 +169,7 @@ public class ForearmInteraction : MonoBehaviour
 
         u += _surface.PronationAngle / (2f * Mathf.PI);
 
-        // 2D rotation around (0.5, 0.5) for portrait/landscape orientation.
-        float cu = u - 0.5f, cv = v - 0.5f;
-        float cosA = Mathf.Cos(_surface.OrientationAngle);
-        float sinA = Mathf.Sin(_surface.OrientationAngle);
-        return new Vector2(cu * cosA - cv * sinA + 0.5f, cu * sinA + cv * cosA + 0.5f);
+        return new Vector2(u, v);
     }
 
     /// <summary>

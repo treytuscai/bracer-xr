@@ -80,7 +80,7 @@ namespace Surface.Core
             SurfaceBuffer surfBuf,
             int rows, int cols,
             Vector3 wristPos, Vector3 axis, Vector3 axisRight,
-            float pronation, float orientation,
+            float pronation,
             Matrix4x4 worldToLocal,
             JobHandle dependency)
         {
@@ -133,8 +133,6 @@ namespace Surface.Core
                 WristPos = wristPos, Axis = axis, AxisRight = axisRight,
                 ProjCenter = _projCenter,
                 PronationScroll = pronation / (2f * Mathf.PI),
-                CosOrientation  = Mathf.Cos(orientation),
-                SinOrientation  = Mathf.Sin(orientation),
                 Offset = DisplayOffset, Width = DisplayWidth, Height = DisplayHeight,
                 WorldToLocal = worldToLocal,
                 OutVerts = meshBuf.Vertices, OutUVs = meshBuf.UVs,
@@ -272,11 +270,10 @@ namespace Surface.Core
             [ReadOnly] public NativeArray<bool>    IsSurface;
             public int     Cols;
             public Vector3 WristPos, Axis, AxisRight;
-            // Orientation and Pronation are pre-computed outside the job so CalculateUV
-            // does not call Mathf.Cos/Sin or divide on every surface cell.
+            // PronationScroll is pre-computed outside the job so CalculateUV doesn't divide per cell.
             // [0] = finalized projected center (written by FinalizeCenterJob in the job graph).
             [ReadOnly] public NativeArray<float> ProjCenter;
-            public float   PronationScroll, CosOrientation, SinOrientation;
+            public float   PronationScroll;
             public float   Offset, Width, Height;
             public Matrix4x4 WorldToLocal;
 
@@ -313,7 +310,6 @@ namespace Surface.Core
             ///   U: Dot(fromWrist, AxisRight) / Width, offset to the dorsal panel center (0.25); a 180°
             ///      pronation adds 0.5 to scroll to the palmar panel (0.75) — content scrolls, the frame
             ///      doesn't spin (AxisRight is camera-fixed).
-            ///   Then a 2D rotation by Orientation around (0.5, 0.5): no-op in portrait, swaps U/V in landscape.
             /// </summary>
             private Vector2 CalculateUV(Vector3 pt)
             {
@@ -327,10 +323,7 @@ namespace Surface.Core
 
                 u += PronationScroll;
 
-                // Rotate UV around (0.5, 0.5).
-                float cu = u - 0.5f, cv = v - 0.5f;
-                return new Vector2(cu * CosOrientation - cv * SinOrientation + 0.5f,
-                                   cu * SinOrientation + cv * CosOrientation + 0.5f);
+                return new Vector2(u, v);
             }
         }
 

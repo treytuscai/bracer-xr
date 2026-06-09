@@ -3,10 +3,11 @@
 //
 // Input channels (set by MeshGenerator and ForearmDepthSurface.UpdateUnityMesh):
 //   POSITION   — local-space vertex position (world hit transformed by WorldToLocal)
-//   TEXCOORD0  — UV0: display coordinates (linear projection + pronation scroll + orientation rotation)
+//   TEXCOORD0  — UV0: display coordinates (linear projection + pronation scroll)
 //
 // Per-material properties (set from C# each frame):
-//   _MainTex     — UI texture to display on the arm surface (set in Inspector)
+//   _MainTex     — UI texture to display on the arm surface (swapped each frame by
+//                  ForearmDepthSurface between its portrait/landscape textures by orientation)
 //   _Color       — tint multiplied against the texture (white = no tint)
 //   _TouchPoint  — set by ForearmInteraction.LateUpdate; drives the debug circle overlay
 //   _TouchRadius — radius of the debug circle in UV space (Inspector)
