@@ -58,14 +58,14 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         _carrySavedParent = widget.parent;
         _carrySavedLocalScale = widget.localScale;
 
-        widget.SetParent(WidgetCarryCanvas.Root, worldPositionStays: true);
+        widget.SetParent(WidgetCarryCanvas.Root, worldPositionStays: false);
+        widget.localRotation = Quaternion.identity;
+        widget.localScale = Vector3.one;
 
-        float currentWorldWidth = Mathf.Abs(widget.rect.width * widget.lossyScale.x);
-        if (currentWorldWidth > 1e-4f && carriedWorldWidthMeters > 1e-4f)
-        {
-            float scaleFactor = Mathf.Min(1f, carriedWorldWidthMeters / currentWorldWidth);
-            widget.localScale *= scaleFactor;
-        }
+        float canvasScale = Mathf.Max(Mathf.Abs(WidgetCarryCanvas.Root.lossyScale.x), 1e-6f);
+        float baseWorldWidth = Mathf.Max(widget.rect.width * canvasScale, 1e-6f);
+        float uniform = carriedWorldWidthMeters / baseWorldWidth;
+        widget.localScale = new Vector3(uniform, uniform, uniform);
 
         _carrySavedLocalScale = widget.localScale;
 
@@ -140,6 +140,26 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         Destroy(_draggedItem.gameObject);
         _draggedItem = null;
         grid?.ClearHighlight();
+    }
+
+    public void ClearAll()
+    {
+        if (IsCarrying)
+            DestroyCarriedItem();
+
+        grid?.ClearAll();
+    }
+
+    public bool TryBeginCarryFromSurface(Vector2 surfaceUV, Transform indexTipWorld)
+    {
+        if (IsCarrying || grid == null || indexTipWorld == null) return false;
+        if (surfaceUV.x < 0f || surfaceUV.x > 1f || surfaceUV.y < 0f || surfaceUV.y > 1f) return false;
+
+        grid.UVToCell(surfaceUV, out int col, out int row);
+        if (!grid.IsCellOccupied(col, row)) return false;
+        if (!grid.TryCreateWidgetFromCell(col, row, out RectTransform widget)) return false;
+
+        return BeginCarryExternal(widget, indexTipWorld, destroyOnAbort: true);
     }
 
     bool TryGetUVNearWorldPoint(Vector3 world, out Vector2 uv)

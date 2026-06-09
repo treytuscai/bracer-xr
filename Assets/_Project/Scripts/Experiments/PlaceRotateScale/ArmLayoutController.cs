@@ -1155,6 +1155,10 @@ public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement
         ResetCarryFingerMetadata();
     }
 
+    public void ClearAll() { }
+
+    public bool TryBeginCarryFromSurface(Vector2 surfaceUV, Transform indexTipWorld) => false;
+
     void OnDrawGizmosSelected()
     {
         if (!drawGridGizmos || !useGridSnap) return;

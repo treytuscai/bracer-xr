@@ -403,8 +403,6 @@ MonoBehaviour:
   fingerCarrySmoothTime: 0.048
   carryAttachOffsetTipLocal: {x: 0, y: 0, z: 0}
   stickWidgetOriginToFingertip: 1
-  cellPaddingFraction: 0.08
-  surfaceLiftMeters: 0.002
 --- !u!114 &66024359
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -419,12 +417,14 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   surface: {fileID: 66024355}
   gridShader: {fileID: 4800000, guid: bee2a0a49f83fb547aa23c3a3d012a34, type: 3}
-  columns: 6
-  rows: 6
+  columns: 12
+  rows: 12
   keepSquareCells: 1
+  contentTileResolution: 512
+  cellContentPadding: 0.08
   defaultColor: {r: 1, g: 1, b: 1, a: 0.15}
   lineColor: {r: 1, g: 1, b: 1, a: 0.6}
-  lineThickness: 0.04
+  lineThickness: 0.02
   highlightColor: {r: 0.2, g: 0.9, b: 0.35, a: 0.35}
 --- !u!1001 &113860853
 PrefabInstance:
@@ -1654,57 +1654,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &701622249
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 701622250}
-  - component: {fileID: 701622251}
-  m_Layer: 0
-  m_Name: RevisedForearmTouchManager
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 0
---- !u!4 &701622250
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 701622249}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1324117057}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &701622251
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 701622249}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 38065648c8d018940bf8b86839b780b2, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  interaction: {fileID: 0}
-  widgetPlacement: {fileID: 0}
-  possibleUIPalette: {fileID: 0}
-  rightHandSkeleton: {fileID: 0}
-  minFramesBetweenPickAndStick: 6
-  palettePickHasPriority: 1
-  debugLogGestures: 0
 --- !u!1 &750821880
 GameObject:
   m_ObjectHideFlags: 0
@@ -1884,7 +1833,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 66024353}
-  - {fileID: 701622250}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1422572210

@@ -101,7 +101,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
         bool palettePressBegan = palettePressHeld && !wasPalettePress;
         bool palettePressReleased = !palettePressHeld && wasPalettePress;
 
-        TickFreePlace(onSkin, pressBegan, pressReleased, palettePressBegan, palettePressReleased, indexTip);
+        TickFreePlace(onSkin, uv, pressBegan, pressReleased, palettePressBegan, palettePressReleased, indexTip);
 
         wasPressTouch = pressHeld;
         wasPalettePress = palettePressHeld;
@@ -123,6 +123,7 @@ public class RevisedForearmTouchManager : MonoBehaviour
 
     void TickFreePlace(
         bool onSkin,
+        Vector2 touchUV,
         bool pressBegan,
         bool pressReleased,
         bool palettePressBegan,
@@ -138,9 +139,17 @@ public class RevisedForearmTouchManager : MonoBehaviour
 
         if (!carrying && indexTip != null)
         {
-            bool tryPalette = possibleUIPalette != null &&
-                              possibleUIPalette.IsFingerOverPalette &&
-                              palettePressBegan;
+            bool overPalette = possibleUIPalette != null && possibleUIPalette.IsFingerOverPalette;
+
+            if (possibleUIPalette != null && palettePressBegan &&
+                possibleUIPalette.IsFingerOverClear(indexTip.position))
+            {
+                if (debugLogGestures) Debug.Log("[RevisedGesture] CLEAR all grid cells");
+                Placement.ClearAll();
+                return;
+            }
+
+            bool tryPalette = overPalette && palettePressBegan;
 
             if (tryPalette && possibleUIPalette.TryBeginCarryFromPalette(indexTip))
             {
@@ -150,6 +159,16 @@ public class RevisedForearmTouchManager : MonoBehaviour
                 if (debugLogGestures)
                     Debug.Log($"[RevisedGesture] PALETTE PICKUP @ frame {pickupFrameStamp}");
                 return;
+            }
+
+            if (onSkin && pressBegan && !overPalette &&
+                Placement.TryBeginCarryFromSurface(touchUV, indexTip))
+            {
+                carrying = true;
+                sawReleaseSincePickup = false;
+                pickupFrameStamp = Time.frameCount;
+                if (debugLogGestures)
+                    Debug.Log($"[RevisedGesture] GRID PICKUP @ frame {pickupFrameStamp}");
             }
 
             return;
@@ -175,12 +194,27 @@ public class RevisedForearmTouchManager : MonoBehaviour
             possibleUIPalette.IsFingerOverDelete(indexTip.position) &&
             Time.frameCount - pickupFrameStamp >= minFramesBetweenPickAndStick;
 
+        bool readyForClear =
+            palettePressBegan &&
+            possibleUIPalette != null &&
+            indexTip != null &&
+            possibleUIPalette.IsFingerOverClear(indexTip.position);
+
         bool readyForPlace =
             sawReleaseSincePickup &&
             onSkin &&
             pressBegan &&
             Time.frameCount - pickupFrameStamp >= minFramesBetweenPickAndStick &&
             (possibleUIPalette == null || !possibleUIPalette.IsFingerOverPalette);
+
+        if (readyForClear)
+        {
+            if (debugLogGestures) Debug.Log("[RevisedGesture] CLEAR all grid cells");
+            Placement.ClearAll();
+            carrying = false;
+            sawReleaseSincePickup = false;
+            return;
+        }
 
         if (readyForDelete)
         {

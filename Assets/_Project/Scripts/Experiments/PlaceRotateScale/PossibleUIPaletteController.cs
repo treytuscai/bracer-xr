@@ -75,6 +75,23 @@ public class PossibleUIPaletteController : MonoBehaviour
     [Tooltip("Space between the separator bar and delete column.")]
     [Min(0f)] public float deleteSeparatorPadding = 8f;
 
+    [Header("Clear")]
+    [Tooltip("Optional clear-all icon. If unset, a built-in eraser-style label is shown.")]
+    public Sprite clearIconSprite;
+
+    public Vector2 clearIconSize = new Vector2(56f, 56f);
+
+    [Tooltip("Highlight color when hovering the clear icon.")]
+    public Color clearHoverHighlightColor = new Color(0.35f, 0.75f, 1f, 1f);
+
+    [Tooltip("Label shown above the clear icon.")]
+    public string clearLabelText = "Clear";
+
+    public int clearTitleFontSize = 16;
+
+    [Tooltip("Space between the Clear label and clear icon.")]
+    [Min(0f)] public float clearColumnSpacing = 4f;
+
     [Header("Placement")]
     [Tooltip("If true, the palette follows the head each frame. If false, it is anchored once in world space.")]
     public bool followHead = false;
@@ -154,6 +171,10 @@ public class PossibleUIPaletteController : MonoBehaviour
     public bool IsFingerOverPalette => TouchState != PaletteTouchState.None;
 
     RectTransform _templateContainer;
+    RectTransform _clearZone;
+    RectTransform _clearSeparator;
+    RectTransform _clearTitle;
+    RectTransform _clearTarget;
     RectTransform _deleteZone;
     RectTransform _deleteSeparator;
     RectTransform _deleteTitle;
@@ -163,9 +184,11 @@ public class PossibleUIPaletteController : MonoBehaviour
     ContentSizeFitter _templateSizeFitter;
     ContentSizeFitter _paletteSizeFitter;
     RectTransform _hoveredTemplate;
+    Outline _clearOutline;
     Outline _deleteOutline;
     Vector3 _lastFingerWorld;
     bool _worldAnchorApplied;
+    bool _panelLayoutLocked;
     int _anchorWaitFrames;
     int _stableHeadFrames;
     float _lastMeasuredHeadY;
@@ -189,11 +212,30 @@ public class PossibleUIPaletteController : MonoBehaviour
 
         if (followHead)
             ApplyHeadPlacement();
+        else if (_worldAnchorApplied && !_panelLayoutLocked)
+            FinalizeAnchoredPaletteLayout();
+        else if (!_worldAnchorApplied)
+            RefreshPaletteLayout();
 
-        EnsureRowChildOrder();
-        ApplyPanelScale();
-        LayoutDeleteZoneManual();
+        UpdateClearHighlight(_lastFingerWorld);
         UpdateDeleteHighlight(_lastFingerWorld);
+    }
+
+    void RefreshPaletteLayout()
+    {
+        EnsureRowChildOrder();
+        LayoutClearZoneManual();
+        LayoutDeleteZoneManual();
+        ApplyPanelScale();
+    }
+
+    void FinalizeAnchoredPaletteLayout()
+    {
+        EnsureRowChildOrder();
+        LayoutClearZoneManual();
+        LayoutDeleteZoneManual();
+        ApplyPanelScale();
+        _panelLayoutLocked = true;
     }
 
     void ResolveHeadAnchor()
@@ -236,16 +278,21 @@ public class PossibleUIPaletteController : MonoBehaviour
             _lastMeasuredHeadY = measuredHeadY;
 
             // Wait for a few stable tracking frames so we do not lock a startup spike pose.
-            if (_stableHeadFrames < 5)
+            if (_stableHeadFrames < 2)
                 return;
         }
 
         _worldAnchorApplied = true;
+        _panelLayoutLocked = false;
 
         if (paletteRect.parent != null)
             paletteRect.SetParent(null, true);
 
+        paletteRect.pivot = new Vector2(0.5f, 0.5f);
+        paletteRect.anchorMin = paletteRect.anchorMax = new Vector2(0.5f, 0.5f);
+
         ApplyHeadPlacement(useFallbackHeight: !headHeightValid);
+        FinalizeAnchoredPaletteLayout();
 
         if (debugLogPalette)
             Debug.Log(
@@ -343,6 +390,7 @@ public class PossibleUIPaletteController : MonoBehaviour
 
         MigrateTemplatesIntoContainer();
         EnsureGridLayout();
+        EnsureClearZone();
         EnsureDeleteZone();
         EnsureRowChildOrder();
     }
@@ -352,9 +400,10 @@ public class PossibleUIPaletteController : MonoBehaviour
         for (int i = paletteRect.childCount - 1; i >= 0; i--)
         {
             Transform child = paletteRect.GetChild(i);
-            if (child == _templateContainer || child == _deleteZone || child == _deleteTarget)
+            if (child == _templateContainer || child == _clearZone || child == _deleteZone || child == _deleteTarget)
                 continue;
-            if (child.GetComponent<PaletteDeleteTarget>() != null)
+            if (child.GetComponent<PaletteDeleteTarget>() != null ||
+                child.GetComponent<PaletteClearTarget>() != null)
                 continue;
 
             child.SetParent(_templateContainer, false);
@@ -388,6 +437,152 @@ public class PossibleUIPaletteController : MonoBehaviour
             _templateSizeFitter = _templateContainer.gameObject.AddComponent<ContentSizeFitter>();
         _templateSizeFitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
         _templateSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+    }
+
+    void EnsureClearZone()
+    {
+        _clearZone = paletteRect.Find("ClearZone") as RectTransform;
+        if (_clearZone == null)
+        {
+            var zoneGo = new GameObject("ClearZone", typeof(RectTransform), typeof(LayoutElement));
+            _clearZone = zoneGo.GetComponent<RectTransform>();
+            _clearZone.SetParent(paletteRect, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(_clearZone);
+
+        PaletteClearTarget zoneMarker = _clearZone.GetComponent<PaletteClearTarget>();
+        if (zoneMarker != null)
+            Destroy(zoneMarker);
+
+        EnsureClearSeparator();
+        EnsureClearTitle();
+        EnsureClearTarget();
+        LayoutClearZoneManual();
+    }
+
+    void EnsureClearSeparator()
+    {
+        _clearSeparator = _clearZone.Find("ClearSeparator") as RectTransform;
+        if (_clearSeparator == null)
+        {
+            var separatorGo = new GameObject("ClearSeparator",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            _clearSeparator = separatorGo.GetComponent<RectTransform>();
+            _clearSeparator.SetParent(_clearZone, false);
+        }
+
+        RemoveLegacyDeleteLayoutComponents(_clearSeparator);
+
+        var separatorImage = _clearSeparator.GetComponent<Image>();
+        separatorImage.sprite = null;
+        separatorImage.color = deleteSeparatorColor;
+        separatorImage.raycastTarget = false;
+    }
+
+    void EnsureClearTitle()
+    {
+        _clearTitle = _clearZone.Find("ClearTitle") as RectTransform;
+        if (_clearTitle == null)
+        {
+            var titleGo = new GameObject("ClearTitle",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            _clearTitle = titleGo.GetComponent<RectTransform>();
+            _clearTitle.SetParent(_clearZone, false);
+        }
+
+        var titleText = _clearTitle.GetComponent<Text>();
+        titleText.text = clearLabelText;
+        titleText.alignment = TextAnchor.MiddleCenter;
+        titleText.color = Color.white;
+        titleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        titleText.fontSize = clearTitleFontSize;
+        titleText.raycastTarget = false;
+        titleText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        titleText.verticalOverflow = VerticalWrapMode.Overflow;
+        _clearTitle.localScale = Vector3.one;
+    }
+
+    void EnsureClearTarget()
+    {
+        if (_clearTarget == null)
+            _clearTarget = paletteRect.Find("ClearIcon") as RectTransform;
+        if (_clearTarget == null && _clearZone != null)
+            _clearTarget = _clearZone.Find("ClearIcon") as RectTransform;
+
+        if (_clearTarget == null)
+        {
+            var clearGo = new GameObject("ClearIcon",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            _clearTarget = clearGo.GetComponent<RectTransform>();
+            clearGo.AddComponent<PaletteClearTarget>();
+        }
+
+        if (_clearZone != null && _clearTarget.parent != _clearZone)
+            _clearTarget.SetParent(_clearZone, false);
+
+        if (_clearTarget.GetComponent<PaletteClearTarget>() == null)
+            _clearTarget.gameObject.AddComponent<PaletteClearTarget>();
+
+        var image = _clearTarget.GetComponent<Image>();
+        if (image == null)
+            image = _clearTarget.gameObject.AddComponent<Image>();
+        ApplyClearIconVisual(image);
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+
+        LayoutElement legacyLayout = _clearTarget.GetComponent<LayoutElement>();
+        if (legacyLayout != null)
+            Destroy(legacyLayout);
+    }
+
+    void ApplyClearIconVisual(Image image)
+    {
+        var label = _clearTarget.Find("ClearIconLabel") as RectTransform;
+
+        if (clearIconSprite != null)
+        {
+            if (label != null)
+                label.gameObject.SetActive(false);
+
+            image.sprite = clearIconSprite;
+            image.color = Color.white;
+            return;
+        }
+
+        image.sprite = null;
+        image.color = new Color(0.25f, 0.55f, 0.95f, 0.85f);
+
+        if (label == null)
+        {
+            var labelGo = new GameObject("ClearIconLabel",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
+            label = labelGo.GetComponent<RectTransform>();
+            label.SetParent(_clearTarget, false);
+            label.anchorMin = Vector2.zero;
+            label.anchorMax = Vector2.one;
+            label.offsetMin = Vector2.zero;
+            label.offsetMax = Vector2.zero;
+        }
+        else
+        {
+            label.gameObject.SetActive(true);
+        }
+
+        var text = label.GetComponent<Text>();
+        text.text = "\u232B";
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = Color.white;
+        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.fontSize = Mathf.RoundToInt(Mathf.Min(clearIconSize.x, clearIconSize.y) * 0.55f);
+        text.raycastTarget = false;
+    }
+
+    void LayoutClearZoneManual()
+    {
+        LayoutActionZoneManual(
+            _clearZone, _clearSeparator, _clearTitle, _clearTarget,
+            clearIconSize, clearTitleFontSize, clearColumnSpacing);
     }
 
     void EnsureDeleteZone()
@@ -476,18 +671,32 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     void LayoutDeleteZoneManual()
     {
-        if (_deleteZone == null || _deleteSeparator == null || _deleteTitle == null || _deleteTarget == null)
+        LayoutActionZoneManual(
+            _deleteZone, _deleteSeparator, _deleteTitle, _deleteTarget,
+            deleteIconSize, deleteTitleFontSize, deleteColumnSpacing);
+    }
+
+    void LayoutActionZoneManual(
+        RectTransform zone,
+        RectTransform separator,
+        RectTransform title,
+        RectTransform target,
+        Vector2 iconSize,
+        int titleFontSize,
+        float columnSpacing)
+    {
+        if (zone == null || separator == null || title == null || target == null)
             return;
 
-        float columnWidth = Mathf.Max(deleteIconSize.x, 48f);
-        float titleHeight = deleteTitleFontSize + 4f;
-        float columnHeight = titleHeight + deleteColumnSpacing + deleteIconSize.y;
+        float columnWidth = Mathf.Max(iconSize.x, 48f);
+        float titleHeight = titleFontSize + 4f;
+        float columnHeight = titleHeight + columnSpacing + iconSize.y;
         float zoneWidth = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth;
         float columnCenterX = deleteSeparatorWidth + deleteSeparatorPadding + columnWidth * 0.5f;
 
-        var zoneLayout = _deleteZone.GetComponent<LayoutElement>();
+        var zoneLayout = zone.GetComponent<LayoutElement>();
         if (zoneLayout == null)
-            zoneLayout = _deleteZone.gameObject.AddComponent<LayoutElement>();
+            zoneLayout = zone.gameObject.AddComponent<LayoutElement>();
         zoneLayout.minWidth = zoneWidth;
         zoneLayout.preferredWidth = zoneWidth;
         zoneLayout.minHeight = columnHeight;
@@ -495,27 +704,27 @@ public class PossibleUIPaletteController : MonoBehaviour
         zoneLayout.flexibleWidth = 0f;
         zoneLayout.flexibleHeight = 0f;
 
-        _deleteSeparator.SetAsFirstSibling();
-        _deleteTitle.SetSiblingIndex(1);
-        _deleteTarget.SetAsLastSibling();
+        separator.SetAsFirstSibling();
+        title.SetSiblingIndex(1);
+        target.SetAsLastSibling();
 
-        _deleteSeparator.anchorMin = new Vector2(0f, 0f);
-        _deleteSeparator.anchorMax = new Vector2(0f, 1f);
-        _deleteSeparator.pivot = new Vector2(0f, 0.5f);
-        _deleteSeparator.sizeDelta = new Vector2(deleteSeparatorWidth, 0f);
-        _deleteSeparator.anchoredPosition = Vector2.zero;
+        separator.anchorMin = new Vector2(0f, 0f);
+        separator.anchorMax = new Vector2(0f, 1f);
+        separator.pivot = new Vector2(0f, 0.5f);
+        separator.sizeDelta = new Vector2(deleteSeparatorWidth, 0f);
+        separator.anchoredPosition = Vector2.zero;
 
-        _deleteTitle.anchorMin = new Vector2(0f, 1f);
-        _deleteTitle.anchorMax = new Vector2(0f, 1f);
-        _deleteTitle.pivot = new Vector2(0.5f, 1f);
-        _deleteTitle.sizeDelta = new Vector2(columnWidth, titleHeight);
-        _deleteTitle.anchoredPosition = new Vector2(columnCenterX, 0f);
+        title.anchorMin = new Vector2(0f, 1f);
+        title.anchorMax = new Vector2(0f, 1f);
+        title.pivot = new Vector2(0.5f, 1f);
+        title.sizeDelta = new Vector2(columnWidth, titleHeight);
+        title.anchoredPosition = new Vector2(columnCenterX, 0f);
 
-        _deleteTarget.anchorMin = new Vector2(0f, 1f);
-        _deleteTarget.anchorMax = new Vector2(0f, 1f);
-        _deleteTarget.pivot = new Vector2(0.5f, 1f);
-        _deleteTarget.sizeDelta = deleteIconSize;
-        _deleteTarget.anchoredPosition = new Vector2(columnCenterX, -(titleHeight + deleteColumnSpacing));
+        target.anchorMin = new Vector2(0f, 1f);
+        target.anchorMax = new Vector2(0f, 1f);
+        target.pivot = new Vector2(0.5f, 1f);
+        target.sizeDelta = iconSize;
+        target.anchoredPosition = new Vector2(columnCenterX, -(titleHeight + columnSpacing));
     }
 
     void EnsureDeleteTarget()
@@ -595,16 +804,22 @@ public class PossibleUIPaletteController : MonoBehaviour
 
     void EnsureRowChildOrder()
     {
-        if (_templateContainer == null || _deleteZone == null)
+        if (_templateContainer == null)
             return;
 
         _templateContainer.SetAsFirstSibling();
-        _deleteZone.SetAsLastSibling();
+        if (_clearZone != null)
+            _clearZone.SetSiblingIndex(1);
+        if (_deleteZone != null)
+            _deleteZone.SetAsLastSibling();
     }
 
     void ApplyPanelScale()
     {
         if (paletteRect == null || panelWorldWidthMeters <= 0f)
+            return;
+
+        if (_panelLayoutLocked)
             return;
 
         LayoutRebuilder.ForceRebuildLayoutImmediate(paletteRect);
@@ -614,8 +829,18 @@ public class PossibleUIPaletteController : MonoBehaviour
             return;
 
         float scale = panelWorldWidthMeters / rectWidth;
+        Vector3 worldPos = paletteRect.position;
+        Quaternion worldRot = paletteRect.rotation;
+
         // Negative X un-mirrors world-space UI so layout, text, and lateral offsets match the user's view.
         paletteRect.localScale = new Vector3(-scale, scale, scale);
+
+        // Keep the panel fixed in world space when scale changes (center pivot).
+        if (_worldAnchorApplied)
+        {
+            paletteRect.position = worldPos;
+            paletteRect.rotation = worldRot;
+        }
     }
 
     /// <summary>
@@ -625,6 +850,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     public void RequestWorldReanchor()
     {
         _worldAnchorApplied = false;
+        _panelLayoutLocked = false;
         _anchorWaitFrames = 0;
         _stableHeadFrames = 0;
     }
@@ -645,13 +871,18 @@ public class PossibleUIPaletteController : MonoBehaviour
             return;
 
         _worldAnchorApplied = true;
+        _panelLayoutLocked = false;
 
         if (paletteRect.parent != null)
             paletteRect.SetParent(null, true);
 
+        paletteRect.pivot = new Vector2(0.5f, 0.5f);
+        paletteRect.anchorMin = paletteRect.anchorMax = new Vector2(0.5f, 0.5f);
+
         float headY = headAnchor.position.y;
         bool useFallback = headY < minHeadHeightToAnchor || headY > maxHeadHeightToAnchor;
         ApplyHeadPlacement(useFallbackHeight: useFallback);
+        FinalizeAnchoredPaletteLayout();
 
         if (debugLogPalette)
             Debug.Log($"[Palette] Force-anchored at {paletteRect.position} (head Y={headY:F2}, fallback={useFallback}).");
@@ -687,10 +918,21 @@ public class PossibleUIPaletteController : MonoBehaviour
         UpdateHoverHighlight(fingerWorld);
     }
 
+    /// <summary>True when the fingertip is over the clear icon bounds.</summary>
+    public bool IsFingerOverClear(Vector3 fingerWorld)
+    {
+        return IsFingerOverActionTarget(fingerWorld, _clearTarget, _clearTitle);
+    }
+
     /// <summary>True when the fingertip is over the delete icon bounds.</summary>
     public bool IsFingerOverDelete(Vector3 fingerWorld)
     {
-        if (_deleteTarget == null || paletteRect == null)
+        return IsFingerOverActionTarget(fingerWorld, _deleteTarget, _deleteTitle);
+    }
+
+    bool IsFingerOverActionTarget(Vector3 fingerWorld, RectTransform target, RectTransform title)
+    {
+        if (target == null || paletteRect == null)
             return false;
 
         if (SignedDistanceToPalettePlane(fingerWorld) > hoverDistanceMeters)
@@ -699,7 +941,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         Vector2 fingerLocal = FingerLocalOnPalette(fingerWorld);
         float pad = pickPaddingLocal;
 
-        GetBoundsInPaletteLocal(_deleteTarget, out float iconMnX, out float iconMxX, out float iconMnY, out float iconMxY);
+        GetBoundsInPaletteLocal(target, out float iconMnX, out float iconMxX, out float iconMnY, out float iconMxY);
         bool overIcon =
             fingerLocal.x >= iconMnX - pad && fingerLocal.x <= iconMxX + pad &&
             fingerLocal.y >= iconMnY - pad && fingerLocal.y <= iconMxY + pad;
@@ -707,12 +949,40 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (overIcon)
             return true;
 
-        if (_deleteTitle == null)
+        if (title == null)
             return false;
 
-        GetBoundsInPaletteLocal(_deleteTitle, out float titleMnX, out float titleMxX, out float titleMnY, out float titleMxY);
+        GetBoundsInPaletteLocal(title, out float titleMnX, out float titleMxX, out float titleMnY, out float titleMxY);
         return fingerLocal.x >= titleMnX - pad && fingerLocal.x <= titleMxX + pad &&
                fingerLocal.y >= titleMnY - pad && fingerLocal.y <= titleMxY + pad;
+    }
+
+    void UpdateClearHighlight(Vector3 fingerWorld)
+    {
+        if (_clearTarget == null)
+            return;
+
+        bool highlight = IsFingerOverClear(fingerWorld);
+
+        if (_clearOutline == null)
+            _clearOutline = _clearTarget.GetComponent<Outline>();
+
+        if (highlight)
+        {
+            if (_clearOutline == null)
+            {
+                _clearOutline = _clearTarget.gameObject.AddComponent<Outline>();
+                _clearOutline.useGraphicAlpha = true;
+            }
+
+            _clearOutline.effectColor = clearHoverHighlightColor;
+            _clearOutline.effectDistance = hoverOutlineDistance;
+            _clearOutline.enabled = true;
+        }
+        else if (_clearOutline != null)
+        {
+            _clearOutline.enabled = false;
+        }
     }
 
     void UpdateHoverHighlight(Vector3 fingerWorld)
@@ -833,6 +1103,7 @@ public class PossibleUIPaletteController : MonoBehaviour
         return childRt != null
             && childRt.gameObject.activeInHierarchy
             && childRt.GetComponent<PaletteDeleteTarget>() == null
+            && childRt.GetComponent<PaletteClearTarget>() == null
             && childRt.GetComponent<Graphic>() != null;
     }
 
@@ -908,7 +1179,8 @@ public class PossibleUIPaletteController : MonoBehaviour
         if (Placement.IsCarrying)
             return false;
 
-        if (IsFingerOverDelete(indexTipWorld.position))
+        if (IsFingerOverDelete(indexTipWorld.position) ||
+            IsFingerOverClear(indexTipWorld.position))
             return false;
 
         Vector2 fingerLocal = FingerLocalOnPalette(indexTipWorld.position);
@@ -932,6 +1204,11 @@ public class PossibleUIPaletteController : MonoBehaviour
 /// Marks a palette UI element as the delete drop zone.
 /// </summary>
 public class PaletteDeleteTarget : MonoBehaviour { }
+
+/// <summary>
+/// Marks a palette UI element as the clear-all control.
+/// </summary>
+public class PaletteClearTarget : MonoBehaviour { }
 
 /// <summary>
 /// Marks a palette child as a selectable template that can be cloned onto the arm.

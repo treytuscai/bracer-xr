@@ -21,7 +21,7 @@ public class RevisedGridController : MonoBehaviour
 
     [Header("Content Atlas")]
     [Tooltip("Pixels per grid cell in the baked content atlas.")]
-    [Range(32, 256)] public int contentTileResolution = 128;
+    [Min(32)] public int contentTileResolution = 128;
     [Range(0f, 0.4f)] public float cellContentPadding = 0.08f;
 
     [Header("Appearance")]
@@ -222,6 +222,72 @@ public class RevisedGridController : MonoBehaviour
         return _cellStates != null && idx >= 0 && idx < _cellStates.Length && _cellStates[idx].a > 127;
     }
 
+    public void ClearAll()
+    {
+        if (_cellStates == null || _stateTex == null || _contentAtlas == null) return;
+
+        for (int i = 0; i < _cellStates.Length; i++)
+            _cellStates[i] = new Color32(0, 0, 0, 0);
+
+        _stateTex.SetPixels32(_cellStates);
+        _stateTex.Apply(false);
+        ClearAtlasPixels();
+        _contentAtlas.Apply(false);
+        ClearHighlight();
+    }
+
+    /// <summary>
+    /// Builds a temporary UI widget from a baked cell and clears that cell from the atlas.
+    /// </summary>
+    public bool TryCreateWidgetFromCell(int col, int row, out RectTransform widget)
+    {
+        widget = null;
+        if (_contentAtlas == null || !IsCellOccupied(col, row)) return false;
+
+        int tile = contentTileResolution;
+        int srcX = col * tile;
+        int srcY = row * tile;
+
+        var pixels = _contentAtlas.GetPixels(srcX, srcY, tile, tile);
+        bool hasVisiblePixel = false;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            if (pixels[i].a > 0.01f) { hasVisiblePixel = true; break; }
+        }
+        if (!hasVisiblePixel) return false;
+
+        var tex = new Texture2D(tile, tile, TextureFormat.RGBA32, false, true)
+        {
+            name = $"CellContent_{col}_{row}",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        tex.SetPixels(pixels);
+        tex.Apply(false);
+
+        var sprite = Sprite.Create(tex, new Rect(0f, 0f, tile, tile), new Vector2(0.5f, 0.5f), tile);
+
+        var go = new GameObject($"CellContent_{col}_{row}",
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        widget = go.GetComponent<RectTransform>();
+        widget.sizeDelta = new Vector2(100f, 100f);
+
+        var image = go.GetComponent<Image>();
+        image.sprite = sprite;
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+
+        ClearCell(col, row);
+        return true;
+    }
+
+    public bool TryCreateWidgetFromUV(Vector2 uv, out RectTransform widget)
+    {
+        widget = null;
+        UVToCell(uv, out int col, out int row);
+        return TryCreateWidgetFromCell(col, row, out widget);
+    }
+
     /// <summary>
     /// Returns world position and outward-facing normal on the live surface mesh
     /// nearest the given display UV.
@@ -283,8 +349,16 @@ public class RevisedGridController : MonoBehaviour
         ClearTile(col, row);
 
         int tile = contentTileResolution;
-        int inner = Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
-        int offset = (tile - inner) / 2;
+
+        // Cell-extracted sprites are already tile-sized; skip padding inset to avoid
+        // shrinking the image on each pick-up → place cycle.
+        bool alreadyCellSized =
+            sprite.rect.width >= tile - 1f && sprite.rect.height >= tile - 1f;
+
+        int inner = alreadyCellSized
+            ? tile
+            : Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
+        int offset = alreadyCellSized ? 0 : (tile - inner) / 2;
 
         var srcPixels = ReadSpritePixels(sprite, inner, inner);
         int destX = col * tile;

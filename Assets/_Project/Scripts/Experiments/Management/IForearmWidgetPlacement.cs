@@ -13,4 +13,6 @@ public interface IForearmWidgetPlacement
     void TickCarryFollowFinger(Transform indexTipWorld);
     void CommitPlace(Vector3 contactWorldPoint);
     void DestroyCarriedItem();
+    void ClearAll();
+    bool TryBeginCarryFromSurface(Vector2 surfaceUV, Transform indexTipWorld);
 }
