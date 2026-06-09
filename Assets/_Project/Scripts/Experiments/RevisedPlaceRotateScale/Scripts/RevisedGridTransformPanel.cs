@@ -49,13 +49,13 @@ public class RevisedGridTransformPanel : MonoBehaviour
     const int TrackHitYPad = 16;
     const int IndexTipBone = 10;
 
-    // Layout X places tracks/labels; hit X matches inverse-transform finger coords with negative panel scale.
+    // Layout X for tracks, labels, and handles (canvas-local).
     const float ScaleLayoutX = -TrackW * 2f;
     const float RotateLayoutX = TrackW * 2f;
-    const float ScaleHitX = TrackW * 2f;
-    const float RotateHitX = -TrackW * 2f;
 
     RectTransform _root;
+    RectTransform _scaleTrack;
+    RectTransform _rotateTrack;
     RectTransform _scaleHandle;
     RectTransform _rotateHandle;
     bool _panelPlaced;
@@ -166,14 +166,13 @@ public class RevisedGridTransformPanel : MonoBehaviour
             return;
         }
 
-        Vector2 local = FingerLocalOnPanel(tip.position);
         ActiveSlider slider = _capturedSlider;
 
         if (slider == ActiveSlider.None)
         {
-            if (IsInTrackColumn(local, ScaleHitX))
+            if (IsFingerOverTrack(tip, _scaleTrack))
                 slider = ActiveSlider.Scale;
-            else if (IsInTrackColumn(local, RotateHitX))
+            else if (IsFingerOverTrack(tip, _rotateTrack))
                 slider = ActiveSlider.Rotation;
         }
 
@@ -189,42 +188,56 @@ public class RevisedGridTransformPanel : MonoBehaviour
         IsFingerOnPanel = true;
 
         if (slider == ActiveSlider.Scale)
-            SetScaleFromLocalY(local.y);
+            SetScaleFromTrack(tip.position);
         else
-            SetRotationFromLocalY(local.y);
+            SetRotationFromTrack(tip.position);
     }
 
-    void SetScaleFromLocalY(float localY)
+    void SetScaleFromTrack(Vector3 fingerWorld)
     {
-        float t = Mathf.InverseLerp(TrackBottomY(), TrackTopY(), localY);
-        float next = Mathf.Lerp(minScale, maxScale, Mathf.Clamp01(t));
+        float t = Track01FromFinger(_scaleTrack, fingerWorld);
+        float next = Mathf.Lerp(minScale, maxScale, t);
         if (Mathf.Approximately(next, _scaleValue)) return;
         _scaleValue = next;
         RefreshHandles();
         ScaleChanged?.Invoke(_scaleValue);
     }
 
-    void SetRotationFromLocalY(float localY)
+    void SetRotationFromTrack(Vector3 fingerWorld)
     {
-        float t = Mathf.InverseLerp(TrackBottomY(), TrackTopY(), localY);
-        float next = Mathf.Lerp(0f, 360f, Mathf.Clamp01(t));
+        float t = Track01FromFinger(_rotateTrack, fingerWorld);
+        float next = Mathf.Lerp(0f, 360f, t);
         if (Mathf.Approximately(next, _rotationValue)) return;
         _rotationValue = next;
         RefreshHandles();
         RotationChanged?.Invoke(_rotationValue);
     }
 
+    static float Track01FromFinger(RectTransform track, Vector3 fingerWorld)
+    {
+        if (track == null) return 0f;
+        float localY = track.InverseTransformPoint(fingerWorld).y;
+        Rect r = track.rect;
+        return Mathf.Clamp01(Mathf.InverseLerp(r.yMin - TrackHitYPad, r.yMax + TrackHitYPad, localY));
+    }
+
     static float TrackTopY() => PanelH * 0.5f - TopPad;
     static float TrackBottomY() => -PanelH * 0.5f + BottomPad;
 
-    bool IsInTrackColumn(Vector2 fingerLocal, float trackCenterX)
+    /// <summary>
+    /// Hit-tests in each track's local space so negative panel scale cannot swap columns.
+    /// </summary>
+    static bool IsFingerOverTrack(Transform finger, RectTransform track)
     {
-        if (Mathf.Abs(fingerLocal.x - trackCenterX) > TrackHitHalfWidth)
-            return false;
+        if (finger == null || track == null) return false;
 
-        float bottom = TrackBottomY() - TrackHitYPad;
-        float top = TrackTopY() + TrackHitYPad;
-        return fingerLocal.y >= bottom && fingerLocal.y <= top;
+        Vector3 local = track.InverseTransformPoint(finger.position);
+        Rect r = track.rect;
+        r.xMin -= TrackHitHalfWidth;
+        r.xMax += TrackHitHalfWidth;
+        r.yMin -= TrackHitYPad;
+        r.yMax += TrackHitYPad;
+        return r.Contains(new Vector2(local.x, local.y));
     }
 
     Transform IndexTip
@@ -237,12 +250,6 @@ public class RevisedGridTransformPanel : MonoBehaviour
             if (bones == null || bones.Count <= IndexTipBone) return null;
             return bones[IndexTipBone].Transform;
         }
-    }
-
-    Vector2 FingerLocalOnPanel(Vector3 fingerWorld)
-    {
-        Vector3 local = _root.InverseTransformPoint(fingerWorld);
-        return new Vector2(local.x, local.y);
     }
 
     void TryPlacePanel()
@@ -323,8 +330,10 @@ public class RevisedGridTransformPanel : MonoBehaviour
 
         float trackMidY = (TrackBottomY() + TrackTopY()) * 0.5f;
         float trackHeight = TrackTopY() - TrackBottomY();
-        CreateTrack(_root, ScaleLayoutX, trackMidY, trackHeight, out _scaleHandle, new Color(0.35f, 0.85f, 1f, 0.55f));
-        CreateTrack(_root, RotateLayoutX, trackMidY, trackHeight, out _rotateHandle, new Color(1f, 0.75f, 0.25f, 0.55f));
+        CreateTrack(_root, ScaleLayoutX, trackMidY, trackHeight, out _scaleTrack, out _scaleHandle,
+            new Color(0.35f, 0.85f, 1f, 0.55f));
+        CreateTrack(_root, RotateLayoutX, trackMidY, trackHeight, out _rotateTrack, out _rotateHandle,
+            new Color(1f, 0.75f, 0.25f, 0.55f));
     }
 
     static void AddLabel(RectTransform parent, string text, Vector2 pos, int fontSize)
@@ -344,10 +353,10 @@ public class RevisedGridTransformPanel : MonoBehaviour
     }
 
     static void CreateTrack(RectTransform parent, float x, float midY, float trackHeight,
-        out RectTransform handle, Color trackColor)
+        out RectTransform track, out RectTransform handle, Color trackColor)
     {
         var trackGo = new GameObject("Track", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-        var track = trackGo.GetComponent<RectTransform>();
+        track = trackGo.GetComponent<RectTransform>();
         track.SetParent(parent, false);
         track.sizeDelta = new Vector2(TrackW, trackHeight);
         track.anchoredPosition = new Vector2(x, midY);
