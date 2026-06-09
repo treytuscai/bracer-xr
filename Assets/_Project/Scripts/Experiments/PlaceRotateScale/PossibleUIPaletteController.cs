@@ -96,7 +96,7 @@ public class PossibleUIPaletteController : MonoBehaviour
     [Tooltip("Optional — enables the Edit Image column and transform sliders.")]
     public RevisedGridEditController gridEditController;
 
-    public string editLabelText = "Edit Image\n(Resize and rotate)";
+    public string editLabelText = "Resize/Rotate Image";
     public Vector2 editIconSize = new Vector2(56f, 56f);
     public int editTitleFontSize = 13;
     [Min(0f)] public float editColumnSpacing = 4f;

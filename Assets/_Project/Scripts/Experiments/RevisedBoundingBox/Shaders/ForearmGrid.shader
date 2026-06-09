@@ -28,6 +28,8 @@ Shader "Custom/ForearmGrid"
         _HighlightColor ("Highlight Color", Color) = (0.2, 0.9, 0.35, 0.35)
         _EditSelectionCell ("Edit Selection Cell", Vector) = (0, 0, 0, 0)
         _EditTintColor ("Edit Tint Color", Color) = (0.2, 0.95, 0.35, 0.35)
+        _ContentAlphaCutoff ("Content Alpha Cutoff", Range(0, 0.25)) = 0.04
+        _ContentAlphaSoftness ("Content Alpha Softness", Range(0.02, 0.3)) = 0.14
     }
 
     SubShader
@@ -64,7 +66,30 @@ Shader "Custom/ForearmGrid"
                 half4  _HighlightColor;
                 float4 _EditSelectionCell;
                 half4  _EditTintColor;
+                float  _ContentAlphaCutoff;
+                float  _ContentAlphaSoftness;
             CBUFFER_END
+
+            half SoftContentAlpha(half a)
+            {
+                if (a <= _ContentAlphaCutoff)
+                    return 0.0;
+
+                half softness = max(_ContentAlphaSoftness, 0.02);
+                half edge1 = _ContentAlphaCutoff + softness;
+                if (a >= edge1)
+                    return a;
+
+                return a * smoothstep(_ContentAlphaCutoff, edge1, a);
+            }
+
+            // Baked atlas pixels are already feathered; only discard fringe alpha at sample time.
+            half4 ApplyContentAlpha(half4 tex)
+            {
+                if (tex.a <= _ContentAlphaCutoff)
+                    tex.a = 0.0;
+                return tex;
+            }
 
             half GetEditSelectionContentAlpha(float2 grid, float2 meshUV)
             {
@@ -89,7 +114,7 @@ Shader "Custom/ForearmGrid"
 
                 float2 contentUV = (float2(coord) + srcLocal) / grid;
                 half4 content = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
-                return content.a;
+                return (content.a <= _ContentAlphaCutoff) ? 0.0 : content.a;
             }
 
             half4 SampleTransformedCellContent(float2 grid, float2 meshUV, int2 cellCoord)
@@ -110,7 +135,8 @@ Shader "Custom/ForearmGrid"
                 float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
 
                 float2 contentUV = (float2(cellCoord) + srcLocal) / grid;
-                return SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+                return ApplyContentAlpha(
+                    SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV));
             }
 
             half4 CompositeCellContent(float2 grid, float2 meshUV, float2 primaryCell)
@@ -189,7 +215,7 @@ Shader "Custom/ForearmGrid"
                     col.rgb = content.rgb * content.a + _DefaultColor.rgb * (1.0 - content.a);
                     col.a   = max(_DefaultColor.a, content.a);
                 }
-                else if (cellState.a > 0.5)
+                else if (cellState.a > 0.5 && dot(cellState.rgb, cellState.rgb) > 0.0001)
                 {
                     col = cellState;
                 }

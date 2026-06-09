@@ -300,7 +300,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.005
+  touchHoverHeight: 0.008
   touchDepth: 0.04
   maxCellSearchDist: 0.03
   showTouchDebug: 1
@@ -424,10 +424,13 @@ MonoBehaviour:
   keepSquareCells: 1
   contentTileResolution: 512
   cellContentPadding: 0.08
+  contentAlphaCutoff: 0.04
+  contentAlphaSoftness: 0.14
   defaultColor: {r: 1, g: 1, b: 1, a: 0.15}
   lineColor: {r: 1, g: 1, b: 1, a: 0.6}
   lineThickness: 0.02
   highlightColor: {r: 0.2, g: 0.9, b: 0.35, a: 0.35}
+  editTintColor: {r: 0.2, g: 0.95, b: 0.35, a: 0.35}
 --- !u!1001 &113860853
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -645,13 +648,11 @@ MonoBehaviour:
   clearTitleFontSize: 16
   clearColumnSpacing: 4
   gridEditController: {fileID: 0}
-  resizeLabelText: Size
-  rotateLabelText: Rotate
+  editLabelText: Resize/Rotate Image
   editIconSize: {x: 56, y: 56}
   editTitleFontSize: 16
   editColumnSpacing: 4
-  resizeHoverHighlightColor: {r: 0.35, g: 0.75, b: 1, a: 1}
-  rotateHoverHighlightColor: {r: 1, g: 0.85, b: 0.35, a: 1}
+  editHoverHighlightColor: {r: 0.35, g: 0.95, b: 0.45, a: 1}
   followHead: 0
   distanceMeters: 0.55
   heightOffsetMeters: 0

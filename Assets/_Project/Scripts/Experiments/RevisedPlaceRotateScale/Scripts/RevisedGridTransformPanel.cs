@@ -40,7 +40,7 @@ public class RevisedGridTransformPanel : MonoBehaviour
 
     const int PanelW = 160;
     const int PanelH = 300;
-    const int TopPad = 36;
+    const int TopPad = 44;
     const int BottomPad = 20;
     const int TrackW = 22;
     const int HandleW = 44;
@@ -323,10 +323,11 @@ public class RevisedGridTransformPanel : MonoBehaviour
         var bg = rootGo.AddComponent<Image>();
         bg.color = new Color(0.08f, 0.08f, 0.1f, 0.88f);
 
-        float labelY = TrackTopY() + 22f;
-        AddLabel(_root, "Edit Image", new Vector2(0f, PanelH * 0.5f - 16f), 18);
-        AddLabel(_root, "Size", new Vector2(ScaleLayoutX, labelY), 14);
-        AddLabel(_root, "Rotate", new Vector2(RotateLayoutX, labelY), 14);
+        float columnLabelY = TrackTopY() + 12f;
+        float titleY = TrackTopY() + 42f;
+        AddLabel(_root, "Resize/Rotate Image", new Vector2(0f, titleY), 17, 170f);
+        AddLabel(_root, "Size", new Vector2(ScaleLayoutX, columnLabelY), 14);
+        AddLabel(_root, "Rotate", new Vector2(RotateLayoutX, columnLabelY), 14);
 
         float trackMidY = (TrackBottomY() + TrackTopY()) * 0.5f;
         float trackHeight = TrackTopY() - TrackBottomY();
@@ -336,12 +337,12 @@ public class RevisedGridTransformPanel : MonoBehaviour
             new Color(1f, 0.75f, 0.25f, 0.55f));
     }
 
-    static void AddLabel(RectTransform parent, string text, Vector2 pos, int fontSize)
+    static void AddLabel(RectTransform parent, string text, Vector2 pos, int fontSize, float width = 72f)
     {
         var go = new GameObject(text, typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
         var rt = go.GetComponent<RectTransform>();
         rt.SetParent(parent, false);
-        rt.sizeDelta = new Vector2(72f, 24f);
+        rt.sizeDelta = new Vector2(width, 24f);
         rt.anchoredPosition = pos;
         var t = go.GetComponent<Text>();
         t.text = text;

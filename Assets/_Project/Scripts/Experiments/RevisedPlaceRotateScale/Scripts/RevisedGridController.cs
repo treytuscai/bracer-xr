@@ -20,9 +20,14 @@ public class RevisedGridController : MonoBehaviour
     public bool keepSquareCells = true;
 
     [Header("Content Atlas")]
-    [Tooltip("Pixels per grid cell in the baked content atlas.")]
+    [Tooltip("Pixels per grid cell in the baked content atlas. Changing this at runtime rebakes placed images. " +
+             "For maximum sharpness after raising this, pick templates from the palette again.")]
     [Min(32)] public int contentTileResolution = 128;
     [Range(0f, 0.4f)] public float cellContentPadding = 0.08f;
+    [Tooltip("Pixels below this alpha are treated as fully transparent when baking and drawing.")]
+    [Range(0f, 0.25f)] public float contentAlphaCutoff = 0.04f;
+    [Tooltip("Feathers content edges between cutoff and cutoff + this value.")]
+    [Range(0.02f, 0.3f)] public float contentAlphaSoftness = 0.14f;
 
     [Header("Appearance")]
     public Color defaultColor = new Color(1f, 1f, 1f, 0.15f);
@@ -37,6 +42,7 @@ public class RevisedGridController : MonoBehaviour
     int      _effectiveRows;
     int      _builtCols = -1;
     int      _builtRows = -1;
+    int      _builtTileResolution = -1;
 
     struct CellMetadata
     {
@@ -76,6 +82,8 @@ public class RevisedGridController : MonoBehaviour
     static readonly int HighlightColorId    = Shader.PropertyToID("_HighlightColor");
     static readonly int EditSelectionCellId = Shader.PropertyToID("_EditSelectionCell");
     static readonly int EditTintColorId     = Shader.PropertyToID("_EditTintColor");
+    static readonly int ContentAlphaCutoffId = Shader.PropertyToID("_ContentAlphaCutoff");
+    static readonly int ContentAlphaSoftnessId = Shader.PropertyToID("_ContentAlphaSoftness");
 
     static Material _spriteBlitMat;
 
@@ -122,11 +130,24 @@ public class RevisedGridController : MonoBehaviour
     void RebuildGridIfNeeded(bool force = false)
     {
         _effectiveRows = EffectiveRows();
-        if (!force && columns == _builtCols && _effectiveRows == _builtRows) return;
+        contentTileResolution = Mathf.Max(32, contentTileResolution);
+
+        bool gridSizeChanged = force
+            || columns != _builtCols
+            || _effectiveRows != _builtRows;
+        bool tileResChanged = contentTileResolution != _builtTileResolution;
+
+        if (!gridSizeChanged && !tileResChanged)
+            return;
+
+        System.Collections.Generic.Dictionary<int, CellMetadata> savedMeta = null;
+        if (tileResChanged && !gridSizeChanged && _cellMeta.Count > 0)
+            savedMeta = new System.Collections.Generic.Dictionary<int, CellMetadata>(_cellMeta);
 
         columns = Mathf.Max(1, columns);
         _builtCols = columns;
         _builtRows = _effectiveRows;
+        _builtTileResolution = contentTileResolution;
 
         int total = columns * _effectiveRows;
         _cellStates = new Color32[total];
@@ -170,8 +191,34 @@ public class RevisedGridController : MonoBehaviour
             _mat.SetFloat(MaxContentScaleId, MaxContentScale);
         }
 
-        _cellMeta.Clear();
-        ClearSelection();
+        if (savedMeta != null)
+        {
+            _cellMeta.Clear();
+            foreach (var kv in savedMeta)
+                _cellMeta[kv.Key] = kv.Value;
+            RebakeAllOccupiedCells();
+        }
+        else
+        {
+            _cellMeta.Clear();
+            ClearSelection();
+        }
+    }
+
+    void RebakeAllOccupiedCells()
+    {
+        var indices = new System.Collections.Generic.List<int>(_cellMeta.Keys);
+        foreach (int idx in indices)
+        {
+            if (!_cellMeta.TryGetValue(idx, out CellMetadata meta) || meta.SourcePixels == null)
+                continue;
+
+            int col = idx % columns;
+            int row = idx / columns;
+            RebakeCell(col, row);
+            PushCellTransform(col, row);
+            MarkCellOccupied(col, row);
+        }
     }
 
     int EffectiveRows()
@@ -195,6 +242,8 @@ public class RevisedGridController : MonoBehaviour
         _mat.SetFloat(LineThicknessId, lineThickness);
         _mat.SetColor(HighlightColorId, highlightColor);
         _mat.SetColor(EditTintColorId, editTintColor);
+        _mat.SetFloat(ContentAlphaCutoffId, contentAlphaCutoff);
+        _mat.SetFloat(ContentAlphaSoftnessId, Mathf.Max(contentAlphaSoftness, 0.02f));
     }
 
     public void UVToCell(Vector2 uv, out int col, out int row)
@@ -322,6 +371,7 @@ public class RevisedGridController : MonoBehaviour
 
     void StoreAndBake(int col, int row, Color[] pixels, int size, Color tint, float scale, float rotationDegrees)
     {
+        pixels = HardenPixelArray(pixels);
         int idx = CellToIndex(col, row);
         _cellMeta[idx] = new CellMetadata
         {
@@ -362,7 +412,7 @@ public class RevisedGridController : MonoBehaviour
     void MarkCellOccupied(int col, int row)
     {
         int idx = CellToIndex(col, row);
-        _cellStates[idx] = new Color32(255, 255, 255, 255);
+        _cellStates[idx] = new Color32(0, 0, 0, 255);
         _stateTex.SetPixel(col, row, _cellStates[idx]);
         _stateTex.Apply(false);
     }
@@ -386,12 +436,43 @@ public class RevisedGridController : MonoBehaviour
             {
                 float u = (x + 0.5f) / tile;
                 float v = (y + 0.5f) / tile;
-                dest[y * tile + x] = SampleSourceBilinear(meta.SourcePixels, src, src, u, v) * meta.Tint;
+                dest[y * tile + x] = HardenContentPixel(
+                    SampleSourceBilinear(meta.SourcePixels, src, src, u, v) * meta.Tint);
             }
         }
 
         _contentAtlas.SetPixels(destX, destY, tile, tile, dest);
         _contentAtlas.Apply(false);
+    }
+
+    Color HardenContentPixel(Color c)
+    {
+        c.a = SoftContentAlpha(c.a);
+        if (c.a <= 0f)
+            return Color.clear;
+        return c;
+    }
+
+    float SoftContentAlpha(float a)
+    {
+        if (a <= contentAlphaCutoff)
+            return 0f;
+
+        float softness = Mathf.Max(contentAlphaSoftness, 0.02f);
+        float edge1 = contentAlphaCutoff + softness;
+        if (a >= edge1)
+            return a;
+
+        float t = Mathf.SmoothStep(contentAlphaCutoff, edge1, a);
+        return a * t;
+    }
+
+    Color[] HardenPixelArray(Color[] pixels)
+    {
+        if (pixels == null) return pixels;
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] = HardenContentPixel(pixels[i]);
+        return pixels;
     }
 
     static Color SampleSourceBilinear(Color[] pixels, int w, int h, float u, float v)

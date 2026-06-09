@@ -65,6 +65,8 @@ public class RevisedBoundingBoxController : MonoBehaviour
     static readonly int LineThicknessId  = Shader.PropertyToID("_LineThickness");
     static readonly int EditSelectionCellId = Shader.PropertyToID("_EditSelectionCell");
     static readonly int EditTintColorId     = Shader.PropertyToID("_EditTintColor");
+    static readonly int ContentAlphaCutoffId = Shader.PropertyToID("_ContentAlphaCutoff");
+    static readonly int ContentAlphaSoftnessId = Shader.PropertyToID("_ContentAlphaSoftness");
 
     // ── Unity lifecycle ───────────────────────────────────────────────────────
 
@@ -116,6 +118,8 @@ public class RevisedBoundingBoxController : MonoBehaviour
         _mat.SetFloat(MaxContentScaleId, 4f);
         _mat.SetVector(EditSelectionCellId, new Vector4(-1f, -1f, 0f, 0f));
         _mat.SetColor(EditTintColorId, new Color(0.2f, 0.95f, 0.35f, 0.35f));
+        _mat.SetFloat(ContentAlphaCutoffId, 0.04f);
+        _mat.SetFloat(ContentAlphaSoftnessId, 0.14f);
 
         MeshRenderer mr = surface.GetComponent<MeshRenderer>()
                        ?? surface.GetComponentInChildren<MeshRenderer>();
