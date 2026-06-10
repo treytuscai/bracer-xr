@@ -8,7 +8,7 @@ using UnityEngine.UI;
 /// When the participant picks a new template from the palette, previously placed arm content is cleared.
 /// Attach only to the 1e scene; does not modify RevisedPlaceRotateScale or 1D scripts.
 /// </summary>
-[DefaultExecutionOrder(125)]
+[DefaultExecutionOrder(118)]
 public class OneEContentDependentPaletteController : MonoBehaviour
 {
     [Header("References")]
@@ -53,8 +53,14 @@ public class OneEContentDependentPaletteController : MonoBehaviour
             return;
 
         bool carrying = _placement.IsCarrying;
-        if (carrying && !_wasCarrying && TryGetCarriedWidget(out RectTransform carried) && IsPaletteCarry(carried))
+        if (carrying && !_wasCarrying &&
+            TryGetCarriedWidget(out RectTransform carried) &&
+            IsPaletteCarry(carried))
+        {
             ClearMeshOnly();
+            // ClearAll() also clears the carry preview; rebuild it for the new widget.
+            grid?.TryCacheCarryPreviewSource(carried, out _, out _);
+        }
 
         _wasCarrying = carrying;
     }
