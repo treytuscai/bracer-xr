@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Trey Tuscai
+
 // HandMaskRender.shader
 // Renders the hand mesh as a solid white silhouette into a grayscale RenderTexture.
 // Used by DepthReadback to build a depth-frame space hand mask each frame before the

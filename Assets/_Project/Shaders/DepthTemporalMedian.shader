@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Trey Tuscai
+
 // DepthTemporalMedian.shader
 // Two-pass depth stabilization that removes the forearm-boundary flicker (see DepthReadback).
 //
