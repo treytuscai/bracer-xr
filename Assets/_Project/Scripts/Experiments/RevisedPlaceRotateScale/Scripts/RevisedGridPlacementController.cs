@@ -38,6 +38,15 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
     public Vector3 carryAttachOffsetTipLocal = Vector3.zero;
     public bool stickWidgetOriginToFingertip = true;
 
+    [Header("Placement Preview")]
+    [Tooltip("Shows a ghost of the carried image on the arm when the fingertip is near the surface.")]
+    public bool showPlacementPreview = true;
+    [Tooltip("Hide the image on the fingertip while the arm ghost preview is visible.")]
+    public bool hideFingerCarryWhenPreviewShown = true;
+    [Tooltip("Uses ForearmInteraction.maxHoverPreviewDistance when > 0, otherwise this value (meters).")]
+    [Min(0f)] public float placementPreviewMaxDistanceMeters = 0.1f;
+    [Range(0.05f, 1f)] public float placementPreviewAlpha = 0.45f;
+
     RectTransform _draggedItem;
     Transform     _carrySavedParent;
     Vector3       _carrySavedLocalScale;
@@ -48,6 +57,7 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
     Vector3 _tipFilteredPos;
     Quaternion _tipFilteredRot;
     Vector3 _tipPosSmoothVel;
+    Transform _activeIndexTip;
 
     public bool IsCarrying => _draggedItem != null;
 
@@ -67,10 +77,69 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
     void LateUpdate()
     {
-        if (IsCarrying && interaction != null && interaction.IsActive)
-            grid?.SetHighlightFromUV(interaction.TouchUV, true);
-        else if (!IsCarrying)
+        if (IsCarrying)
+        {
+            UpdatePlacementPreview();
+
+            if (interaction != null && interaction.IsActive)
+                grid?.SetHighlightFromUV(interaction.TouchUV, true);
+            else if (grid != null && _activeIndexTip != null &&
+                     interaction != null &&
+                     interaction.TryGetNearestSurfaceFromPoint(
+                         _activeIndexTip.position,
+                         ResolvePreviewMaxDistance(),
+                         out Vector2 hoverUv,
+                         out _))
+            {
+                grid.SetHighlightFromUV(hoverUv, true);
+            }
+        }
+        else
+        {
+            grid?.ClearCarryPreviewSource();
             grid?.ClearHighlight();
+        }
+    }
+
+    float ResolvePreviewMaxDistance()
+    {
+        if (interaction != null && interaction.maxHoverPreviewDistance > 0f)
+            return interaction.maxHoverPreviewDistance;
+        return placementPreviewMaxDistanceMeters;
+    }
+
+    void UpdatePlacementPreview()
+    {
+        bool ghostVisible = false;
+
+        if (showPlacementPreview && grid != null && interaction != null && _activeIndexTip != null &&
+            interaction.TryGetNearestSurfaceFromPoint(
+                _activeIndexTip.position,
+                ResolvePreviewMaxDistance(),
+                out Vector2 uv,
+                out _))
+        {
+            grid.UVToCell(uv, out int col, out int row);
+            grid.ShowPlacementPreviewAtCell(col, row, placementPreviewAlpha);
+            ghostVisible = true;
+        }
+        else
+        {
+            grid?.ClearPlacementPreview();
+        }
+
+        if (hideFingerCarryWhenPreviewShown && showPlacementPreview)
+            SetCarriedWidgetVisible(!ghostVisible);
+        else
+            SetCarriedWidgetVisible(true);
+    }
+
+    void SetCarriedWidgetVisible(bool visible)
+    {
+        if (_draggedItem == null || _draggedItem.gameObject.activeSelf == visible)
+            return;
+
+        _draggedItem.gameObject.SetActive(visible);
     }
 
     public bool BeginCarryExternal(RectTransform widget, Transform indexTipWorld, bool destroyOnAbort = true)
@@ -105,6 +174,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         _tipPosSmoothVel = Vector3.zero;
 
         TickCarryFollowFinger(indexTipWorld);
+        SetCarriedWidgetVisible(true);
+        grid?.TryCacheCarryPreviewSource(_draggedItem, out _, out _);
         grid?.ClearHighlight();
         return true;
     }
@@ -112,6 +183,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
     public void TickCarryFollowFinger(Transform indexTipWorld)
     {
         if (_draggedItem == null || indexTipWorld == null) return;
+
+        _activeIndexTip = indexTipWorld;
 
         float dt = Time.deltaTime;
         if (fingerCarrySmoothTime <= Mathf.Epsilon)
@@ -163,6 +236,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
         Destroy(_draggedItem.gameObject);
         _draggedItem = null;
+        _activeIndexTip = null;
+        grid?.ClearCarryPreviewSource();
         grid.ClearHighlight();
     }
 
@@ -172,6 +247,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
         Destroy(_draggedItem.gameObject);
         _draggedItem = null;
+        _activeIndexTip = null;
+        grid?.ClearCarryPreviewSource();
         grid?.ClearHighlight();
     }
 
@@ -189,8 +266,8 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         if (IsCarrying || grid == null || indexTipWorld == null) return false;
         if (surfaceUV.x < 0f || surfaceUV.x > 1f || surfaceUV.y < 0f || surfaceUV.y > 1f) return false;
 
-        grid.UVToCell(surfaceUV, out int col, out int row);
-        if (!grid.IsCellOccupied(col, row)) return false;
+        if (!grid.TryFindOccupiedCellAtUV(surfaceUV, out int col, out int row))
+            return false;
         if (!grid.TryCreateWidgetFromCell(col, row, out RectTransform widget)) return false;
 
         return BeginCarryExternal(widget, indexTipWorld, destroyOnAbort: true);

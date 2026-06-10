@@ -20,9 +20,11 @@ public class RevisedGridController : MonoBehaviour
     public bool keepSquareCells = true;
 
     [Header("Content Atlas")]
-    [Tooltip("Pixels per grid cell in the baked content atlas. Changing this at runtime rebakes placed images. " +
-             "For maximum sharpness after raising this, pick templates from the palette again.")]
+    [Tooltip("Base pixels per grid cell when baking. Actual bake size = this × placement scale (capped by Max Bake Tile Resolution). " +
+             "Only occupied cells allocate atlas space. Changing this at runtime rebakes placed images.")]
     [Min(32)] public int contentTileResolution = 128;
+    [Tooltip("Upper cap on baked tile width/height (base resolution × scale).")]
+    [Min(64)] public int maxBakeTileResolution = 1024;
     [Range(0f, 0.4f)] public float cellContentPadding = 0.08f;
     [Tooltip("Pixels below this alpha are treated as fully transparent when baking and drawing.")]
     [Range(0f, 0.25f)] public float contentAlphaCutoff = 0.04f;
@@ -58,6 +60,10 @@ public class RevisedGridController : MonoBehaviour
         public Color     Tint;
         public float     Scale;
         public float     RotationDegrees;
+        public int       AtlasX;
+        public int       AtlasY;
+        public int       BakeWidth;
+        public int       BakeHeight;
     }
 
     readonly System.Collections.Generic.Dictionary<int, CellMetadata> _cellMeta =
@@ -71,13 +77,20 @@ public class RevisedGridController : MonoBehaviour
     Texture2D _stateTex;
     Texture2D _contentAtlas;
     Texture2D _transformTex;
+    Texture2D _atlasRectTex;
     Color32[] _cellStates;
     Color32[] _cellTransforms;
+
+    const int MaxSparseAtlasSize = 4096;
+    int _atlasPackX;
+    int _atlasPackY;
+    int _atlasPackRowHeight;
 
     static readonly int GridColumnsId       = Shader.PropertyToID("_GridColumns");
     static readonly int GridRowsId          = Shader.PropertyToID("_GridRows");
     static readonly int StateTexId          = Shader.PropertyToID("_StateTex");
     static readonly int ContentAtlasId      = Shader.PropertyToID("_ContentAtlas");
+    static readonly int AtlasRectTexId      = Shader.PropertyToID("_AtlasRectTex");
     static readonly int TransformTexId      = Shader.PropertyToID("_TransformTex");
     static readonly int MaxContentScaleId   = Shader.PropertyToID("_MaxContentScale");
     static readonly int DefaultColorId   = Shader.PropertyToID("_DefaultColor");
@@ -89,8 +102,17 @@ public class RevisedGridController : MonoBehaviour
     static readonly int EditTintColorId     = Shader.PropertyToID("_EditTintColor");
     static readonly int ContentAlphaCutoffId = Shader.PropertyToID("_ContentAlphaCutoff");
     static readonly int ContentAlphaSoftnessId = Shader.PropertyToID("_ContentAlphaSoftness");
+    static readonly int PreviewCellId = Shader.PropertyToID("_PreviewCell");
+    static readonly int PreviewTransformId = Shader.PropertyToID("_PreviewTransform");
+    static readonly int PreviewAlphaId = Shader.PropertyToID("_PreviewAlpha");
+    static readonly int PreviewAtlasId = Shader.PropertyToID("_PreviewAtlas");
 
     static Material _spriteBlitMat;
+
+    Texture2D _previewTile;
+    bool _previewSourceReady;
+    float _previewScale = 1f;
+    float _previewRotation;
 
     public int Columns => columns;
     public int Rows    => _effectiveRows;
@@ -123,6 +145,7 @@ public class RevisedGridController : MonoBehaviour
         PushMaterialParams();
         ClearHighlight();
         ClearEditSelection();
+        ClearPlacementPreview();
     }
 
     void LateUpdate()
@@ -177,23 +200,25 @@ public class RevisedGridController : MonoBehaviour
         _transformTex.SetPixels32(_cellTransforms);
         _transformTex.Apply(false);
 
-        int atlasW = columns * contentTileResolution;
-        int atlasH = _effectiveRows * contentTileResolution;
-        _contentAtlas = new Texture2D(atlasW, atlasH, TextureFormat.RGBA32, false, true)
+        _atlasRectTex = new Texture2D(columns, _effectiveRows, TextureFormat.RGBA32, false, true)
         {
-            name       = "RevisedGridContentAtlas",
-            filterMode = FilterMode.Bilinear,
+            name       = "RevisedGridAtlasRect",
+            filterMode = FilterMode.Point,
             wrapMode   = TextureWrapMode.Clamp
         };
-        ClearAtlasPixels();
-        _contentAtlas.Apply(false);
+        ClearAtlasRectPixels();
+        _atlasRectTex.Apply(false);
+
+        InitializeSparseAtlas();
 
         if (_mat != null)
         {
             _mat.SetTexture(StateTexId, _stateTex);
             _mat.SetTexture(ContentAtlasId, _contentAtlas);
+            _mat.SetTexture(AtlasRectTexId, _atlasRectTex);
             _mat.SetTexture(TransformTexId, _transformTex);
             _mat.SetFloat(MaxContentScaleId, maxContentScale);
+            EnsurePreviewTile(ComputeBakeTileSize(defaultPlacedScale));
         }
 
         if (savedMeta != null)
@@ -208,6 +233,186 @@ public class RevisedGridController : MonoBehaviour
             _cellMeta.Clear();
             ClearSelection();
         }
+    }
+
+    void InitializeSparseAtlas()
+    {
+        ResetAtlasPacker();
+        if (_contentAtlas != null)
+            Destroy(_contentAtlas);
+
+        int initial = Mathf.Clamp(contentTileResolution * 2, 256, 512);
+        _contentAtlas = new Texture2D(initial, initial, TextureFormat.RGBA32, false, true)
+        {
+            name       = "RevisedGridContentAtlas",
+            filterMode = FilterMode.Bilinear,
+            wrapMode   = TextureWrapMode.Clamp
+        };
+        ClearAtlasPixels();
+        _contentAtlas.Apply(false);
+    }
+
+    void ResetAtlasPacker()
+    {
+        _atlasPackX = 0;
+        _atlasPackY = 0;
+        _atlasPackRowHeight = 0;
+    }
+
+    int ComputeBakeTileSize(float scale)
+    {
+        scale = Mathf.Max(0.25f, scale);
+        maxBakeTileResolution = Mathf.Max(64, maxBakeTileResolution);
+        return Mathf.Clamp(
+            Mathf.RoundToInt(contentTileResolution * scale),
+            32,
+            maxBakeTileResolution);
+    }
+
+    bool AllocateAtlasSlot(int width, int height, out int destX, out int destY)
+    {
+        destX = 0;
+        destY = 0;
+        width = Mathf.Clamp(width, 32, maxBakeTileResolution);
+        height = Mathf.Clamp(height, 32, maxBakeTileResolution);
+
+        if (_contentAtlas == null)
+            return false;
+
+        if (_atlasPackX + width > _contentAtlas.width)
+        {
+            _atlasPackX = 0;
+            _atlasPackY += _atlasPackRowHeight;
+            _atlasPackRowHeight = 0;
+        }
+
+        if (_atlasPackY + height > _contentAtlas.height)
+        {
+            int newW = Mathf.Max(_contentAtlas.width, width);
+            int newH = Mathf.Max(_contentAtlas.height + height, _contentAtlas.height * 2);
+            if (newW > MaxSparseAtlasSize || newH > MaxSparseAtlasSize)
+            {
+                Debug.LogWarning("[RevisedGrid] Sparse content atlas exceeded max size.");
+                return false;
+            }
+            GrowSparseAtlas(newW, newH);
+        }
+
+        destX = _atlasPackX;
+        destY = _atlasPackY;
+        _atlasPackX += width;
+        _atlasPackRowHeight = Mathf.Max(_atlasPackRowHeight, height);
+        return true;
+    }
+
+    void GrowSparseAtlas(int newWidth, int newHeight)
+    {
+        newWidth = Mathf.Min(newWidth, MaxSparseAtlasSize);
+        newHeight = Mathf.Min(newHeight, MaxSparseAtlasSize);
+
+        var oldAtlas = _contentAtlas;
+        int oldW = oldAtlas != null ? oldAtlas.width : 0;
+        int oldH = oldAtlas != null ? oldAtlas.height : 0;
+
+        _contentAtlas = new Texture2D(newWidth, newHeight, TextureFormat.RGBA32, false, true)
+        {
+            name       = "RevisedGridContentAtlas",
+            filterMode = FilterMode.Bilinear,
+            wrapMode   = TextureWrapMode.Clamp
+        };
+        ClearAtlasPixels();
+
+        if (oldAtlas != null && oldW > 0 && oldH > 0)
+        {
+            var copied = oldAtlas.GetPixels(0, 0, oldW, oldH);
+            _contentAtlas.SetPixels(0, 0, oldW, oldH, copied);
+            Destroy(oldAtlas);
+        }
+
+        _contentAtlas.Apply(false);
+        if (_mat != null)
+            _mat.SetTexture(ContentAtlasId, _contentAtlas);
+
+        PushAllAtlasRects();
+    }
+
+    void PushAtlasRect(int col, int row)
+    {
+        if (_atlasRectTex == null) return;
+
+        int idx = CellToIndex(col, row);
+        Color rect = Color.clear;
+        if (_cellMeta.TryGetValue(idx, out CellMetadata meta) && meta.BakeWidth > 0 && meta.BakeHeight > 0)
+        {
+            float aw = _contentAtlas.width;
+            float ah = _contentAtlas.height;
+            rect = new Color(
+                meta.AtlasX / aw,
+                meta.AtlasY / ah,
+                meta.BakeWidth / aw,
+                meta.BakeHeight / ah);
+        }
+
+        _atlasRectTex.SetPixel(col, row, rect);
+        _atlasRectTex.Apply(false);
+    }
+
+    void PushAllAtlasRects()
+    {
+        if (_atlasRectTex == null || _contentAtlas == null) return;
+
+        for (int row = 0; row < _effectiveRows; row++)
+        {
+            for (int col = 0; col < columns; col++)
+            {
+                int idx = CellToIndex(col, row);
+                Color rect = Color.clear;
+                if (_cellMeta.TryGetValue(idx, out CellMetadata meta) && meta.BakeWidth > 0 && meta.BakeHeight > 0)
+                {
+                    float aw = _contentAtlas.width;
+                    float ah = _contentAtlas.height;
+                    rect = new Color(
+                        meta.AtlasX / aw,
+                        meta.AtlasY / ah,
+                        meta.BakeWidth / aw,
+                        meta.BakeHeight / ah);
+                }
+                _atlasRectTex.SetPixel(col, row, rect);
+            }
+        }
+
+        _atlasRectTex.Apply(false);
+    }
+
+    void ClearAtlasRectPixels()
+    {
+        if (_atlasRectTex == null) return;
+        var clear = new Color32(0, 0, 0, 0);
+        var pixels = new Color32[_atlasRectTex.width * _atlasRectTex.height];
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] = clear;
+        _atlasRectTex.SetPixels32(pixels);
+    }
+
+    bool TryGetCellAtlasPlacement(int col, int row, out int atlasX, out int atlasY, out int bakeSize)
+    {
+        atlasX = 0;
+        atlasY = 0;
+        bakeSize = contentTileResolution;
+        int idx = CellToIndex(col, row);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta))
+            return false;
+
+        if (meta.BakeWidth > 0)
+        {
+            atlasX = meta.AtlasX;
+            atlasY = meta.AtlasY;
+            bakeSize = meta.BakeWidth;
+            return true;
+        }
+
+        bakeSize = ComputeBakeTileSize(meta.Scale);
+        return false;
     }
 
     void RebakeAllOccupiedCells()
@@ -283,6 +488,184 @@ public class RevisedGridController : MonoBehaviour
 
     public void ClearHighlight() => SetHighlightCell(-1, -1, false);
 
+    void EnsurePreviewTile(int requiredSize)
+    {
+        requiredSize = Mathf.Clamp(requiredSize, 32, maxBakeTileResolution);
+        contentTileResolution = Mathf.Max(32, contentTileResolution);
+        if (_previewTile != null && _previewTile.width == requiredSize)
+        {
+            if (_mat != null)
+                _mat.SetTexture(PreviewAtlasId, _previewTile);
+            return;
+        }
+
+        if (_previewTile != null)
+            Destroy(_previewTile);
+
+        _previewTile = new Texture2D(requiredSize, requiredSize, TextureFormat.RGBA32, false, true)
+        {
+            name = "RevisedGridPreviewTile",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        ClearPreviewTilePixels();
+        _previewTile.Apply(false);
+        _previewSourceReady = false;
+
+        if (_mat != null)
+        {
+            _mat.SetTexture(PreviewAtlasId, _previewTile);
+            ClearPlacementPreview();
+        }
+    }
+
+    void ClearPreviewTilePixels()
+    {
+        if (_previewTile == null) return;
+        var clear = new Color32(0, 0, 0, 0);
+        var pixels = new Color32[_previewTile.width * _previewTile.height];
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] = clear;
+        _previewTile.SetPixels32(pixels);
+    }
+
+    /// <summary>Caches pixel data from a carried widget for ghost preview rendering.</summary>
+    public bool TryCacheCarryPreviewSource(RectTransform widget, out float scale, out float rotationDegrees)
+    {
+        scale = defaultPlacedScale;
+        rotationDegrees = 0f;
+        ClearCarryPreviewSource();
+        if (widget == null)
+            return false;
+
+        var source = widget.GetComponent<RevisedGridCellSource>();
+        Color[] pixels;
+        int width;
+        int height;
+        Color tint = Color.white;
+
+        if (source != null && source.sourcePixels != null && source.SourcePixelWidth > 0 && source.SourcePixelHeight > 0)
+        {
+            pixels = source.sourcePixels;
+            width = source.SourcePixelWidth;
+            height = source.SourcePixelHeight;
+            tint = source.tint;
+            scale = source.scale;
+            rotationDegrees = source.rotationDegrees;
+        }
+        else if (!TryExtractWidgetPixels(widget, out pixels, out width, out height, out tint))
+        {
+            return false;
+        }
+
+        RebakePreviewTile(pixels, width, height, tint);
+        _previewScale = scale;
+        _previewRotation = rotationDegrees;
+        _previewSourceReady = true;
+        PushPreviewTransform();
+        return true;
+    }
+
+    public void ShowPlacementPreviewAtCell(int col, int row, float alpha)
+    {
+        if (_mat == null || !_previewSourceReady)
+        {
+            ClearPlacementPreview();
+            return;
+        }
+
+        _mat.SetVector(PreviewCellId, new Vector4(col, row, 1f, 0f));
+        _mat.SetFloat(PreviewAlphaId, Mathf.Clamp01(alpha));
+        PushPreviewTransform();
+    }
+
+    public void ClearPlacementPreview()
+    {
+        if (_mat != null)
+            _mat.SetVector(PreviewCellId, new Vector4(-1f, -1f, 0f, 0f));
+    }
+
+    public void ClearCarryPreviewSource()
+    {
+        _previewSourceReady = false;
+        ClearPlacementPreview();
+    }
+
+    void PushPreviewTransform()
+    {
+        if (_mat == null) return;
+        float rot = Mathf.Repeat(_previewRotation, 360f);
+        _mat.SetVector(PreviewTransformId, new Vector4(
+            Mathf.Clamp(_previewScale / maxContentScale, 0f, 1f),
+            rot / 360f,
+            0f,
+            0f));
+    }
+
+    bool TryExtractWidgetPixels(RectTransform widget, out Color[] pixels, out int width, out int height, out Color tint)
+    {
+        pixels = null;
+        width = 0;
+        height = 0;
+        tint = Color.white;
+
+        if (!TryGetWidgetVisual(widget, out Sprite sprite, out Texture texture, out tint))
+            return false;
+
+        int tile = contentTileResolution;
+        int inner = Mathf.Max(1, Mathf.RoundToInt(tile * (1f - 2f * cellContentPadding)));
+        int srcW = sprite != null ? (int)sprite.rect.width : texture.width;
+        int srcH = sprite != null ? (int)sprite.rect.height : texture.height;
+        ComputeAspectFitPixelDimensions(srcW, srcH, inner, out width, out height);
+        pixels = sprite != null
+            ? ReadSpritePixels(sprite, width, height)
+            : ReadTexturePixels(texture, width, height);
+        return pixels != null && width > 0 && height > 0;
+    }
+
+    void RebakePreviewTile(Color[] pixels, int width, int height, Color tint)
+    {
+        int tile = ComputeBakeTileSize(_previewScale);
+        EnsurePreviewTile(tile);
+        if (_previewTile == null) return;
+        var dest = ComposeTilePixels(pixels, width, height, tint, tile);
+        _previewTile.SetPixels(dest);
+        _previewTile.Apply(false);
+    }
+
+    static Color[] ComposeTilePixels(Color[] sourcePixels, int srcW, int srcH, Color tint, int tile)
+    {
+        srcW = Mathf.Max(1, srcW);
+        srcH = Mathf.Max(1, srcH);
+        var dest = new Color[tile * tile];
+
+        float fit = Mathf.Min((float)tile / srcW, (float)tile / srcH);
+        int drawnW = Mathf.Max(1, Mathf.RoundToInt(srcW * fit));
+        int drawnH = Mathf.Max(1, Mathf.RoundToInt(srcH * fit));
+        int offsetX = (tile - drawnW) / 2;
+        int offsetY = (tile - drawnH) / 2;
+
+        for (int y = 0; y < tile; y++)
+        {
+            for (int x = 0; x < tile; x++)
+            {
+                int localX = x - offsetX;
+                int localY = y - offsetY;
+                if (localX < 0 || localY < 0 || localX >= drawnW || localY >= drawnH)
+                {
+                    dest[y * tile + x] = Color.clear;
+                    continue;
+                }
+
+                float u = (localX + 0.5f) / drawnW;
+                float v = (localY + 0.5f) / drawnH;
+                dest[y * tile + x] = SampleSourceBilinear(sourcePixels, srcW, srcH, u, v) * tint;
+            }
+        }
+
+        return dest;
+    }
+
     public void SetEditSelectionCell(int col, int row, bool active)
     {
         if (_mat == null) return;
@@ -328,6 +711,7 @@ public class RevisedGridController : MonoBehaviour
         if (!_cellMeta.TryGetValue(idx, out CellMetadata meta)) return;
         meta.Scale = Mathf.Clamp(scale, 0.25f, maxContentScale);
         _cellMeta[idx] = meta;
+        RebakeCell(_selectedCol, _selectedRow);
         PushCellTransform(_selectedCol, _selectedRow);
     }
 
@@ -432,42 +816,25 @@ public class RevisedGridController : MonoBehaviour
         int idx = CellToIndex(col, row);
         if (!_cellMeta.TryGetValue(idx, out CellMetadata meta) || meta.SourcePixels == null) return;
 
-        ClearTile(col, row);
+        int tile = ComputeBakeTileSize(meta.Scale);
+        if (!AllocateAtlasSlot(tile, tile, out int destX, out int destY))
+            return;
 
-        int tile = contentTileResolution;
-        int destX = col * tile;
-        int destY = row * tile;
+        meta.AtlasX = destX;
+        meta.AtlasY = destY;
+        meta.BakeWidth = tile;
+        meta.BakeHeight = tile;
+        _cellMeta[idx] = meta;
+
         int srcW = Mathf.Max(1, meta.SourceWidth);
         int srcH = Mathf.Max(1, meta.SourceHeight);
-        var dest = new Color[tile * tile];
-
-        float fit = Mathf.Min((float)tile / srcW, (float)tile / srcH);
-        int drawnW = Mathf.Max(1, Mathf.RoundToInt(srcW * fit));
-        int drawnH = Mathf.Max(1, Mathf.RoundToInt(srcH * fit));
-        int offsetX = (tile - drawnW) / 2;
-        int offsetY = (tile - drawnH) / 2;
-
-        for (int y = 0; y < tile; y++)
-        {
-            for (int x = 0; x < tile; x++)
-            {
-                int localX = x - offsetX;
-                int localY = y - offsetY;
-                if (localX < 0 || localY < 0 || localX >= drawnW || localY >= drawnH)
-                {
-                    dest[y * tile + x] = Color.clear;
-                    continue;
-                }
-
-                float u = (localX + 0.5f) / drawnW;
-                float v = (localY + 0.5f) / drawnH;
-                dest[y * tile + x] = HardenContentPixel(
-                    SampleSourceBilinear(meta.SourcePixels, srcW, srcH, u, v) * meta.Tint);
-            }
-        }
+        var dest = ComposeTilePixels(meta.SourcePixels, srcW, srcH, meta.Tint, tile);
+        for (int i = 0; i < dest.Length; i++)
+            dest[i] = HardenContentPixel(dest[i]);
 
         _contentAtlas.SetPixels(destX, destY, tile, tile, dest);
         _contentAtlas.Apply(false);
+        PushAtlasRect(col, row);
     }
 
     Color HardenContentPixel(Color c)
@@ -526,8 +893,6 @@ public class RevisedGridController : MonoBehaviour
     {
         if (_stateTex == null || _contentAtlas == null) return;
 
-        ClearTile(col, row);
-
         int idx = CellToIndex(col, row);
         _cellStates[idx] = new Color32(0, 0, 0, 0);
         _stateTex.SetPixel(col, row, _cellStates[idx]);
@@ -539,6 +904,7 @@ public class RevisedGridController : MonoBehaviour
             _transformTex.Apply(false);
         }
         _cellMeta.Remove(idx);
+        PushAtlasRect(col, row);
 
         if (_selectedCol == col && _selectedRow == row)
             ClearSelection();
@@ -548,6 +914,133 @@ public class RevisedGridController : MonoBehaviour
     {
         int idx = CellToIndex(col, row);
         return _cellStates != null && idx >= 0 && idx < _cellStates.Length && _cellStates[idx].a > 127;
+    }
+
+    /// <summary>
+    /// Finds the anchor cell whose baked (scale/rotated) content covers the mesh UV,
+    /// including pixels drawn into neighboring cells.
+    /// </summary>
+    public bool TryFindOccupiedCellAtUV(Vector2 uv, out int col, out int row)
+    {
+        col = -1;
+        row = -1;
+        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f)
+            return false;
+
+        UVToCell(uv, out int primaryCol, out int primaryRow);
+        int radius = Mathf.Max(1, Mathf.CeilToInt(maxContentScale * 0.5f));
+        float bestAlpha = contentAlphaCutoff;
+        int bestCol = -1;
+        int bestRow = -1;
+        float bestDistSq = float.MaxValue;
+
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                int c = primaryCol + dx;
+                int r = primaryRow + dy;
+                if (c < 0 || r < 0 || c >= columns || r >= _effectiveRows)
+                    continue;
+                if (!IsCellOccupied(c, r))
+                    continue;
+                if (!TrySampleContentAlphaAtUV(uv, c, r, out float alpha))
+                    continue;
+
+                float distSq = dx * dx + dy * dy;
+                if (alpha > bestAlpha + 0.001f ||
+                    (Mathf.Approximately(alpha, bestAlpha) && distSq < bestDistSq))
+                {
+                    bestAlpha = alpha;
+                    bestCol = c;
+                    bestRow = r;
+                    bestDistSq = distSq;
+                }
+            }
+        }
+
+        if (bestCol < 0)
+            return false;
+
+        col = bestCol;
+        row = bestRow;
+        return true;
+    }
+
+    bool TrySampleContentAlphaAtUV(Vector2 meshUV, int col, int row, out float alpha)
+    {
+        alpha = 0f;
+        if (!IsCellOccupied(col, row))
+            return false;
+
+        int idx = CellToIndex(col, row);
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta))
+            return false;
+
+        float scale = Mathf.Max(meta.Scale, 0.01f);
+        float rotRad = meta.RotationDegrees * Mathf.Deg2Rad;
+        float gridW = columns;
+        float gridH = _effectiveRows;
+
+        float cellLocalX = meshUV.x * gridW - col;
+        float cellLocalY = meshUV.y * gridH - row;
+        float px = cellLocalX - 0.5f;
+        float py = cellLocalY - 0.5f;
+
+        float cosR = Mathf.Cos(-rotRad);
+        float sinR = Mathf.Sin(-rotRad);
+        float rx = cosR * px - sinR * py;
+        float ry = sinR * px + cosR * py;
+
+        float srcLocalX = rx / scale + 0.5f;
+        float srcLocalY = ry / scale + 0.5f;
+        if (srcLocalX < 0f || srcLocalX > 1f || srcLocalY < 0f || srcLocalY > 1f)
+            return false;
+
+        alpha = SampleBakedTileAlpha(col, row, srcLocalX, srcLocalY);
+        return alpha > contentAlphaCutoff;
+    }
+
+    float SampleBakedTileAlpha(int col, int row, float srcLocalX, float srcLocalY)
+    {
+        if (_contentAtlas == null)
+            return 0f;
+
+        if (!TryGetCellAtlasPlacement(col, row, out int atlasX, out int atlasY, out int tile))
+            return 0f;
+
+        float fx = atlasX + srcLocalX * tile - 0.5f;
+        float fy = atlasY + srcLocalY * tile - 0.5f;
+        int x0 = Mathf.FloorToInt(fx);
+        int y0 = Mathf.FloorToInt(fy);
+        int x1 = x0 + 1;
+        int y1 = y0 + 1;
+
+        int minX = atlasX;
+        int minY = atlasY;
+        int maxX = minX + tile - 1;
+        int maxY = minY + tile - 1;
+
+        if (x0 < minX && x1 < minX) return 0f;
+        if (y0 < minY && y1 < minY) return 0f;
+        if (x0 > maxX && x1 > maxX) return 0f;
+        if (y0 > maxY && y1 > maxY) return 0f;
+
+        x0 = Mathf.Clamp(x0, minX, maxX);
+        x1 = Mathf.Clamp(x1, minX, maxX);
+        y0 = Mathf.Clamp(y0, minY, maxY);
+        y1 = Mathf.Clamp(y1, minY, maxY);
+
+        float tx = fx - x0;
+        float ty = fy - y0;
+        Color c00 = _contentAtlas.GetPixel(x0, y0);
+        Color c10 = _contentAtlas.GetPixel(x1, y0);
+        Color c01 = _contentAtlas.GetPixel(x0, y1);
+        Color c11 = _contentAtlas.GetPixel(x1, y1);
+        Color cx0 = Color.Lerp(c00, c10, tx);
+        Color cx1 = Color.Lerp(c01, c11, tx);
+        Color sample = Color.Lerp(cx0, cx1, ty);
+        return SoftContentAlpha(sample.a);
     }
 
     public void ClearAll()
@@ -569,8 +1062,13 @@ public class RevisedGridController : MonoBehaviour
         }
         ClearAtlasPixels();
         _contentAtlas.Apply(false);
+        ClearAtlasRectPixels();
+        if (_atlasRectTex != null)
+            _atlasRectTex.Apply(false);
+        ResetAtlasPacker();
         _cellMeta.Clear();
         ClearSelection();
+        ClearCarryPreviewSource();
     }
 
     /// <summary>
@@ -581,20 +1079,18 @@ public class RevisedGridController : MonoBehaviour
         widget = null;
         if (_contentAtlas == null || !IsCellOccupied(col, row)) return false;
 
-        int tile = contentTileResolution;
-        int srcX = col * tile;
-        int srcY = row * tile;
+        int idx = CellToIndex(col, row);
+        _cellMeta.TryGetValue(idx, out CellMetadata meta);
+        if (!TryGetCellAtlasPlacement(col, row, out int atlasX, out int atlasY, out int tile))
+            return false;
 
-        var pixels = _contentAtlas.GetPixels(srcX, srcY, tile, tile);
+        var pixels = _contentAtlas.GetPixels(atlasX, atlasY, tile, tile);
         bool hasVisiblePixel = false;
         for (int i = 0; i < pixels.Length; i++)
         {
             if (pixels[i].a > 0.01f) { hasVisiblePixel = true; break; }
         }
         if (!hasVisiblePixel) return false;
-
-        int idx = CellToIndex(col, row);
-        _cellMeta.TryGetValue(idx, out CellMetadata meta);
 
         var tex = new Texture2D(tile, tile, TextureFormat.RGBA32, false, true)
         {
@@ -639,7 +1135,8 @@ public class RevisedGridController : MonoBehaviour
     public bool TryCreateWidgetFromUV(Vector2 uv, out RectTransform widget)
     {
         widget = null;
-        UVToCell(uv, out int col, out int row);
+        if (!TryFindOccupiedCellAtUV(uv, out int col, out int row))
+            return false;
         return TryCreateWidgetFromCell(col, row, out widget);
     }
 
@@ -862,27 +1359,12 @@ public class RevisedGridController : MonoBehaviour
 
     void ClearAtlasPixels()
     {
+        if (_contentAtlas == null) return;
         var clear = new Color32(0, 0, 0, 0);
         var pixels = new Color32[_contentAtlas.width * _contentAtlas.height];
         for (int i = 0; i < pixels.Length; i++)
             pixels[i] = clear;
         _contentAtlas.SetPixels32(pixels);
-    }
-
-    void ClearTile(int col, int row)
-    {
-        int tile = contentTileResolution;
-        int destX = col * tile;
-        int destY = row * tile;
-        var clear = new Color32(0, 0, 0, 0);
-
-        for (int y = 0; y < tile; y++)
-        {
-            for (int x = 0; x < tile; x++)
-                _contentAtlas.SetPixel(destX + x, destY + y, clear);
-        }
-
-        _contentAtlas.Apply(false);
     }
 
     static bool PointInTriangleUV(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 bary)
@@ -905,6 +1387,7 @@ public class RevisedGridController : MonoBehaviour
     {
         defaultPlacedScale = Mathf.Max(0.25f, defaultPlacedScale);
         maxContentScale = Mathf.Max(1f, maxContentScale);
+        maxBakeTileResolution = Mathf.Max(64, maxBakeTileResolution);
         if (defaultPlacedScale > maxContentScale)
             defaultPlacedScale = maxContentScale;
     }
@@ -914,6 +1397,8 @@ public class RevisedGridController : MonoBehaviour
         if (_stateTex != null) Destroy(_stateTex);
         if (_contentAtlas != null) Destroy(_contentAtlas);
         if (_transformTex != null) Destroy(_transformTex);
+        if (_atlasRectTex != null) Destroy(_atlasRectTex);
+        if (_previewTile != null) Destroy(_previewTile);
         if (_mat != null) Destroy(_mat);
     }
 }

@@ -5,7 +5,8 @@
 // Material properties (driven by RevisedBoundingBoxController via C#):
 //   _GridColumns / _GridRows — grid resolution. Larger = smaller squares.
 //   _StateTex                — columns x rows RGBA, point-filtered. A > 0.5 = occupied.
-//   _ContentAtlas            — optional per-cell image tiles (columns x rows layout in UV space).
+//   _ContentAtlas            — sparse packed tile atlas (only occupied cells allocate space).
+//   _AtlasRectTex            — per-cell normalized atlas UV rect (offset.xy, size.zw).
 //   _TransformTex            — per-cell scale (R) and rotation (G), decoded with _MaxContentScale.
 //   _DefaultColor            — fill for an empty cell (semi-transparent over skin).
 //   _LineColor / _LineThickness — grid line appearance.
@@ -18,6 +19,7 @@ Shader "Custom/ForearmGrid"
         _GridRows      ("Grid Rows",    Float) = 6
         _StateTex      ("Cell State (RGBA)", 2D) = "black" {}
         _ContentAtlas  ("Cell Content Atlas", 2D) = "black" {}
+        _AtlasRectTex  ("Cell Atlas Rect (UV)", 2D) = "black" {}
         _TransformTex  ("Cell Transform (RG)", 2D) = "black" {}
         _MaxContentScale ("Max Content Scale", Float) = 4
 
@@ -30,6 +32,10 @@ Shader "Custom/ForearmGrid"
         _EditTintColor ("Edit Tint Color", Color) = (0.2, 0.95, 0.35, 0.35)
         _ContentAlphaCutoff ("Content Alpha Cutoff", Range(0, 0.25)) = 0.04
         _ContentAlphaSoftness ("Content Alpha Softness", Range(0.02, 0.3)) = 0.14
+        _PreviewCell ("Placement Preview Cell", Vector) = (0, 0, 0, 0)
+        _PreviewTransform ("Placement Preview Transform (RG)", Vector) = (0, 0, 0, 0)
+        _PreviewAlpha ("Placement Preview Alpha", Range(0, 1)) = 0.45
+        _PreviewAtlas ("Placement Preview Atlas", 2D) = "black" {}
     }
 
     SubShader
@@ -52,8 +58,12 @@ Shader "Custom/ForearmGrid"
             SAMPLER(sampler_StateTex);
             TEXTURE2D(_ContentAtlas);
             SAMPLER(sampler_ContentAtlas);
+            TEXTURE2D(_AtlasRectTex);
+            SAMPLER(sampler_AtlasRectTex);
             TEXTURE2D(_TransformTex);
             SAMPLER(sampler_TransformTex);
+            TEXTURE2D(_PreviewAtlas);
+            SAMPLER(sampler_PreviewAtlas);
 
             CBUFFER_START(UnityPerMaterial)
                 float  _GridColumns;
@@ -68,6 +78,9 @@ Shader "Custom/ForearmGrid"
                 half4  _EditTintColor;
                 float  _ContentAlphaCutoff;
                 float  _ContentAlphaSoftness;
+                float4 _PreviewCell;
+                float4 _PreviewTransform;
+                float  _PreviewAlpha;
             CBUFFER_END
 
             half SoftContentAlpha(half a)
@@ -115,8 +128,12 @@ Shader "Custom/ForearmGrid"
                 if (srcLocal.x < 0.0 || srcLocal.x > 1.0 || srcLocal.y < 0.0 || srcLocal.y > 1.0)
                     return 0.0;
 
-                float2 contentUV = (float2(coord) + srcLocal) / grid;
-                half4 content = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV);
+                half4 atlasRect = SAMPLE_TEXTURE2D(_AtlasRectTex, sampler_AtlasRectTex, cellCenter);
+                if (atlasRect.z <= 0.0001 || atlasRect.w <= 0.0001)
+                    return 0.0;
+
+                float2 atlasUV = atlasRect.xy + srcLocal * atlasRect.zw;
+                half4 content = SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, atlasUV);
                 return (content.a <= _ContentAlphaCutoff) ? 0.0 : content.a;
             }
 
@@ -143,22 +160,42 @@ Shader "Custom/ForearmGrid"
                 if (srcLocal.x < 0.0 || srcLocal.x > 1.0 || srcLocal.y < 0.0 || srcLocal.y > 1.0)
                     return half4(0, 0, 0, 0);
 
-                float2 contentUV = (float2(cellCoord) + srcLocal) / grid;
+                half4 atlasRect = SAMPLE_TEXTURE2D(_AtlasRectTex, sampler_AtlasRectTex, cellCenter);
+                if (atlasRect.z <= 0.0001 || atlasRect.w <= 0.0001)
+                    return half4(0, 0, 0, 0);
+
+                float2 atlasUV = atlasRect.xy + srcLocal * atlasRect.zw;
                 return ApplyContentAlpha(
-                    SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, contentUV));
+                    SAMPLE_TEXTURE2D(_ContentAtlas, sampler_ContentAtlas, atlasUV));
+            }
+
+            // Must cover ceil(maxScale * 0.5) cells around each fragment so large placements
+            // (e.g. 5x) are not clipped to a 3x3 block.
+            #define MAX_COMPOSITE_RADIUS 6
+
+            int CompositeSearchRadius()
+            {
+                return min((int)ceil(_MaxContentScale * 0.5), MAX_COMPOSITE_RADIUS);
             }
 
             half4 CompositeCellContent(float2 grid, float2 meshUV, float2 primaryCell)
             {
                 half4 composite = half4(0, 0, 0, 0);
                 int2 primary = int2(primaryCell);
+                int radius = CompositeSearchRadius();
 
-                [unroll]
-                for (int dy = -1; dy <= 1; dy++)
+                [loop]
+                for (int dy = -MAX_COMPOSITE_RADIUS; dy <= MAX_COMPOSITE_RADIUS; dy++)
                 {
-                    [unroll]
-                    for (int dx = -1; dx <= 1; dx++)
+                    if (dy < -radius || dy > radius)
+                        continue;
+
+                    [loop]
+                    for (int dx = -MAX_COMPOSITE_RADIUS; dx <= MAX_COMPOSITE_RADIUS; dx++)
                     {
+                        if (dx < -radius || dx > radius)
+                            continue;
+
                         int2 cellCoord = primary + int2(dx, dy);
                         if (cellCoord.x < 0 || cellCoord.y < 0 ||
                             cellCoord.x >= (int)grid.x || cellCoord.y >= (int)grid.y)
@@ -174,6 +211,39 @@ Shader "Custom/ForearmGrid"
                 }
 
                 return composite;
+            }
+
+            half4 SamplePreviewCellContent(float2 grid, float2 meshUV, int2 previewCoord)
+            {
+                if (_PreviewCell.z <= 0.5)
+                    return half4(0, 0, 0, 0);
+                if (previewCoord.x != (int)_PreviewCell.x || previewCoord.y != (int)_PreviewCell.y)
+                    return half4(0, 0, 0, 0);
+
+                float scale = max(_PreviewTransform.x * _MaxContentScale, 0.01);
+                float rotRad = _PreviewTransform.y * 6.2831853;
+
+                float2 cellLocal = meshUV * grid - float2(previewCoord);
+                float2 p = cellLocal - 0.5;
+                float cosR = cos(-rotRad);
+                float sinR = sin(-rotRad);
+                float2 srcLocal = float2(cosR * p.x - sinR * p.y, sinR * p.x + cosR * p.y) / scale + 0.5;
+
+                if (srcLocal.x < 0.0 || srcLocal.x > 1.0 || srcLocal.y < 0.0 || srcLocal.y > 1.0)
+                    return half4(0, 0, 0, 0);
+
+                half4 tex = ApplyContentAlpha(
+                    SAMPLE_TEXTURE2D(_PreviewAtlas, sampler_PreviewAtlas, srcLocal));
+                tex.a *= _PreviewAlpha;
+                return tex;
+            }
+
+            half4 CompositePreviewContent(float2 grid, float2 meshUV)
+            {
+                if (_PreviewCell.z <= 0.5)
+                    return half4(0, 0, 0, 0);
+
+                return SamplePreviewCellContent(grid, meshUV, int2(_PreviewCell.xy));
             }
 
             struct Attributes
@@ -217,6 +287,7 @@ Shader "Custom/ForearmGrid"
                 float2 cellCenter = (cell + 0.5) / grid;
                 half4  cellState  = SAMPLE_TEXTURE2D(_StateTex, sampler_StateTex, cellCenter);
                 half4  content    = CompositeCellContent(grid, input.uv, cell);
+                half4  preview    = CompositePreviewContent(grid, input.uv);
 
                 half4 col = _DefaultColor;
                 if (content.a > 0.01)
@@ -227,6 +298,12 @@ Shader "Custom/ForearmGrid"
                 else if (cellState.a > 0.5 && dot(cellState.rgb, cellState.rgb) > 0.0001)
                 {
                     col = cellState;
+                }
+
+                if (preview.a > 0.01)
+                {
+                    col.rgb = preview.rgb * preview.a + col.rgb * (1.0 - preview.a);
+                    col.a   = max(col.a, preview.a);
                 }
 
                 if (_HighlightCell.z > 0.5 &&

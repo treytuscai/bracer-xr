@@ -35,6 +35,8 @@ public class ForearmInteraction : MonoBehaviour
     [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
              "Must exceed the GPU mask radius (~1-2cm) since masked cells are excluded (m)")]
     [Range(0.005f, 0.15f)] public float maxCellSearchDist = 0.04f;
+    [Tooltip("Max 3D distance (m) from a world point to the surface for hover/placement preview.")]
+    [Min(0.01f)] public float maxHoverPreviewDistance = 0.1f;
 
     [Header("Debug")]
     [Tooltip("Draw a green circle on the surface material at the active touch UV")]
@@ -119,7 +121,7 @@ public class ForearmInteraction : MonoBehaviour
             if (u < -0.5f || u > 1f || v < 0f || v > 1f) continue;
 
             // Find the nearest reconstructed surface cell in arm-frame 2D space.
-            if (!TryGetNearestSurfaceHit(along, across, out Vector3 surfaceHit)) continue;
+            if (!TryGetNearestSurfaceHit(along, across, maxCellSearchDist, out Vector3 surfaceHit)) continue;
 
             // Signed distance above the surface along AxisUp.
             // Positive = hovering, negative = pressed through. Both are valid touches.
@@ -145,6 +147,46 @@ public class ForearmInteraction : MonoBehaviour
         }
 
         return found;
+    }
+
+    /// <summary>
+    /// Finds the nearest display-surface UV to an arbitrary world point (e.g. index tip while carrying).
+    /// Used for placement preview when the finger is near but not necessarily touching the mesh.
+    /// </summary>
+    public bool TryGetNearestSurfaceFromPoint(
+        Vector3 worldPoint,
+        float maxDistanceMeters,
+        out Vector2 uv,
+        out Vector3 surfacePoint)
+    {
+        uv = Vector2.zero;
+        surfacePoint = Vector3.zero;
+
+        if (!_surface.IsValid)
+            return false;
+
+        maxDistanceMeters = Mathf.Max(0.01f, maxDistanceMeters);
+        float searchDist = Mathf.Max(maxCellSearchDist, maxDistanceMeters);
+
+        Vector3 toPos = worldPoint - _surface.WristPosition;
+        float along  = Vector3.Dot(toPos, _surface.AxisDir);
+        float across = Vector3.Dot(toPos, _surface.AxisRight);
+
+        if (!TryGetNearestSurfaceHit(along, across, searchDist, out Vector3 surfaceHit))
+            return false;
+
+        float above = Vector3.Dot(worldPoint - surfaceHit, _surface.AxisUp);
+        Vector3 projectedPos = worldPoint - _surface.AxisUp * above;
+        float distance = Vector3.Distance(worldPoint, projectedPos);
+        if (distance > maxDistanceMeters)
+            return false;
+
+        uv = ComputeMeshUV(projectedPos);
+        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f)
+            return false;
+
+        surfacePoint = projectedPos;
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -184,7 +226,7 @@ public class ForearmInteraction : MonoBehaviour
     /// from the surface could project near-zero against a distant cell and falsely register. Capping
     /// the 2D search ensures the found cell is actually beneath the finger.
     /// </summary>
-    private bool TryGetNearestSurfaceHit(float along, float across, out Vector3 hit)
+    private bool TryGetNearestSurfaceHit(float along, float across, float maxSearchDist, out Vector3 hit)
     {
         hit = Vector3.zero;
 
@@ -194,7 +236,7 @@ public class ForearmInteraction : MonoBehaviour
 
         SurfaceBuffer buf       = _surface.SurfaceBuf;
         int           total     = rows * cols;
-        float         bestSq    = maxCellSearchDist * maxCellSearchDist;
+        float         bestSq    = maxSearchDist * maxSearchDist;
         bool          found     = false;
 
         for (int i = 0; i < total; i++)

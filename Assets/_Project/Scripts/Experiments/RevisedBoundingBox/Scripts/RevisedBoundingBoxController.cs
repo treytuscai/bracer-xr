@@ -60,6 +60,7 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
     Texture2D _stateTex;
     Texture2D _emptyContentAtlas;
     Texture2D _emptyTransformTex;
+    Texture2D _emptyAtlasRectTex;
     Color32[] _cellColors;
     int       _builtCols = -1;
     int       _builtRows = -1;
@@ -72,6 +73,7 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
     static readonly int GridRowsId      = Shader.PropertyToID("_GridRows");
     static readonly int StateTexId      = Shader.PropertyToID("_StateTex");
     static readonly int ContentAtlasId     = Shader.PropertyToID("_ContentAtlas");
+    static readonly int AtlasRectTexId     = Shader.PropertyToID("_AtlasRectTex");
     static readonly int TransformTexId     = Shader.PropertyToID("_TransformTex");
     static readonly int MaxContentScaleId  = Shader.PropertyToID("_MaxContentScale");
     static readonly int DefaultColorId  = Shader.PropertyToID("_DefaultColor");
@@ -119,6 +121,16 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
         _emptyContentAtlas.SetPixel(0, 0, Color.clear);
         _emptyContentAtlas.Apply(false);
         _mat.SetTexture(ContentAtlasId, _emptyContentAtlas);
+
+        _emptyAtlasRectTex = new Texture2D(1, 1, TextureFormat.RGBA32, false, true)
+        {
+            name = "ForearmGridEmptyAtlasRect",
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        _emptyAtlasRectTex.SetPixel(0, 0, Color.clear);
+        _emptyAtlasRectTex.Apply(false);
+        _mat.SetTexture(AtlasRectTexId, _emptyAtlasRectTex);
 
         _emptyTransformTex = new Texture2D(1, 1, TextureFormat.RGBA32, false, true)
         {
@@ -308,6 +320,7 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
     {
         if (_stateTex != null) Destroy(_stateTex);
         if (_emptyContentAtlas != null) Destroy(_emptyContentAtlas);
+        if (_emptyAtlasRectTex != null) Destroy(_emptyAtlasRectTex);
         if (_emptyTransformTex != null) Destroy(_emptyTransformTex);
         if (_mat != null)      Destroy(_mat);
     }

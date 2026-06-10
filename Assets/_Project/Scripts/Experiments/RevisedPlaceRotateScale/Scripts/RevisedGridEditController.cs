@@ -84,8 +84,8 @@ public class RevisedGridEditController : MonoBehaviour
         if (!IsEditModeActive || grid == null) return false;
         if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) return false;
 
-        grid.UVToCell(uv, out int col, out int row);
-        if (!grid.IsCellOccupied(col, row)) return false;
+        if (!grid.TryFindOccupiedCellAtUV(uv, out int col, out int row))
+            return false;
         if (!grid.TrySelectCell(col, row)) return false;
 
         SyncPanelToSelection();
