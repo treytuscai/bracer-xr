@@ -1,11 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Trey Tuscai
+
 using UnityEngine;
 
 namespace Surface.Core
 {
     /// <summary>
+    /// Which screen orientations the forearm display supports.
+    ///   Auto: swap between portrait and landscape from the arm angle.
+    ///   Portrait: lock upright.
+    ///   Landscape: lock sideways.
+    /// </summary>
+    public enum DisplayOrientation { Auto, Portrait, Landscape }
+
+    /// <summary>
     /// Resolves the wrist/elbow bones each frame and builds the forearm coordinate frame
     /// (Axis = wrist->elbow, AxisRight = camera-fixed lateral, AxisUp = surface normal), plus
-    /// temporally-smoothed pronation and screen-orientation angles. ForearmDepthSurface calls
+    /// temporally-smoothed pronation and a portrait/landscape flag. ForearmDepthSurface calls
     /// TryUpdate() once per LateUpdate, then reads the public properties for that frame.
     ///
     /// WHY camera-fixed AxisRight and linear (not cylindrical) UV: a bone-fixed frame spins the
@@ -37,17 +48,16 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // CONFIGURATION
         // ------------------------------------------------------------------
-        /// <summary> When true, forces Orientation toward 0 (portrait) so the display never flips. </summary>
-        public bool LockOrientation;
+        /// <summary> Which orientations the display supports; decides IsLandscape (see step 5). </summary>
+        public DisplayOrientation OrientationMode;
         // When false, HasPalm stays false and the surface is forearm-only.
         public bool EnablePalm;
 
         // ------------------------------------------------------------------
         // TEMPORAL SMOOTHING STATE (survives across frames, damps bone-tracking jitter)
-        // The Lerp alphas (0.15, 0.10) are frame-rate dependent — tuned for the Quest 3's 90 Hz.
+        // The Lerp alpha (0.15) is frame-rate dependent.
         // ------------------------------------------------------------------
         private float _smoothedPronation;
-        private float _orientationAngle;
 
         // ------------------------------------------------------------------
         // PUBLIC PROPERTIES (valid only after TryUpdate returns true)
@@ -63,8 +73,9 @@ namespace Surface.Core
         // Forearm twist in radians, clamped [0, PI]: 0 = palm-down, PI = palm-up. MeshGenerator adds
         // it as a U scroll offset so wrist rotation scrolls the display rather than spinning it.
         public float      Pronation     { get; private set; }
-        // Portrait/landscape angle: 0 = arm vertical, -PI/2 = arm horizontal. Applied as a UV rotation.
-        public float      Orientation   { get; private set; }
+        // True when the arm is held horizontally (landscape), false when upright (portrait). The
+        // consumer reads this directly to pick which image to show.
+        public bool       IsLandscape   { get; private set; }
         public Camera     Cam           { get; private set; }
         // Middle-finger MCP of the arm's own hand — the palm-side cap. Valid only when HasPalm.
         public Vector3    PalmCapPos    { get; private set; }
@@ -73,17 +84,17 @@ namespace Surface.Core
         /// <summary>
         /// Stores references for later use. Camera is resolved lazily on the first TryUpdate call.
         /// </summary>
-        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, bool lockOrientation, bool enablePalm)
+        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, DisplayOrientation orientationMode, bool enablePalm)
         {
             _bodySkeleton    = bodySkeleton;
             _centerEyeAnchor = centerEyeAnchor;
-            LockOrientation = lockOrientation;
+            OrientationMode = orientationMode;
             EnablePalm = enablePalm;
         }
 
         /// <summary>
         /// Resolves bones, validates tracking, computes the full arm coordinate
-        /// frame, and smooths pronation/orientation. Call once per LateUpdate.
+        /// frame, smooths pronation, and resolves the portrait/landscape orientation. Call once per LateUpdate.
         /// Returns false if tracking is unavailable or bones are invalid; the caller
         /// should hold the last valid frame rather than updating downstream state.
         /// </summary>
@@ -159,14 +170,24 @@ namespace Surface.Core
             }
             Pronation = Mathf.Clamp(_smoothedPronation, 0f, Mathf.PI);
 
-            // 5. ORIENTATION SNAPPING — gravity-anchored, not camera-relative, so head turns don't flip
-            // the display. |Dot(axis, up)| is sin(arm pitch); < sin(45°) ≈ 0.707 means horizontal (landscape).
-            float uprightness = Mathf.Abs(Vector3.Dot(axis, Vector3.up));
-            // Landscape -> rotate the UV frame -PI/2 so content reads left-to-right; portrait -> 0.
-            // lockOrientation forces portrait. Lerp (not LerpAngle): range [0,-PI/2], no wraparound.
-            float target = (!LockOrientation && uprightness < 0.707f) ? -Mathf.PI * 0.5f : 0f;
-            _orientationAngle = Mathf.Lerp(_orientationAngle, target, 0.1f);
-            Orientation = _orientationAngle;
+            // 5. ORIENTATION. Decide portrait vs landscape from how the arm projects onto the screen
+            // (camera right vs up), ignoring depth. A dead band gives hysteresis: tilt past 55° to enter
+            // landscape, back under 35° to return to portrait, holding the choice in between so boundary
+            // wobble doesn't chatter the swap. Camera-relative, so it tracks head roll. Portrait and
+            // Landscape modes lock the choice.
+            if      (OrientationMode == DisplayOrientation.Portrait)  IsLandscape = false;
+            else if (OrientationMode == DisplayOrientation.Landscape) IsLandscape = true;
+            else
+            {
+                float screenH = Mathf.Abs(Vector3.Dot(axis, _cam.transform.right));
+                float screenV = Mathf.Abs(Vector3.Dot(axis, _cam.transform.up));
+                float angle   = Mathf.Atan2(screenH, screenV);
+                const float flipToLandscape = 55f * Mathf.Deg2Rad;
+                const float flipToPortrait  = 35f * Mathf.Deg2Rad;
+                if      (angle > flipToLandscape) IsLandscape = true;
+                else if (angle < flipToPortrait)  IsLandscape = false;
+                // else: within the dead band, hold the current IsLandscape.
+            }
 
             // 6. PALM CAP (optional) — middle-finger MCP; absent when the hand isn't tracked (forearm-only).
             HasPalm    = false;
