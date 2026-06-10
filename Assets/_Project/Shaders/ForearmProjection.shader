@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Trey Tuscai
 
-// ForearmProjection.shader
 // URP transparent shader for the forearm display surface mesh.
 //
 // Input channels (set by MeshGenerator and ForearmDepthSurface.UpdateUnityMesh):
