@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Trey Tuscai
+
 // MetaDepthCopy.shader
 // Grid-resolution blit that unprojects the stabilized environment depth into a world-space position
 // per texel. Output (Vector4): xyz = world position, w = linear (metric) depth, or w = -1 (invalid).
