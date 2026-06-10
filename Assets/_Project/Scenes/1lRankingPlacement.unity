@@ -300,9 +300,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.008
-  touchDepth: 0.04
-  maxCellSearchDist: 0.03
+  touchHoverHeight: 0.01
+  touchDepth: 0.05
+  maxCellSearchDist: 0.04
+  maxHoverPreviewDistance: 0.1
   showTouchDebug: 1
 --- !u!114 &66024355
 MonoBehaviour:
@@ -335,7 +336,9 @@ MonoBehaviour:
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
-  lockOrientation: 1
+  orientationMode: 1
+  portraitTexture: {fileID: 0}
+  landscapeTexture: {fileID: 0}
 --- !u!23 &66024356
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -403,10 +406,14 @@ MonoBehaviour:
   interaction: {fileID: 66024354}
   carriedWorldWidthMeters: 0.04
   scaleCarryPreviewWithPlacedScale: 1
-  carryPreviewScaleMultiplier: 1
+  carryPreviewScaleMultiplier: 0.75
   fingerCarrySmoothTime: 0.048
   carryAttachOffsetTipLocal: {x: 0, y: 0, z: 0}
   stickWidgetOriginToFingertip: 1
+  showPlacementPreview: 1
+  hideFingerCarryWhenPreviewShown: 1
+  placementPreviewMaxDistanceMeters: 0.075
+  placementPreviewAlpha: 0.3
 --- !u!114 &66024359
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -421,19 +428,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   surface: {fileID: 66024355}
   gridShader: {fileID: 4800000, guid: bee2a0a49f83fb547aa23c3a3d012a34, type: 3}
-  columns: 12
-  rows: 12
+  columns: 20
+  rows: 20
   keepSquareCells: 1
-  contentTileResolution: 512
+  contentTileResolution: 256
+  maxBakeTileResolution: 1024
   cellContentPadding: 0.08
   contentAlphaCutoff: 0.15
   contentAlphaSoftness: 0.14
-  defaultPlacedScale: 2
-  maxContentScale: 4
+  defaultPlacedScale: 4
+  maxContentScale: 8
   defaultColor: {r: 1, g: 1, b: 1, a: 0}
   lineColor: {r: 0.21960786, g: 0.21960786, b: 0.21960786, a: 0}
   lineThickness: 0
-  highlightColor: {r: 0.2, g: 0.9, b: 0.35, a: 0.35}
+  highlightColor: {r: 0.2, g: 0.9, b: 0.35, a: 0}
   editTintColor: {r: 0.2, g: 0.95, b: 0.35, a: 0.35}
 --- !u!1001 &113860853
 PrefabInstance:
