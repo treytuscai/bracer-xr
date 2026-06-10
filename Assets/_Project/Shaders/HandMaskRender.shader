@@ -3,13 +3,13 @@
 
 // HandMaskRender.shader
 // Renders the hand mesh as a solid white silhouette into a grayscale RenderTexture.
-// Used by DepthReadback to build a screen-space hand mask each frame before the
+// Used by DepthReadback to build a depth-frame space hand mask each frame before the
 // MetaDepthCopy blit. MetaDepthCopy samples this texture and rejects any depth pixel
 // covered by the hand, outputting w=-1 so downstream stages treat it as invalid depth.
 //
 // Rendered via CommandBuffer.DrawMesh with Meta's depth VP (_DepthVP = depthMatrices[0])
 // so the silhouette aligns with the depth texture's UV space, not Unity's camera space.
-// The depth sensor is physically different from Unity's render camera — using Unity's VP
+// The depth sensor is physically different from Unity's render camera, using Unity's VP
 // would produce a fixed spatial offset in the mask. _ProjectionParams.x corrects the
 // Vulkan render target Y flip when using a custom projection matrix.
 
