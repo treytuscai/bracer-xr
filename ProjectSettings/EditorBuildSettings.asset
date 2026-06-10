@@ -38,6 +38,12 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/_Project/Scenes/1dElicitationofPlacement.unity
     guid: e8c9f09035f0b0a4f859b3e4f106de4f
+  - enabled: 1
+    path: Assets/_Project/Scenes/1lRankingPlacement.unity
+    guid: 26ae33f3ba8f84e45836cf171978d997
+  - enabled: 1
+    path: Assets/_Project/Scenes/1eContentDependent.unity
+    guid: c000f6b9066184e4681aef0579278266
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: aa8655defb79a45d2be9c4c46366fe0b,
       type: 2}
