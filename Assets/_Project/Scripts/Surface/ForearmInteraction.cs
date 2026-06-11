@@ -31,11 +31,11 @@ public class ForearmInteraction : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Touch")]
     [Tooltip("How far above the surface a finger can hover and still register as a touch (m)")]
-    [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.005f;
+    [Range(0.005f, 0.05f)] public float touchHoverHeight = 0.008f;
     [Tooltip("How far through the surface a finger can press before being ignored (m)")]
     [Range(0.005f, 0.15f)] public float touchDepth = 0.04f;
     [Tooltip("Max 2D arm-frame distance to the nearest surface cell for a touch to register. " +
-             "Must exceed the GPU mask radius (~1-2cm) since masked cells are excluded (m)")]
+             "Must exceed the hand-silhouette hole radius (~1cm) since cells under the hand are excluded (m)")]
     [Range(0.005f, 0.15f)] public float maxCellSearchDist = 0.04f;
     [Tooltip("Max 3D distance (m) from a world point to the surface for hover/placement preview.")]
     [Min(0.01f)] public float maxHoverPreviewDistance = 0.1f;

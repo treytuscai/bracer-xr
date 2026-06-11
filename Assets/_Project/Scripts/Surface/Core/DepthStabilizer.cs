@@ -10,12 +10,12 @@ namespace Surface.Core
     /// <summary>
     /// Owns the GPU half of a depth dispatch, recorded into one command buffer and submitted once:
     ///   1. HAND MASK: render the hand mesh as a white silhouette at full depth-frame resolution
-    ///      (depth UV) and grow it into a two-zone mask — R = carve zone, G = bleed ring
+    ///      (depth UV) and grow it into a two-zone mask — R = no-trust cushion, G = bleed ring
     ///      (Hidden/HandMaskRender).
     ///   2. STABILIZE: 3-frame reprojected median (Hidden/DepthTemporalMedian). Its extract pass
-    ///      (pass 0) carves the finger out of history AND reconstructs the bleed ring around it
-    ///      from clean arm, so the moving hand can't corrupt the median and the lift is fixed
-    ///      once, in history. Pass 1 renders the crop-sized stabilized depth.
+    ///      (pass 0) carves the silhouette out of history AND rebuilds the cushion and bleed ring
+    ///      around it from clean arm, so the moving hand can't corrupt the median and the lift is
+    ///      fixed once, in history. Pass 1 renders the crop-sized stabilized depth.
     ///
     /// Returns the pooled crop-sized stabilized RT — DepthReadback's async-readback source.
     ///
@@ -30,7 +30,8 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // SHADER PROPERTY IDS (cached — set every dispatch)
         // ------------------------------------------------------------------
-        private static readonly int HandMaskTexID      = Shader.PropertyToID("_HandMaskTex");
+        private static readonly int HandMaskTexID       = Shader.PropertyToID("_HandMaskTex");
+        private static readonly int HandSilhouetteTexID = Shader.PropertyToID("_HandSilhouetteTex");
         private static readonly int DepthVPID          = Shader.PropertyToID("_DepthVP");
         private static readonly int DilateTexelSizeID  = Shader.PropertyToID("_DilateTexelSize");
         private static readonly int DilateSrcTexID     = Shader.PropertyToID("_DilateSrcTex");
@@ -55,7 +56,8 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // Native depth texels the hand silhouette is grown by; the bleed ring inside it is reconstructed.
         public int HandMarginTexels;
-        // Inner cushion (texels) kept as a hole so the real hand peeking past the mask isn't flattened to arm.
+        // Inner cushion (texels) where measured depth is never trusted (strongest bleed + the real
+        // hand peeking past the mask); rebuilt at borrowed arm depth instead of carved.
         public int OcclusionMarginTexels;
         // Depth window (m) for the ring reconstruction: a borrowed sample within this of the
         // nearest counts as the same surface (rejects a background).
@@ -72,8 +74,8 @@ namespace Surface.Core
         private readonly CommandBuffer _depthCmd;
         // Hidden/HandMaskRender: pass 0 renders the silhouette, passes 1+2 grow it (separable max).
         private Material _handMaskMat;
-        // Hidden/DepthTemporalMedian: pass 0 extracts the left-eye slice (carving the finger and
-        // reconstructing the bleed ring), pass 1 medians 3 frames.
+        // Hidden/DepthTemporalMedian: pass 0 extracts the left-eye slice (carving the silhouette
+        // and rebuilding the cushion/bleed ring around it), pass 1 medians 3 frames.
         private Material _medianMat;
         // The mask chain's pooled temps (silhouette, horizontal-dilate intermediate, grown RG
         // result), alive from RenderHandMask until ReleaseMaskTemps after the submit.
@@ -140,9 +142,10 @@ namespace Surface.Core
             _depthCmd.Clear();
 
             // Build the FULL-FRAME grown hand mask FIRST: the temporal median's extract pass
-            // (pass 0) is its sole consumer — it carves the finger out of depth history (so the
-            // moving hand can't reproject onto clean arm and corrupt the median) and reconstructs
-            // the bleed ring around it, baking both into the stabilized depth.
+            // (pass 0) is its sole consumer — it carves the hand silhouette out of depth history
+            // (so the moving hand can't reproject onto clean arm and corrupt the median) and
+            // rebuilds the cushion and bleed ring around it, baking all of it into the stabilized
+            // depth.
             RenderHandMask(depthVP);
 
             // Stabilize the depth (3-frame reprojected median, computed over the CROP only — pass 1
@@ -168,18 +171,20 @@ namespace Surface.Core
         /// mask lives in the depth texture's own UV space), then grows it with a separable max
         /// filter (passes 1+2: horizontal, then vertical) into RG — R = within
         /// OcclusionMarginTexels of the hand, G = within HandMarginTexels. Bound to _medianMat
-        /// only: the median's extract pass (pass 0) is the sole consumer, single-tapping R to
-        /// carve the occluded hole and G to reconstruct the lifted bleed ring.
+        /// only: the median's extract pass (pass 0) is the sole consumer — it carves the raw
+        /// silhouette (also bound, as _HandSilhouetteTex), rebuilds the R cushion at borrowed arm
+        /// depth, and depth-discriminates the G ring.
         ///
         /// The pooled temps land in _mask*RT for ReleaseMaskTemps() after the submit. When there
-        /// is no hand to draw, _HandMaskTex is bound to black so nothing is carved.
+        /// is no hand to draw, both textures are bound to black so nothing is carved.
         /// </summary>
         private void RenderHandMask(Matrix4x4 depthVP)
         {
             if (_handMaskSource == null || _handMaskMat == null ||
                 _handMaskSource.BakedMesh == null || _handMaskSource.BakedMesh.vertexCount == 0)
             {
-                _medianMat.SetTexture(HandMaskTexID, Texture2D.blackTexture);
+                _medianMat.SetTexture(HandMaskTexID,       Texture2D.blackTexture);
+                _medianMat.SetTexture(HandSilhouetteTexID, Texture2D.blackTexture);
                 return;
             }
 
@@ -189,7 +194,8 @@ namespace Surface.Core
             _maskRawRT.filterMode   = FilterMode.Point;
             _maskTmpRT.filterMode   = FilterMode.Point;
             _maskGrownRT.filterMode = FilterMode.Point;
-            _medianMat.SetTexture(HandMaskTexID, _maskGrownRT);
+            _medianMat.SetTexture(HandMaskTexID,       _maskGrownRT);
+            _medianMat.SetTexture(HandSilhouetteTexID, _maskRawRT);
 
             _handMaskMat.SetMatrix(DepthVPID, depthVP);
             _handMaskMat.SetVector(DilateTexelSizeID, new Vector4(1f / _depthTexW, 1f / _depthTexH, 0f, 0f));
@@ -228,8 +234,8 @@ namespace Surface.Core
         {
             EnsureTemporalRTs();
 
-            // Pass 0 (extract) carves the finger and reconstructs the bleed ring around it (estimated from
-            // clean arm), so the stabilized depth already has the finger as 0 and the lift as arm. Pass 0
+            // Pass 0 (extract) carves the silhouette and rebuilds the cushion and bleed ring around it
+            // from clean arm, so the stabilized depth already has the hand as 0 and the lift as arm. Pass 0
             // is full-frame, so the borrow march steps in native depth texels (_DepthTexelSize);
             // _CropUVScaleOffset is the pass-1 crop->depth remap. The mask growth is baked into
             // _HandMaskTex (bound by RenderHandMask) — the margin here only bounds the march.

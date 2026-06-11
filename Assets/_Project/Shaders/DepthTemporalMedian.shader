@@ -5,9 +5,11 @@
 //
 // Pass 0 EXTRACT: copy the left-eye slice (index 0) of Meta's _EnvironmentDepthTexture array into a
 //   plain 2D R-channel target kept as frame history. Hand handling happens here so it lands in history:
-//   the finger is carved to invalid (a moving hand must not reproject onto clean arm and corrupt the
-//   pass-1 median), and the stereo bleed ring it lifts around itself is reconstructed from clean arm
-//   (TryBorrowArmDepth). Both are then medianed in pass 1. See _HandMaskTex below.
+//   the silhouette is carved to invalid (a moving hand must not reproject onto clean arm and corrupt
+//   the pass-1 median; the carved hole is also what keeps the surface off the visible hand), the
+//   occlusion cushion around it is rebuilt at borrowed arm depth, and the bleed ring beyond that is
+//   reconstructed from clean arm (TryBorrowArmDepth). All of it is then medianed in pass 1.
+//   See _HandMaskTex / _HandSilhouetteTex below.
 // Pass 1 MEDIAN3: per-texel median of the current frame + two history frames REPROJECTED into the
 //   current head pose -> stabilized depth. The median rejects stereo "flying pixels" because they
 //   are temporal OUTLIERS (a pixel that jumps to a wrong intermediate depth one frame is discarded),
@@ -39,13 +41,18 @@ Shader "Hidden/DepthTemporalMedian"
             SAMPLER(sampler_EnvironmentDepthTexture);
 
             // Full depth-frame GROWN hand mask, built by HandMaskRender's separable max passes
-            // BEFORE this pass: R = silhouette dilated by the occlusion margin (carve zone),
-            // G = dilated by the hand margin (the bleed-reconstruct ring). The finger is written
-            // invalid into history so it can't become a pass-1 median sample: pass 1 reprojects
-            // history as a static world, so a moving hand's old position would otherwise land on
-            // this frame's clean arm and lift the edge.
+            // BEFORE this pass: R = silhouette dilated by the occlusion margin (the no-trust
+            // cushion), G = dilated by the hand margin (the bleed-reconstruct ring). The finger is
+            // written invalid into history so it can't become a pass-1 median sample: pass 1
+            // reprojects history as a static world, so a moving hand's old position would
+            // otherwise land on this frame's clean arm and lift the edge.
             TEXTURE2D(_HandMaskTex);
             SAMPLER(sampler_HandMaskTex);
+
+            // The UNGROWN silhouette (HandMaskRender pass 0 output), distinguishing the hand
+            // itself (carved to a hole) from the cushion R adds around it (rebuilt at arm depth).
+            TEXTURE2D(_HandSilhouetteTex);
+            SAMPLER(sampler_HandSilhouetteTex);
 
             // NDC->metres params (global, set by Meta). Used by the lifted-edge borrow to tell arm
             // from a farther background; matches the CPU unprojection's linearization (DepthReadback).
@@ -90,7 +97,7 @@ Shader "Hidden/DepthTemporalMedian"
             }
 
             // Grown-mask tap (dilation baked upstream by HandMaskRender):
-            // r = carve zone (occlusion margin), g = reconstruct ring (hand margin).
+            // r = no-trust cushion (occlusion margin), g = reconstruct ring (hand margin).
             float2 SampleGrownMask(float2 duv)
             {
                 return SAMPLE_TEXTURE2D_LOD(_HandMaskTex, sampler_HandMaskTex, duv, 0).rg;
@@ -155,14 +162,25 @@ Shader "Hidden/DepthTemporalMedian"
             {
                 float2 duv = input.uv;   // pass 0 renders full-frame, so input.uv IS depth UV
 
+                // Hand silhouette: carved to 0 -> a hole that occludes (the consumer rejects 0),
+                // so no surface renders over the hand. Pass 1 keeps it via its invalid-input
+                // fallback (dCur <= 0).
+                if (SAMPLE_TEXTURE2D_LOD(_HandSilhouetteTex, sampler_HandSilhouetteTex, duv, 0).r > 0.5)
+                    return 0.0;
+
                 float2 grown = SampleGrownMask(duv);
 
-                // Hand + occlusion cushion (R): the silhouette grown by the occlusion margin to also
-                // cover the real hand peeking past the mask. Carved to 0 -> a hole that occludes (the
-                // consumer rejects 0), so peek-through isn't flattened to arm. Pass 1 keeps it via its
-                // invalid-input fallback (dCur <= 0).
+                // Occlusion cushion (R, outside the silhouette): the strongest bleed plus the real
+                // hand peeking past the rendered mask — measured depth here is never trusted (at
+                // touch distance hand depth ≈ arm depth, so no per-cell test can tell them apart).
+                // Rebuild it at borrowed arm depth so the canvas continues up to the silhouette
+                // instead of widening the hole; with nothing clean to borrow, carve as before.
                 if (grown.r > 0.5)
+                {
+                    float armRaw;
+                    if (TryBorrowArmDepth(duv, armRaw)) return armRaw;
                     return 0.0;
+                }
 
                 // Margin ring (G, outside the occlusion cushion): a mix of lifted bleed and real
                 // surface the wide margin reaches over (e.g. the arm in the gap to the thumb). Estimate

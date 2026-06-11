@@ -21,9 +21,10 @@ using Surface.Core;
 ///                     the CPU into a flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh) and grow
 ///                     it into a two-zone depth-frame mask before stabilization. The median's extract
-///                     pass carves the inner zone to invalid (a hole the rest of the pipeline skips)
-///                     and reconstructs the bleed the finger lifts in the outer ring — excluding the
-///                     hand from extraction and touch without raising the mesh at the contact point.
+///                     pass carves the silhouette to invalid (a hole the rest of the pipeline skips)
+///                     and rebuilds the cushion and bleed ring around it from clean arm — excluding
+///                     the hand from extraction and touch without raising the mesh at the contact
+///                     point, while the canvas continues up to the hand.
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
@@ -64,9 +65,10 @@ public class ForearmDepthSurface : MonoBehaviour
              "this margin is reconstructed from clean surface at consume, not deleted.")]
     [Range(0, 10)] public int handMarginTexels = 8;
 
-    [Tooltip("Inner cushion (depth texels) around the hand kept as a hole, covering the real hand that " +
-             "peeks past the rendered mask. Without it, peek-through gets flattened to arm — a sliver " +
-             "trailing onto the hand. Raise until the sliver clears. Must stay below handMarginTexels.")]
+    [Tooltip("Cushion (depth texels) around the hand where measured depth is never trusted — the " +
+             "strongest bleed plus the real hand peeking past the rendered mask. Rebuilt at borrowed " +
+             "arm depth, so the canvas reaches the hand silhouette instead of a wider hole. Must " +
+             "stay below handMarginTexels.")]
     [Range(0, 4)] public int occlusionMarginTexels = 1;
 
     [Tooltip("Depth window (m) behind the nearest borrowed sample that still counts as the same " +
