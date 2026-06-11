@@ -2,9 +2,10 @@
 // Copyright 2026 Trey Tuscai
 
 // Renders the hand mesh as a solid white silhouette into a grayscale RenderTexture.
-// Used by DepthReadback to build a depth-frame space hand mask each frame before the
-// MetaDepthCopy blit. MetaDepthCopy samples this texture and rejects any depth pixel
-// covered by the hand, outputting w=-1 so downstream stages treat it as invalid depth.
+// Used by DepthReadback to build a depth-frame-space hand mask each dispatch. The temporal
+// median's extract pass (DepthTemporalMedian pass 0) is the sole consumer: it carves the
+// finger out of depth history and reconstructs the lifted bleed ring around it, so the
+// hand arrives invalid in the stabilized depth that downstream stages consume.
 //
 // Rendered via CommandBuffer.DrawMesh with Meta's depth VP (_DepthVP = depthMatrices[0])
 // so the silhouette aligns with the depth texture's UV space, not Unity's camera space.
@@ -31,8 +32,8 @@ Shader "Hidden/HandMaskRender"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             // Meta's depth camera VP at capture time — set from C# as depthMatrices[0].
-            // Must match the VP used to sample _EnvironmentDepthTexture in MetaDepthCopy
-            // since the depth sensor is a physically different camera from Unity's render camera.
+            // Must be the depth frame's own VP (not Unity's camera VP) since the depth sensor
+            // is a physically different camera from Unity's render camera.
             CBUFFER_START(UnityPerMaterial)
                 float4x4 _DepthVP;
             CBUFFER_END
@@ -52,7 +53,7 @@ Shader "Hidden/HandMaskRender"
                 return o;
             }
 
-            // Output solid white — the mask texture is thresholded at 0.5 in MetaDepthCopy.
+            // Output solid white — the mask texture is thresholded at 0.5 in DepthTemporalMedian.
             float4 frag(Varyings i) : SV_Target { return float4(1, 1, 1, 1); }
             ENDHLSL
         }

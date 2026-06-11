@@ -17,8 +17,8 @@ using Surface.Core;
 ///   1. ArmFrame:      Resolve wrist/elbow bones, compute the arm coordinate frame
 ///                     (axis, right, up), smooth pronation, and the portrait/landscape orientation.
 ///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
-///                     blit the stabilized depth through MetaDepthCopy.shader, GPU-readback the forearm
-///                     crop, and unproject each sampled pixel into a flat world-space hit grid (rows × cols).
+///                     GPU-readback the stabilized forearm crop, and unproject each depth texel on
+///                     the CPU into a flat world-space hit grid (rows × cols).
 ///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh) into a
 ///                     depth-frame mask before stabilization. The median's extract pass carves the finger
 ///                     to invalid (a hole the rest of the pipeline skips) and reconstructs the bleed it
@@ -359,7 +359,7 @@ public class ForearmDepthSurface : MonoBehaviour
         sampleHandle.Complete();
 
         // Schedule extract -> boundary -> mesh as ONE deferred chain (no Complete here). Hand pixels
-        // already have HasDepth=false (rejected in MetaDepthCopy.shader), so seed+flood skips them.
+        // already have HasDepth=false (carved upstream by the temporal median), so seed+flood skips them.
         JobHandle h = _surfaceExtractor.Schedule(
             _surfaceBuffer, _rows, _cols,
             _armFrame.WristPos, _armFrame.ElbowPos, _armFrame.Axis,

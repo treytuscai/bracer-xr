@@ -34,7 +34,7 @@ Shader "Hidden/DepthTemporalMedian"
             #pragma multi_compile_instancing
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            // Global set by Meta's EnvironmentDepthManager (same source MetaDepthCopy reads).
+            // Global set by Meta's EnvironmentDepthManager — the raw per-eye depth array.
             TEXTURE2D_ARRAY(_EnvironmentDepthTexture);
             SAMPLER(sampler_EnvironmentDepthTexture);
 
@@ -46,7 +46,7 @@ Shader "Hidden/DepthTemporalMedian"
             SAMPLER(sampler_HandMaskTex);
 
             // NDC->metres params (global, set by Meta). Used by the lifted-edge borrow to tell arm
-            // from a farther background; matches MetaDepthCopy's LinearizeDepth.
+            // from a farther background; matches the CPU unprojection's linearization (DepthReadback).
             float4 _EnvironmentDepthZBufferParams;
 
             // One native depth texel in depth UV: _DepthTexelSize.xy = (1/_depthTexW, 1/_depthTexH). The
@@ -84,7 +84,7 @@ Shader "Hidden/DepthTemporalMedian"
                                                   sampler_EnvironmentDepthTexture, duv, 0, 0).r;
             }
 
-            // NDC [0,1] -> linear metres (Meta's global ZBuffer params; matches MetaDepthCopy).
+            // NDC [0,1] -> linear metres (Meta's global ZBuffer params; matches DepthUnprojectionJob).
             float LinearizeDepth(float raw)
             {
                 float ndc = raw * 2.0 - 1.0;
@@ -249,8 +249,8 @@ Shader "Hidden/DepthTemporalMedian"
                 return output;
             }
 
-            // Raw [0,1] depth + screen UV -> world position, via a frame's inverse VP. Matches
-            // MetaDepthCopy's reconstruction: clip = (uv, raw) * 2 - 1, then inverse-VP + w-divide.
+            // Raw [0,1] depth + screen UV -> world position, via a frame's inverse VP. Matches the
+            // CPU unprojection (DepthUnprojectionJob): clip = (uv, raw) * 2 - 1, inverse-VP, w-divide.
             float3 UnprojectRaw(float2 uv, float raw, float4x4 invVP)
             {
                 float4 clip  = float4(uv * 2.0 - 1.0, raw * 2.0 - 1.0, 1.0);
@@ -285,7 +285,7 @@ Shader "Hidden/DepthTemporalMedian"
                 float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
 
                 float dCur = SAMPLE_TEXTURE2D_LOD(_TexCur, sampler_TexCur, duv, 0).r;
-                // Invalid current depth: pass through; MetaDepthCopy's (0,1) test rejects it.
+                // Invalid current depth: pass through; the CPU unprojection's (0,1) test rejects it.
                 if (dCur <= 0.0 || dCur >= 1.0) return dCur;
 
                 float3 P  = UnprojectRaw(duv, dCur, _CurInvVP);
