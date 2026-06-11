@@ -444,6 +444,11 @@ public class ForearmDepthSurface : MonoBehaviour
     public int           SurfaceCols => _cols;
     public float         ProjCenter  => _projCenter;
     public Material      SurfaceMat  => _mat;
+    // False while the deferred extract->boundary->mesh chain is writing SurfaceBuf on worker
+    // threads (dispatch callback -> harvest, ~1 frame per cycle). Main-thread consumers must not
+    // read Hits/IsSurface in that window: the collections safety checks that would catch the race
+    // are disabled in device builds, so it corrupts silently.
+    public bool          SurfaceStable => !_harvestPending;
 
     // ------------------------------------------------------------------
     // PUBLIC API — HAND VERTICES
