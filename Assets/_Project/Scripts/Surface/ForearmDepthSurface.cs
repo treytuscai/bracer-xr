@@ -19,11 +19,11 @@ using Surface.Core;
 ///   2. DepthReadback: Stabilize the depth with a 3-frame reprojected median (DepthTemporalMedian),
 ///                     GPU-readback the stabilized forearm crop, and unproject each depth texel on
 ///                     the CPU into a flat world-space hit grid (rows × cols).
-///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh) into a
-///                     depth-frame mask before stabilization. The median's extract pass carves the finger
-///                     to invalid (a hole the rest of the pipeline skips) and reconstructs the bleed it
-///                     lifts around itself — excluding the hand from extraction and touch without raising
-///                     the mesh at the contact point.
+///   3. HandMask:      Render the hand mesh as a GPU silhouette (CommandBuffer.DrawMesh) and grow
+///                     it into a two-zone depth-frame mask before stabilization. The median's extract
+///                     pass carves the inner zone to invalid (a hole the rest of the pipeline skips)
+///                     and reconstructs the bleed the finger lifts in the outer ring — excluding the
+///                     hand from extraction and touch without raising the mesh at the contact point.
 ///   4. Extraction:    Mark cells inside a tight seed cylinder (seedRadialDist) along the
 ///                     wrist->elbow axis as definite forearm, then BFS-flood from those seeds
 ///                     across depth-connected neighbors up to a wider flood cylinder
@@ -55,12 +55,12 @@ public class ForearmDepthSurface : MonoBehaviour
     public Material surfaceMaterial;
 
     // ------------------------------------------------------------------
-    // HAND MASKING — the hand is rendered as a GPU silhouette before each blit; masked depth
-    // pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
+    // HAND MASKING — the hand is rendered and grown into a two-zone GPU mask each dispatch;
+    // masked depth pixels arrive HasDepth=false, excluding the hand from reconstruction and touch.
     // ------------------------------------------------------------------
     [Header("Hand Masking")]
-    [Tooltip("Depth texels the hand silhouette is grown by (3x3 max). Covers the stereo bleed/lift " +
-             "around the hand plus readback latency. Carved from depth history; the lifted ring inside " +
+    [Tooltip("Depth texels the hand silhouette is grown by. Covers the stereo bleed/lift around " +
+             "the hand plus readback latency. Carved from depth history; the lifted ring inside " +
              "this margin is reconstructed from clean surface at consume, not deleted.")]
     [Range(0, 10)] public int handMarginTexels = 8;
 

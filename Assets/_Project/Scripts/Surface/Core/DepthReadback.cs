@@ -15,7 +15,8 @@ namespace Surface.Core
     /// <summary>
     /// Drives the full GPU->CPU depth pipeline each dispatch, producing SurfaceBuffer's world-space hit grid:
     ///   1. CROP:      the forearm's screen-space bounding box sizes the grid (~one cell per depth texel).
-    ///   2. HAND MASK: render the hand mesh as a white silhouette at FULL depth-frame resolution (depth UV).
+    ///   2. HAND MASK: render the hand mesh as a white silhouette at FULL depth-frame resolution
+    ///                 (depth UV) and grow it into a two-zone mask: R = carve zone, G = bleed ring.
     ///   3. STABILIZE: 3-frame reprojected median (UpdateTemporalDepth). Its extract pass (pass 0) carves
     ///                 the finger out of history AND reconstructs the bleed ring around it from clean arm,
     ///                 so the moving hand can't corrupt the median and the lift is fixed once, in history.
@@ -32,7 +33,6 @@ namespace Surface.Core
     /// TEMPORAL STABILIZATION: each dispatch medians the depth over 3 frames (DepthTemporalMedian.shader)
     /// before the readback — rejecting stereo "flying pixels" (temporal outliers) so the boundary stops
     /// flickering, with history reprojected into the current head pose so it holds under head motion.
-    /// Replaced an earlier mixed-pixel reject that eroded the silhouette.
     /// </summary>
     public class DepthReadback : IDisposable
     {
@@ -85,8 +85,9 @@ namespace Surface.Core
         private HandMask _handMaskSource;
         // Tuning, set once via the constructor from ForearmDepthSurface Inspector values. All three feed
         // the median's extract pass (pass 0), where all hand handling lives:
-        //   HandMarginTexels      — native depth texels the hand silhouette is grown by (3x3 max), covering
-        //                            the stereo bleed/lift. The bleed ring inside it is reconstructed.
+        //   HandMarginTexels      — native depth texels the hand silhouette is grown by (separable
+        //                            dilation in HandMaskRender), covering the stereo bleed/lift.
+        //                            The bleed ring inside it is reconstructed.
         //   OcclusionMarginTexels — inner cushion (texels) kept as a hole, covering the real hand peeking
         //                            past the mask so peek-through isn't flattened to arm. Below the margin.
         //   BorrowDepthBand       — depth window (m) for the ring reconstruction: a borrowed sample within
@@ -94,20 +95,23 @@ namespace Surface.Core
         public int   HandMarginTexels;
         public int   OcclusionMarginTexels;
         public float BorrowDepthBand;
-        // One CommandBuffer recording the whole GPU depth pass each dispatch (hand-mask draw + the
+        // One CommandBuffer recording the whole GPU depth pass each dispatch (hand-mask chain + the
         // two median blits), wrapped in named samples and submitted once. The named scopes surface
         // in RenderDoc / the GPU Profiler.
         private CommandBuffer _depthCmd;
-        // Unlit white material used to render the silhouette (Hidden/HandMaskRender).
+        // Hidden/HandMaskRender: pass 0 renders the silhouette, passes 1+2 grow it (separable max).
         private Material _handMaskMat;
+        // The mask chain's pooled temps (silhouette, horizontal-dilate intermediate, grown RG
+        // result), alive from RenderHandMask until ReleaseMaskTemps after the submit.
+        private RenderTexture _maskRawRT, _maskTmpRT, _maskGrownRT;
 
         // ------------------------------------------------------------------
         // TEMPORAL MEDIAN
         // Each dispatch (≈ once per depth frame) computes a 3-frame per-texel median of the depth —
-        // the readback source. The median rejects stereo "flying pixels" (temporal
-        // outliers), killing the boundary flicker without the erosion the old mixed-pixel reject
-        // caused. The two history frames are reprojected into the current head pose first
-        // (UpdateTemporalDepth), so it holds under head motion, not just a static head.
+        // the readback source. The median rejects stereo "flying pixels" (temporal outliers),
+        // killing the boundary flicker without eroding the silhouette. The two history frames are
+        // reprojected into the current head pose first (UpdateTemporalDepth), so it holds under
+        // head motion, not just a static head.
         //
         // FRAME COUNT is 3 — the smallest odd window (a median needs odd to reject a 1-frame
         // outlier) and proven sufficient. A larger window trades more lag/disocclusion for marginal
@@ -282,38 +286,40 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Records and submits the GPU half of a dispatch: the hand silhouette, then the two
+        /// Records and submits the GPU half of a dispatch: the grown hand mask chain, then the two
         /// temporal median passes. Returns the pooled crop-sized stabilized-depth RT (RFloat) —
         /// the async-readback source, which the CPU unprojection job consumes directly; there is
-        /// no GPU unprojection pass. The mask RT is released here since the median has sampled it.
+        /// no GPU unprojection pass. The mask temps are released here since the median has
+        /// sampled them.
         /// </summary>
         private RenderTexture DispatchReconstruction(
             Matrix4x4 depthVP, Matrix4x4 depthInvVP, Vector4 cropUVScaleOffset,
             int cols, int rows)
         {
             // Record the whole pass into one buffer (cleared here, submitted once at the end). The
-            // hand mask and the two median passes append named samples to _depthCmd.
+            // mask chain and the two median passes append named samples to _depthCmd.
             _depthCmd.Clear();
 
-            // Render the FULL-FRAME hand silhouette FIRST: the temporal median's extract pass (pass 0) is
-            // its sole consumer — it carves the finger out of depth history (so the moving hand can't
-            // reproject onto clean arm and corrupt the median) and reconstructs the bleed ring around it,
-            // baking both into the stabilized depth. RenderHandMask binds it to _medianMat. Must precede
-            // UpdateTemporalDepth, whose pass 0 reads it.
-            RenderTexture maskRT = RenderHandMask(depthVP);
+            // Build the FULL-FRAME grown hand mask FIRST: the temporal median's extract pass (pass 0)
+            // is its sole consumer — it carves the finger out of depth history (so the moving hand
+            // can't reproject onto clean arm and corrupt the median) and reconstructs the bleed ring
+            // around it, baking both into the stabilized depth. RenderHandMask binds it to _medianMat.
+            // Must precede UpdateTemporalDepth, whose pass 0 reads it.
+            RenderHandMask(depthVP);
 
             // Stabilize the depth (3-frame reprojected median, computed over the CROP only — pass 1
             // renders cols×rows, not the full 320×320, so the bulk of the reprojection work is
             // skipped). Pass 0 carves the hand out of history (see above).
             RenderTexture stab = UpdateTemporalDepth(depthVP, depthInvVP, cols, rows, cropUVScaleOffset);
 
-            // Submit the whole recorded pass once: hand mask -> extract -> median, in order.
+            // Submit the whole recorded pass once: mask chain -> extract -> median, in order.
             Graphics.ExecuteCommandBuffer(_depthCmd);
 
-            // The median has sampled the mask now that the GPU work is queued; release it. (stab is
-            // NOT released here — it is the readback source, released in HandleReadback.) Releasing
-            // before the submit would risk the pool reusing it under the still-pending GPU work.
-            if (maskRT != null) RenderTexture.ReleaseTemporary(maskRT);
+            // The median has sampled the grown mask now that the GPU work is queued; release the
+            // mask chain's temps. (stab is NOT released here — it is the readback source, released
+            // in HandleReadback.) Releasing before the submit would risk the pool reusing them
+            // under the still-pending GPU work.
+            ReleaseMaskTemps();
 
             return stab;
         }
@@ -399,13 +405,13 @@ namespace Surface.Core
 
             // Pass 0 (extract) carves the finger and reconstructs the bleed ring around it (estimated from
             // clean arm), so the stabilized depth already has the finger as 0 and the lift as arm. Pass 0
-            // is full-frame, so its margins step in native depth texels (_DepthTexelSize); _CropUVScaleOffset
-            // is the pass-1 crop->depth remap. _HandMaskTex is already bound on _medianMat by RenderHandMask.
+            // is full-frame, so the borrow march steps in native depth texels (_DepthTexelSize);
+            // _CropUVScaleOffset is the pass-1 crop->depth remap. The mask growth is baked into
+            // _HandMaskTex (bound by RenderHandMask) — the margin here only bounds the march.
             // All set before the blits below.
             _medianMat.SetVector("_CropUVScaleOffset", cropUVScaleOffset);
             _medianMat.SetVector("_DepthTexelSize", new Vector4(1f / _depthTexW, 1f / _depthTexH, _depthTexW, _depthTexH));
             _medianMat.SetInteger("_HandMarginTexels", HandMarginTexels);
-            _medianMat.SetInteger("_OcclusionMarginTexels", OcclusionMarginTexels);
             _medianMat.SetFloat("_BorrowDepthBand", BorrowDepthBand);
 
             int cur = _histWrite;
@@ -518,42 +524,69 @@ namespace Surface.Core
         // --------------------------------------------------------
 
         /// <summary>
-        /// Renders the CPU-baked hand mesh as a white silhouette into a pooled FULL depth-frame
-        /// (_depthTexW×_depthTexH) RenderTexture using CommandBuffer.DrawMesh with Meta's depth VP
-        /// (no crop remap), so the mask lives in the depth texture's own UV space. Bound to _medianMat
-        /// only: the median's extract pass (pass 0) is the sole consumer — it carves the finger out of
-        /// history and reconstructs the bleed ring, baking both into the stabilized depth.
+        /// Builds the GROWN hand mask in depth-frame UV space, full depth-frame resolution:
+        /// renders the CPU-baked hand mesh as a white silhouette (pass 0, Meta's depth VP so the
+        /// mask lives in the depth texture's own UV space), then grows it with a separable max
+        /// filter (passes 1+2: horizontal, then vertical) into RG — R = within
+        /// OcclusionMarginTexels of the hand, G = within HandMarginTexels. Bound to _medianMat
+        /// only: the median's extract pass (pass 0) is the sole consumer, single-tapping R to
+        /// carve the occluded hole and G to reconstruct the lifted bleed ring.
         ///
-        /// Returns the pooled RenderTexture (caller releases it after the median has sampled it), or
-        /// null when there is no hand to draw — then _HandMaskTex is bound to black so nothing is carved.
+        /// The pooled temps land in _mask*RT for ReleaseMaskTemps() after the submit. When there
+        /// is no hand to draw, _HandMaskTex is bound to black so nothing is carved.
         /// </summary>
-        private RenderTexture RenderHandMask(Matrix4x4 depthVP)
+        private void RenderHandMask(Matrix4x4 depthVP)
         {
             if (_handMaskSource == null || _handMaskMat == null ||
                 _handMaskSource.BakedMesh == null || _handMaskSource.BakedMesh.vertexCount == 0)
             {
                 if (_medianMat != null) _medianMat.SetTexture("_HandMaskTex", Texture2D.blackTexture);
-                return null;
+                return;
             }
 
-            // Full-frame silhouette at the native depth resolution, in the depth camera's UV space.
-            // HandMaskRender applies the Vulkan Y flip; no crop matrix — the median's extract pass samples
-            // it at its full-frame uv.
-            RenderTexture maskRT = RenderTexture.GetTemporary(_depthTexW, _depthTexH, 0, RenderTextureFormat.R8);
-            if (_medianMat != null) _medianMat.SetTexture("_HandMaskTex", maskRT);
+            _maskRawRT   = RenderTexture.GetTemporary(_depthTexW, _depthTexH, 0, RenderTextureFormat.R8);
+            _maskTmpRT   = RenderTexture.GetTemporary(_depthTexW, _depthTexH, 0, RenderTextureFormat.RG16);
+            _maskGrownRT = RenderTexture.GetTemporary(_depthTexW, _depthTexH, 0, RenderTextureFormat.RG16);
+            _maskRawRT.filterMode   = FilterMode.Point;
+            _maskTmpRT.filterMode   = FilterMode.Point;
+            _maskGrownRT.filterMode = FilterMode.Point;
+            if (_medianMat != null) _medianMat.SetTexture("_HandMaskTex", _maskGrownRT);
 
             _handMaskMat.SetMatrix("_DepthVP", depthVP);
+            _handMaskMat.SetVector("_DilateTexelSize", new Vector4(1f / _depthTexW, 1f / _depthTexH, 0f, 0f));
+            _handMaskMat.SetInteger("_OccMarginTexels", OcclusionMarginTexels);
+            _handMaskMat.SetInteger("_HandMarginTexels", HandMarginTexels);
 
             // Appends to _depthCmd (cleared and submitted once by DispatchReconstruction); the mask
-            // draw is recorded first so the median's extract pass samples a populated mask.
+            // chain is recorded first so the median's extract pass samples a populated grown mask.
             _depthCmd.BeginSample("HandMask");
-            _depthCmd.SetRenderTarget(maskRT);
+            _depthCmd.SetRenderTarget(_maskRawRT);
             _depthCmd.ClearRenderTarget(false, true, Color.black);
             // DrawMesh with the CPU-baked mesh: vertex positions are already skinned.
-            // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call.
-            _depthCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat);
+            // UNITY_MATRIX_M is set from localToWorldMatrix by the DrawMesh call. shaderPass is
+            // pinned to 0 — the default (-1) draws ALL passes, including the dilate blits.
+            _depthCmd.DrawMesh(_handMaskSource.BakedMesh, _handMaskSource.LocalToWorld, _handMaskMat, 0, 0);
+            // Separable dilation. The source is bound per-blit with a RECORDED SetGlobalTexture —
+            // ordered within the buffer — so the two passes can chain raw -> tmp -> grown despite
+            // sharing one material (a material-level texture would resolve to its last value for
+            // both blits at execute time).
+            _depthCmd.SetGlobalTexture("_DilateSrcTex", _maskRawRT);
+            _depthCmd.Blit(null, _maskTmpRT, _handMaskMat, 1);
+            _depthCmd.SetGlobalTexture("_DilateSrcTex", _maskTmpRT);
+            _depthCmd.Blit(null, _maskGrownRT, _handMaskMat, 2);
             _depthCmd.EndSample("HandMask");
-            return maskRT;
+        }
+
+        /// <summary>
+        /// Releases the mask chain's pooled temps. Called by DispatchReconstruction after the
+        /// command buffer submits — releasing earlier would risk the pool reusing them under the
+        /// still-pending GPU work.
+        /// </summary>
+        private void ReleaseMaskTemps()
+        {
+            if (_maskRawRT   != null) { RenderTexture.ReleaseTemporary(_maskRawRT);   _maskRawRT   = null; }
+            if (_maskTmpRT   != null) { RenderTexture.ReleaseTemporary(_maskTmpRT);   _maskTmpRT   = null; }
+            if (_maskGrownRT != null) { RenderTexture.ReleaseTemporary(_maskGrownRT); _maskGrownRT = null; }
         }
 
         // --------------------------------------------------------
