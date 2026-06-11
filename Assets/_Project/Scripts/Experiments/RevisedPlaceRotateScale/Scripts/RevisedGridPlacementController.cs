@@ -231,8 +231,14 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         if (grid.IsCellOccupied(col, row))
             grid.ClearCell(col, row);
 
+        // Baking reads UI images; the carry preview may have hidden the widget on the fingertip.
+        _draggedItem.gameObject.SetActive(true);
+
         if (!grid.TryBakeWidgetIntoCell(_draggedItem, col, row))
-            Debug.LogWarning("[RevisedGridPlacement] Could not bake widget image into grid cell.");
+        {
+            Debug.LogWarning($"[RevisedGridPlacement] Could not bake '{_draggedItem.name}' into cell ({col},{row}).");
+            return;
+        }
 
         Destroy(_draggedItem.gameObject);
         _draggedItem = null;
