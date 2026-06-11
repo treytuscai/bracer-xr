@@ -70,9 +70,9 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Bakes the full hand mesh for the GPU silhouette. Called by DepthReadback only when a
-        /// reconstruction dispatch commits (~depth rate, not render rate) — BakeMesh is the
-        /// expensive half of the hand snapshot and the silhouette is only consumed per dispatch.
+        /// Bakes the full hand mesh for the GPU silhouette. Called by DepthReadback on committed
+        /// dispatches only (~depth rate): BakeMesh is expensive and the silhouette is only
+        /// consumed there.
         /// </summary>
         public void BakeSilhouette()
         {
@@ -84,8 +84,8 @@ namespace Surface.Core
 
         /// <summary>
         /// Records the world-space joint position of each active fingertip bone for touch
-        /// detection. Cheap (a few transform reads) — call every LateUpdate so touch tracks the
-        /// hand at render rate even on frames where the reconstruction dispatch is skipped.
+        /// detection. Cheap bone reads — call every LateUpdate so touch tracks the hand at
+        /// render rate.
         /// </summary>
         public void UpdateFingertips()
         {

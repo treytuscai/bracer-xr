@@ -48,9 +48,8 @@ namespace Surface.Core
         // start of its callback. Reset at callback start (not end) so that
         // exceptions in downstream processing don't permanently stall the pipeline.
         private bool _isReadbackPending;
-        // Set by Dispose(). AsyncGPUReadback holds its callback past component teardown, so a
-        // readback can complete after the owner has disposed every buffer; HandleReadback checks
-        // this before touching SurfaceBuffer or scheduling the unproject job.
+        // Set by Dispose(). AsyncGPUReadback can invoke its callback after teardown; HandleReadback
+        // checks this before touching SurfaceBuffer or scheduling the unproject job.
         private bool _isDisposed;
 
         // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
@@ -60,16 +59,14 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // SKIP-REDUNDANT DISPATCH
         // ------------------------------------------------------------------
-        // Depth VP of the last frame actually reconstructed. Meta republishes the reprojection
-        // matrices every render frame, but recomputes them from descriptors frozen with each depth
-        // frame, so the value is bit-identical until a NEW depth frame arrives (~25 Hz vs 72 Hz
-        // render). Comparing against it skips dispatches that would reprocess identical depth —
-        // and keeps duplicate frames out of the temporal-median history ring, where
-        // median(cur, cur, h) = cur would let a one-frame outlier through unfiltered.
+        // Depth VP of the last reconstructed frame. Meta republishes the reprojection matrices
+        // every render frame but recomputes them from descriptors frozen with each depth frame,
+        // so the value is bit-identical until a new depth frame arrives (~25 Hz). Matching it
+        // means the frame is already reconstructed; it also keeps duplicate frames out of the
+        // median's history ring, where median(cur, cur, h) = cur passes outliers through.
         private Matrix4x4 _lastReconstructedMatrix;
-        // Scratch for the non-allocating GetGlobalMatrixArray overload. The array overload
-        // allocates a managed Matrix4x4[] per call, and TryDispatch runs every render frame
-        // while dispatches are being skipped.
+        // Scratch for the non-allocating GetGlobalMatrixArray overload; TryDispatch runs every
+        // render frame.
         private readonly List<Matrix4x4> _depthMatrices = new List<Matrix4x4>(2);
 
         // ------------------------------------------------------------------
@@ -179,13 +176,10 @@ namespace Surface.Core
             if (_depthMatrices.Count == 0) return false;
             Matrix4x4 depthVP = _depthMatrices[0];
 
-            // SKIP-REDUNDANT: an unchanged matrix means the depth frame is the same one already
-            // reconstructed — skip and retry next frame. This caps reconstruction at the depth
-            // rate (~25 Hz) while render runs free, and guarantees the median's history ring holds
-            // three DISTINCT frames. Exact equality on purpose: republished matrices are
-            // bit-identical between depth updates, while a real new frame always differs (its
-            // capture pose moved by at least tracking jitter). Caveat: moving/recentering the
-            // tracking space changes the matrix without new depth — one harmless extra dispatch.
+            // SKIP-REDUNDANT: an unchanged matrix means this depth frame is already reconstructed —
+            // retry next frame. Caps reconstruction at the depth rate (~25 Hz) and keeps the
+            // median's history ring on distinct frames. Recentering the tracking space changes the
+            // matrix without new depth — one harmless extra dispatch.
             if (MatrixEquals(depthVP, _lastReconstructedMatrix)) return false;
 
             // Depth texture dimensions are needed to size the grid; bail until it's bound.
@@ -219,9 +213,8 @@ namespace Surface.Core
             int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
             int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
 
-            // Bake the hand silhouette mesh only now that a dispatch is committed — BakeMesh is
-            // the expensive part of the hand snapshot and would otherwise run every render frame
-            // while dispatches are being skipped.
+            // Bake the hand silhouette only on a committed dispatch — BakeMesh is too expensive
+            // to run on every (skipped) render frame.
             _handMaskSource?.BakeSilhouette();
 
             // Render the hand mask + world-position blit at grid resolution; returns the pooled
@@ -235,17 +228,16 @@ namespace Surface.Core
                 rt, 0,
                 request => HandleReadback(request, rt, buffer, rows, cols, onComplete));
 
-            // Mark this depth frame consumed only on commit, so an early-out above (e.g. arm
-            // off-screen) leaves the frame eligible for reconstruction on a later attempt.
+            // Mark the frame consumed only on commit, so an early-out above (e.g. arm off-screen)
+            // leaves it eligible for a later attempt.
             _lastReconstructedMatrix = depthVP;
             return true;
         }
 
         /// <summary>
-        /// Exact (bitwise) matrix equality for the skip-redundant check. Unity's Matrix4x4 ==
-        /// is epsilon-approximate and could mistake a real new depth frame for a republish when
-        /// the head is nearly still; republished matrices between depth frames are bit-identical,
-        /// so exact comparison is the correct test in both directions.
+        /// Exact matrix equality for the skip-redundant check. Matrix4x4's == is epsilon-based and
+        /// could mistake a real new depth frame for a republish when the head is nearly still;
+        /// republished matrices are bit-identical, so exact comparison is the right test.
         /// </summary>
         private static bool MatrixEquals(in Matrix4x4 a, in Matrix4x4 b)
         {
@@ -358,12 +350,9 @@ namespace Surface.Core
             _isReadbackPending = false;
             RenderTexture.ReleaseTemporary(rt);
 
-            // TEARDOWN GUARD: this callback can fire after Dispose(), when the caller has already
-            // disposed SurfaceBuffer. Proceeding would reallocate the freed arrays (a leak) and
-            // schedule the unproject job over the readback memory, which dies when this callback
-            // returns — a use-after-free that player builds hit silently (the safety checks that
-            // would throw are compiled out). The caller's own destroyed-check runs too late: the
-            // job is already scheduled by the time onComplete fires. Don't invoke onComplete.
+            // The callback can fire after Dispose(), once SurfaceBuffer is already disposed. Bail
+            // before touching the buffer or scheduling the unproject job — the readback array is
+            // only valid inside this callback. onComplete is intentionally not invoked.
             if (_isDisposed) return;
 
             if (request.hasError)
@@ -515,8 +504,7 @@ namespace Surface.Core
             if (_medianMat    != null) UnityEngine.Object.Destroy(_medianMat);
             _depthCmd?.Release();
 
-            // Release frees the GPU memory; Destroy frees the RenderTexture objects themselves
-            // (Release alone leaks them as orphaned managed/native shells).
+            // Release frees the GPU memory; Destroy frees the RenderTexture objects.
             if (_depthHist != null)
             {
                 foreach (var rt in _depthHist)

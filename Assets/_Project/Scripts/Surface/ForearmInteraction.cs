@@ -85,15 +85,13 @@ public class ForearmInteraction : MonoBehaviour
     /// Finds the hand vertex closest to the arm surface within the display region and
     /// returns its UV coordinate on the rendered texture and its world-space position
     /// projected onto the surface. Returns false when no qualifying vertex exists.
-    /// Safe to call outside LateUpdate; while the surface buffers are mid-update on worker
-    /// threads it serves the last cached result instead of recomputing.
+    /// Safe to call outside LateUpdate; serves the last cached result while the surface
+    /// buffers are mid-update on worker threads.
     /// </summary>
     public bool TryGetTouchPoint(out Vector2 uv, out Vector3 worldPoint)
     {
-        // STABILITY GUARD: between the dispatch callback and the harvest, the Burst chain is
-        // writing Hits/IsSurface on worker threads. Reading them here would race — silently, on
-        // device, where the collections safety checks are off. Serve the last stable result for
-        // that ~1-frame window; the surface itself only changes at the ~25 Hz depth rate anyway.
+        // Worker jobs are writing Hits/IsSurface between the dispatch callback and the harvest;
+        // reading them mid-write would race. Serve the last stable result for that ~1-frame window.
         if (!_surface.SurfaceStable)
         {
             uv         = TouchUV;

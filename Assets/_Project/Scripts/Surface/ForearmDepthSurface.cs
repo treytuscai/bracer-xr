@@ -174,9 +174,6 @@ public class ForearmDepthSurface : MonoBehaviour
     // while the previous frame's Burst chain is still executing, which would
     // alias SurfaceBuffer reads and writes across frames.
     private bool _isProcessingMesh = false;
-    // Set to true in OnDestroy so the async GPU readback callback can detect
-    // that the component has been torn down and skip accessing freed NativeArrays.
-    private bool _isDestroyed = false;
     // Set to true once at least one valid surface frame has been produced.
     bool _hasFrame;
     // Mean projected position of all surface hits along AxisRight (world units).
@@ -295,9 +292,8 @@ public class ForearmDepthSurface : MonoBehaviour
             }
         }
 
-        // Fingertip touch candidates are cheap bone reads, updated every frame so touch tracks
-        // the hand at render rate. The expensive hand-mesh bake lives inside TryDispatch, which
-        // runs it only when a reconstruction actually dispatches (~depth rate).
+        // Cheap bone reads every frame so touch tracks the hand at render rate; the hand-mesh
+        // bake happens in TryDispatch only on committed dispatches.
         _handMask.UpdateFingertips();
 
         // Only request a new GPU readback if the previous frame's pipeline has finished.
@@ -320,9 +316,8 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void OnDestroy()
     {
-        // Signal the async readback callback to bail out if it fires after this point.
-        _isDestroyed = true;
         // Finish any in-flight deferred chain before disposing the buffers it reads/writes.
+        // A readback completing after this point is dropped inside DepthReadback (_isDisposed).
         if (_harvestPending) _pendingMesh.Complete();
         _handMask?.Dispose();
         _depthReadback?.Dispose();
@@ -344,10 +339,6 @@ public class ForearmDepthSurface : MonoBehaviour
     /// <param name="cols">Number of grid columns in the current depth crop.</param>
     void OnDepthReady(JobHandle sampleHandle, int rows, int cols)
     {
-        // Guard against accessing disposed NativeArrays if the callback fires
-        // after OnDestroy (AsyncGPUReadback holds the delegate past component teardown).
-        if (_isDestroyed) return;
-
         if (rows == 0 || cols == 0)
         {
             _isProcessingMesh = false;
@@ -444,10 +435,9 @@ public class ForearmDepthSurface : MonoBehaviour
     public int           SurfaceCols => _cols;
     public float         ProjCenter  => _projCenter;
     public Material      SurfaceMat  => _mat;
-    // False while the deferred extract->boundary->mesh chain is writing SurfaceBuf on worker
-    // threads (dispatch callback -> harvest, ~1 frame per cycle). Main-thread consumers must not
-    // read Hits/IsSurface in that window: the collections safety checks that would catch the race
-    // are disabled in device builds, so it corrupts silently.
+    // False while the extract->boundary->mesh chain is writing SurfaceBuf on worker threads
+    // (dispatch callback -> harvest). Main-thread consumers must not read Hits/IsSurface then;
+    // device builds strip the safety checks that would catch the race.
     public bool          SurfaceStable => !_harvestPending;
 
     // ------------------------------------------------------------------
