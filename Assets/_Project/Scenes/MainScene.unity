@@ -883,7 +883,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.005
+  touchHoverHeight: 0.008
   touchDepth: 0.04
   maxCellSearchDist: 0.04
   showTouchDebug: 1
