@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Trey Tuscai
 
+using System;
 using UnityEngine;
 using Unity.Jobs;
 using Surface.Buffer;
@@ -138,6 +139,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // upload) once it's done, so the main thread never stalls waiting for the CPU pipeline.
     private JobHandle _pendingMesh;
     private bool _harvestPending;
+    // Cached delegate for TryDispatch — passing the method group directly allocates an Action
+    // every LateUpdate.
+    private Action<JobHandle, int, int> _onDepthReady;
 
     // ------------------------------------------------------------------
     // PIPELINE STAGES
@@ -193,6 +197,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);
         _boundarySmoother = new BoundarySmoother(edgeSmoothPasses, edgeWindowRadius);
         _meshGenerator = new MeshGenerator(depthStepRatio, displayOffset, displayWidth, displayHeight);
+        _onDepthReady = OnDepthReady;
     }
 
     /// <summary>
@@ -305,7 +310,7 @@ public class ForearmDepthSurface : MonoBehaviour
         {
             _isProcessingMesh = _depthReadback.TryDispatch(
                 _armFrame, maxFloodDist,
-                _surfaceBuffer, OnDepthReady
+                _surfaceBuffer, _onDepthReady
             );
         }
     }

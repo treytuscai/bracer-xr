@@ -51,6 +51,14 @@ namespace Surface.Core
         // Set by Dispose(). AsyncGPUReadback can invoke its callback after teardown; HandleReadback
         // checks this before touching SurfaceBuffer or scheduling the unproject job.
         private bool _isDisposed;
+        // State of the single readback in flight, consumed by HandleReadback via the cached
+        // _readbackCallback delegate — fields instead of a per-dispatch closure so dispatching
+        // doesn't allocate. _isReadbackPending guarantees one request at a time.
+        private readonly Action<AsyncGPUReadbackRequest> _readbackCallback;
+        private RenderTexture _pendingRT;
+        private SurfaceBuffer _pendingBuffer;
+        private int           _pendingRows, _pendingCols;
+        private Action<JobHandle, int, int> _pendingOnComplete;
 
         // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
         // The forearm crop is sampled at ~1:1 with these texels (grid = crop's texel footprint).
@@ -125,6 +133,7 @@ namespace Surface.Core
             HandMarginTexels      = handMarginTexels;
             OcclusionMarginTexels = occlusionMarginTexels;
             BorrowDepthBand       = borrowDepthBand;
+            _readbackCallback     = HandleReadback;
 
             Shader shader = Shader.Find("Hidden/MetaDepthCopy");
             if (shader == null)
@@ -224,9 +233,12 @@ namespace Surface.Core
 
             // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
             _isReadbackPending = true;
-            AsyncGPUReadback.Request(
-                rt, 0,
-                request => HandleReadback(request, rt, buffer, rows, cols, onComplete));
+            _pendingRT         = rt;
+            _pendingBuffer     = buffer;
+            _pendingRows       = rows;
+            _pendingCols       = cols;
+            _pendingOnComplete = onComplete;
+            AsyncGPUReadback.Request(rt, 0, _readbackCallback);
 
             // Mark the frame consumed only on commit, so an early-out above (e.g. arm off-screen)
             // leaves it eligible for a later attempt.
@@ -333,27 +345,32 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// AsyncGPUReadback completion handler: releases the pooled RT, then schedules the Burst
-        /// unproject job and hands its JobHandle (plus grid dimensions) to onComplete. Invokes
-        /// onComplete with a default handle on error or empty readback so the caller's pipeline
-        /// can still advance. Runs on the main thread during Unity's readback callback.
+        /// AsyncGPUReadback completion handler, reading the in-flight request's state from the
+        /// _pending* fields: releases the pooled RT, then schedules the Burst unproject job and
+        /// hands its JobHandle (plus grid dimensions) to the pending onComplete. Invokes it with
+        /// a default handle on error or empty readback so the caller's pipeline can still
+        /// advance. Runs on the main thread during Unity's readback callback.
         /// </summary>
-        private void HandleReadback(
-            AsyncGPUReadbackRequest request,
-            RenderTexture rt,
-            SurfaceBuffer buffer,
-            int rows, int cols,
-            Action<JobHandle, int, int> onComplete)
+        private void HandleReadback(AsyncGPUReadbackRequest request)
         {
             // Reset + release the pooled RT before any processing so exceptions downstream
             // don't permanently stall the pipeline or leak the temporary.
             _isReadbackPending = false;
-            RenderTexture.ReleaseTemporary(rt);
+            if (_pendingRT != null)
+            {
+                RenderTexture.ReleaseTemporary(_pendingRT);
+                _pendingRT = null;
+            }
 
             // The callback can fire after Dispose(), once SurfaceBuffer is already disposed. Bail
             // before touching the buffer or scheduling the unproject job — the readback array is
             // only valid inside this callback. onComplete is intentionally not invoked.
             if (_isDisposed) return;
+
+            SurfaceBuffer buffer = _pendingBuffer;
+            Action<JobHandle, int, int> onComplete = _pendingOnComplete;
+            int rows = _pendingRows;
+            int cols = _pendingCols;
 
             if (request.hasError)
             {
