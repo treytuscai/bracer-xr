@@ -17,27 +17,27 @@ namespace Surface.Core
     /// the finger), so `above` reads slightly positive even when the finger is flat; touchHoverHeight
     /// (~0.02m) covers this offset plus intentional hover.
     ///
-    /// SnapshotMesh() runs once per LateUpdate before DepthReadback.TryDispatch() so the GPU
-    /// silhouette and the touch candidates share the same frame's hand pose.
+    /// The two outputs update at different rates: UpdateFingertips() runs every LateUpdate so
+    /// touch tracks the hand at render rate, while BakeSilhouette() runs only when DepthReadback
+    /// commits a dispatch (~depth rate) so the silhouette pairs with the depth frame it masks.
     /// </summary>
     public class HandMask : IDisposable
     {
         // ------------------------------------------------------------------
         // OVR HAND SKELETON BONE INDICES (XRHand layout)
         // Verified against runtime Transform.name via adb logcat 2026-05-30. Kept as a full
-        // reference table; add indices to ActiveFingerTips to enable them. Must be declared
-        // before ActiveFingerTips (static fields initialize in order).
+        // reference table; add indices to ActiveFingerTips to enable them.
         // ------------------------------------------------------------------
-        // Suppress IDE0051/CS0414 (unused/assigned-but-never-read) on the reference-only indices.
-#pragma warning disable IDE0051, CS0414
-        private static readonly int Palm       = 0;
-        private static readonly int Wrist      = 1;
-        private static readonly int ThumbMeta  = 2,  ThumbProx  = 3,  ThumbDist  = 4,  ThumbTip  = 5;
-        private static readonly int IndexMeta  = 6,  IndexProx  = 7,  IndexInter = 8,  IndexDist = 9,  IndexTip = 10;
-        private static readonly int MiddleMeta = 11, MiddleProx = 12, MiddleInter = 13, MiddleDist = 14, MiddleTip = 15;
-        private static readonly int RingMeta   = 16, RingProx   = 17, RingInter  = 18, RingDist  = 19, RingTip  = 20;
-        private static readonly int LittleMeta = 21, LittleProx = 22, LittleInter = 23, LittleDist = 24, LittleTip = 25;
-#pragma warning restore IDE0051, CS0414
+        // Suppress IDE0051 (unused private member) on the reference-only indices.
+#pragma warning disable IDE0051
+        private const int Palm       = 0;
+        private const int Wrist      = 1;
+        private const int ThumbMeta  = 2,  ThumbProx  = 3,  ThumbDist  = 4,  ThumbTip  = 5;
+        private const int IndexMeta  = 6,  IndexProx  = 7,  IndexInter = 8,  IndexDist = 9,  IndexTip = 10;
+        private const int MiddleMeta = 11, MiddleProx = 12, MiddleInter = 13, MiddleDist = 14, MiddleTip = 15;
+        private const int RingMeta   = 16, RingProx   = 17, RingInter  = 18, RingDist  = 19, RingTip  = 20;
+        private const int LittleMeta = 21, LittleProx = 22, LittleInter = 23, LittleDist = 24, LittleTip = 25;
+#pragma warning restore IDE0051
 
         // ------------------------------------------------------------------
         // ACTIVE FINGERTIPS
@@ -69,24 +69,34 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Bakes the full hand mesh (for the GPU silhouette) and records the world-space
-        /// joint position of each active fingertip bone (for touch detection).
-        /// Call from LateUpdate before DepthReadback.TryDispatch().
+        /// Bakes the full hand mesh for the GPU silhouette. Called by DepthReadback on committed
+        /// dispatches only (~depth rate): BakeMesh is expensive and the silhouette is only
+        /// consumed there.
         /// </summary>
-        public void SnapshotMesh()
+        public void BakeSilhouette()
         {
-            if (_handMesh == null) return;
+            // sharedMesh is null until OVRMeshRenderer finishes hand-tracking init;
+            // BakeMesh would error on every dispatch until then.
+            if (_handMesh == null || _handMesh.sharedMesh == null) return;
             if (!_isInitialized && !TryInit()) return;
 
             _handMesh.BakeMesh(_bakedMesh);
+        }
 
+        /// <summary>
+        /// Records the world-space joint position of each active fingertip bone for touch
+        /// detection. Cheap bone reads — call every LateUpdate so touch tracks the hand at
+        /// render rate.
+        /// </summary>
+        public void UpdateFingertips()
+        {
             _vertCount = 0;
             var bones = _handSkeleton != null ? _handSkeleton.Bones : null;
             if (bones == null || bones.Count == 0) return;
 
             foreach (int boneIdx in ActiveFingerTips)
             {
-                if (boneIdx >= bones.Count || _vertCount >= ActiveFingerTips.Length) continue;
+                if (boneIdx >= bones.Count) continue;
                 Transform bone = bones[boneIdx].Transform;
                 if (bone == null) continue;
                 Vector3 p = bone.position;

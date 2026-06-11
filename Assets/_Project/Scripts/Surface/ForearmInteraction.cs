@@ -3,6 +3,7 @@
 
 using UnityEngine;
 using Surface.Buffer;
+using Surface.Core;
 
 /// <summary>
 /// Detects finger contact with the forearm display surface and exposes the result as a UV
@@ -14,7 +15,8 @@ using Surface.Buffer;
 ///   2. Find the nearest surface cell in arm-frame (along, across) space — O(rows × cols).
 ///   3. Above/below test along AxisUp (the IndexTip joint sits ~5-10mm inside the finger, so
 ///      `above` reads slightly positive even on flat contact — see touchHoverHeight).
-///   4. Compute the touch UV, mirroring MeshGenerator.CalculateUV so it addresses the same texture.
+///   4. Compute the touch UV via the shared SurfaceUV mapping so it addresses the same texture
+///      region as the rendered mesh vertices.
 ///   5. Among qualifying bones, pick the smallest `above` (most deliberate contact).
 ///
 /// TouchWorldPoint is the bone projected onto the surface (pos - AxisUp*above), not the surface
@@ -54,6 +56,8 @@ public class ForearmInteraction : MonoBehaviour
 
     private ForearmDepthSurface _surface;
 
+    private static readonly int TouchPointID = Shader.PropertyToID("_TouchPoint");
+
     /// <summary>
     /// Caches the ForearmDepthSurface reference on the same GameObject.
     /// </summary>
@@ -65,7 +69,7 @@ public class ForearmInteraction : MonoBehaviour
     /// <summary>
     /// Runs touch detection and updates the cached per-frame result.
     /// Runs in LateUpdate so it reads hand vertices and surface data that were
-    /// both finalized after animation (SnapshotMesh and OnDepthReady both run
+    /// both finalized after animation (UpdateFingertips and OnDepthReady both run
     /// in LateUpdate and the callback fires on the main thread before this).
     /// </summary>
     void LateUpdate()
@@ -77,8 +81,8 @@ public class ForearmInteraction : MonoBehaviour
         // Always update the shader property so that toggling showTouchDebug off
         // immediately clears the debug circle rather than leaving a stale one.
         Material mat = _surface.SurfaceMat;
-        if (mat != null && mat.HasProperty("_TouchPoint"))
-            mat.SetVector("_TouchPoint", IsActive && showTouchDebug
+        if (mat != null && mat.HasProperty(TouchPointID))
+            mat.SetVector(TouchPointID, IsActive && showTouchDebug
                 ? new Vector4(uv.x, uv.y, 1f, 0f)
                 : new Vector4(0f, 0f, 0f, 0f));
     }
@@ -87,10 +91,20 @@ public class ForearmInteraction : MonoBehaviour
     /// Finds the hand vertex closest to the arm surface within the display region and
     /// returns its UV coordinate on the rendered texture and its world-space position
     /// projected onto the surface. Returns false when no qualifying vertex exists.
-    /// Safe to call outside LateUpdate; result is not cached.
+    /// Safe to call outside LateUpdate; serves the last cached result while the surface
+    /// buffers are mid-update on worker threads.
     /// </summary>
     public bool TryGetTouchPoint(out Vector2 uv, out Vector3 worldPoint)
     {
+        // Worker jobs are writing Hits/IsSurface between the dispatch callback and the harvest;
+        // reading them mid-write would race. Serve the last stable result for that ~1-frame window.
+        if (!_surface.SurfaceStable)
+        {
+            uv         = TouchUV;
+            worldPoint = TouchWorldPoint;
+            return IsActive;
+        }
+
         uv         = Vector2.zero;
         worldPoint = Vector3.zero;
 
@@ -149,6 +163,12 @@ public class ForearmInteraction : MonoBehaviour
         return found;
     }
 
+    // Last TryGetNearestSurfaceFromPoint result, served while the surface buffers are
+    // mid-update on worker threads (same gating as TryGetTouchPoint).
+    private bool    _lastPreviewFound;
+    private Vector2 _lastPreviewUV;
+    private Vector3 _lastPreviewPoint;
+
     /// <summary>
     /// Finds the nearest display-surface UV to an arbitrary world point (e.g. index tip while carrying).
     /// Used for placement preview when the finger is near but not necessarily touching the mesh.
@@ -159,8 +179,18 @@ public class ForearmInteraction : MonoBehaviour
         out Vector2 uv,
         out Vector3 surfacePoint)
     {
+        // Worker jobs own Hits/IsSurface between the dispatch callback and the harvest; serve the
+        // last stable result for that ~1-frame window.
+        if (!_surface.SurfaceStable)
+        {
+            uv           = _lastPreviewUV;
+            surfacePoint = _lastPreviewPoint;
+            return _lastPreviewFound;
+        }
+
         uv = Vector2.zero;
         surfacePoint = Vector3.zero;
+        _lastPreviewFound = false;
 
         if (!_surface.IsValid)
             return false;
@@ -186,6 +216,9 @@ public class ForearmInteraction : MonoBehaviour
             return false;
 
         surfacePoint = projectedPos;
+        _lastPreviewFound = true;
+        _lastPreviewUV    = uv;
+        _lastPreviewPoint = surfacePoint;
         return true;
     }
 
@@ -194,27 +227,15 @@ public class ForearmInteraction : MonoBehaviour
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Mirrors MeshGenerator.VertexJob.CalculateUV exactly so touch UVs address
-    /// the same texture region as the rendered mesh vertices. Any divergence between
-    /// the two formulas would offset touch coordinates from the visual content.
+    /// Computes the touch UV with the same SurfaceUV mapping the mesh vertices use, so touch
+    /// coordinates address the rendered texture exactly.
     /// </summary>
     private Vector2 ComputeMeshUV(Vector3 pt)
     {
-        Vector3 fromWrist = pt - _surface.WristPosition;
-
-        // V: linear projection along the arm axis, normalized by display height and flipped.
-        float distAlong = Vector3.Dot(fromWrist, _surface.AxisDir);
-        float v = 1f - (((distAlong - _surface.displayOffset) /
-                          Mathf.Max(_surface.displayHeight, 1e-4f)) + 0.5f);
-
-        // U: linear projection along the camera-fixed lateral axis, centered on ProjCenter.
-        float projR = Vector3.Dot(fromWrist, _surface.AxisRight);
-        float u = ((projR - _surface.ProjCenter) /
-                    Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.25f;
-
-        u += _surface.PronationAngle / (2f * Mathf.PI);
-
-        return new Vector2(u, v);
+        return SurfaceUV.Compute(
+            pt, _surface.WristPosition, _surface.AxisDir, _surface.AxisRight,
+            _surface.ProjCenter, _surface.PronationAngle / (2f * Mathf.PI),
+            _surface.displayOffset, _surface.displayWidth, _surface.displayHeight);
     }
 
     /// <summary>

@@ -253,7 +253,7 @@ namespace Surface.Core
 
                         int nIdx = nr * Cols + nc;
 
-                        // Skip cells already kept or with no depth (incl. hand pixels masked by MetaDepthCopy).
+                        // Skip cells already kept or with no depth (incl. hand pixels carved upstream).
                         if (Kept[nIdx] || !HasDepth[nIdx]) continue;
 
                         Vector3 neighborHit = Hits[nIdx];

@@ -98,7 +98,7 @@ namespace Surface.Core
                 int col = flatIndex % GridWidth;
 
                 bool boundary = false;
-                for (int dr = -1; dr <= 1; dr++)
+                for (int dr = -1; dr <= 1 && !boundary; dr++)
                 {
                     for (int dc = -1; dc <= 1; dc++)
                     {
@@ -109,6 +109,7 @@ namespace Surface.Core
                             !IsSurface[nr * GridWidth + nc])
                         {
                             boundary = true;
+                            break;
                         }
                     }
                 }

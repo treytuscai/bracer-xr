@@ -34,32 +34,30 @@ Shader "Hidden/DepthTemporalMedian"
             #pragma multi_compile_instancing
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            // Global set by Meta's EnvironmentDepthManager (same source MetaDepthCopy reads).
+            // Global set by Meta's EnvironmentDepthManager — the raw per-eye depth array.
             TEXTURE2D_ARRAY(_EnvironmentDepthTexture);
             SAMPLER(sampler_EnvironmentDepthTexture);
 
-            // Full depth-frame hand silhouette (1 = hand), rendered by DepthReadback BEFORE this pass. The
-            // finger is written invalid into history so it can't become a pass-1 median sample: pass 1
-            // reprojects history as a static world, so a moving hand's old position would otherwise land
-            // on this frame's clean arm and lift the edge.
+            // Full depth-frame GROWN hand mask, built by HandMaskRender's separable max passes
+            // BEFORE this pass: R = silhouette dilated by the occlusion margin (carve zone),
+            // G = dilated by the hand margin (the bleed-reconstruct ring). The finger is written
+            // invalid into history so it can't become a pass-1 median sample: pass 1 reprojects
+            // history as a static world, so a moving hand's old position would otherwise land on
+            // this frame's clean arm and lift the edge.
             TEXTURE2D(_HandMaskTex);
             SAMPLER(sampler_HandMaskTex);
 
             // NDC->metres params (global, set by Meta). Used by the lifted-edge borrow to tell arm
-            // from a farther background; matches MetaDepthCopy's LinearizeDepth.
+            // from a farther background; matches the CPU unprojection's linearization (DepthReadback).
             float4 _EnvironmentDepthZBufferParams;
 
-            // One native depth texel in depth UV: _DepthTexelSize.xy = (1/_depthTexW, 1/_depthTexH). The
-            // margins and the borrow march step by this, so pass 0 stays fully full-frame native — the crop
+            // One native depth texel in depth UV: _DepthTexelSize.xy = (1/_depthTexW, 1/_depthTexH).
+            // The borrow march steps by this, so pass 0 stays fully full-frame native — the crop
             // is only a spatial restriction on later passes, never a unit in here.
             float4 _DepthTexelSize;
-            // Grow the silhouette by _HandMarginTexels depth texels, covering the stereo bleed/lift the
-            // sensor adds around the hand plus readback latency.
+            // The ring's width in depth texels — only the march's step bound here; the growth
+            // itself is baked into _HandMaskTex by HandMaskRender.
             int    _HandMarginTexels;
-            // Inner cushion (depth texels) kept as a hole: covers the real hand peeking past the rendered
-            // mask (imperfect mesh + readback latency), so peek-through is occluded, not flattened to arm.
-            // Stays below _HandMarginTexels so a reconstruct band remains.
-            int    _OcclusionMarginTexels;
             // Depth window (m): a borrowed sample within this of the nearest still counts as the same
             // surface when reconstructing the ring (rejects a farther background).
             float  _BorrowDepthBand;
@@ -84,27 +82,18 @@ Shader "Hidden/DepthTemporalMedian"
                                                   sampler_EnvironmentDepthTexture, duv, 0, 0).r;
             }
 
-            // NDC [0,1] -> linear metres (Meta's global ZBuffer params; matches MetaDepthCopy).
+            // NDC [0,1] -> linear metres (Meta's global ZBuffer params; matches DepthUnprojectionJob).
             float LinearizeDepth(float raw)
             {
                 float ndc = raw * 2.0 - 1.0;
                 return (1.0 / (ndc + _EnvironmentDepthZBufferParams.y)) * _EnvironmentDepthZBufferParams.x;
             }
 
-            // 3x3 hand-mask test in depth UV, silhouette grown by `marginTexels` depth texels (the 3 taps
-            // per axis sit at -m, 0, +m, so 9 taps approximate a radius-m dilation). m = 0 reduces to a
-            // single-tap test of the rendered silhouette itself.
-            float HandMaskGrown(float2 duv, int marginTexels)
+            // Grown-mask tap (dilation baked upstream by HandMaskRender):
+            // r = carve zone (occlusion margin), g = reconstruct ring (hand margin).
+            float2 SampleGrownMask(float2 duv)
             {
-                float2 texelStep = _DepthTexelSize.xy * marginTexels;
-                float m = 0.0;
-                UNITY_UNROLL
-                for (int dy = -1; dy <= 1; dy++)
-                    UNITY_UNROLL
-                    for (int dx = -1; dx <= 1; dx++)
-                        m = max(m, SAMPLE_TEXTURE2D_LOD(_HandMaskTex, sampler_HandMaskTex,
-                                                        duv + float2(dx, dy) * texelStep, 0).r);
-                return m;
+                return SAMPLE_TEXTURE2D_LOD(_HandMaskTex, sampler_HandMaskTex, duv, 0).rg;
             }
 
             // LIFTED-EDGE RECONSTRUCTION: estimate the local arm depth for a ring texel. March 8 rays
@@ -134,7 +123,7 @@ Shader "Hidden/DepthTemporalMedian"
                     for (int s = 1; s <= maxSteps; s++)
                     {
                         float2 o = duv + dirs[i] * float(s) * stepUV;
-                        if (HandMaskGrown(o, _HandMarginTexels) > 0.5) continue;   // still in ring -> keep going
+                        if (SampleGrownMask(o).g > 0.5) continue;   // still in ring -> keep going
                         float r = SampleDepthRaw(o);
                         if (r > 0.0 && r < 1.0)                                    // first clean, valid arm
                         {
@@ -166,21 +155,23 @@ Shader "Hidden/DepthTemporalMedian"
             {
                 float2 duv = input.uv;   // pass 0 renders full-frame, so input.uv IS depth UV
 
-                // Hand + occlusion cushion: the silhouette grown by _OcclusionMarginTexels to also cover
-                // the real hand peeking past the mask. Carved to 0 -> a hole that occludes (the consumer
-                // rejects 0), so peek-through isn't flattened to arm. Pass 1 keeps it via its invalid-input
-                // fallback (dCur <= 0).
-                if (HandMaskGrown(duv, _OcclusionMarginTexels) > 0.5)
+                float2 grown = SampleGrownMask(duv);
+
+                // Hand + occlusion cushion (R): the silhouette grown by the occlusion margin to also
+                // cover the real hand peeking past the mask. Carved to 0 -> a hole that occludes (the
+                // consumer rejects 0), so peek-through isn't flattened to arm. Pass 1 keeps it via its
+                // invalid-input fallback (dCur <= 0).
+                if (grown.r > 0.5)
                     return 0.0;
 
-                // Margin ring (inside the margin, outside the occlusion cushion): a mix of lifted bleed and
-                // real surface the wide margin reaches over (e.g. the arm in the gap to the thumb). Estimate
+                // Margin ring (G, outside the occlusion cushion): a mix of lifted bleed and real
+                // surface the wide margin reaches over (e.g. the arm in the gap to the thumb). Estimate
                 // the local arm, then decide per cell by depth so only raised cells move:
                 //   - nearer than the arm -> lifted bleed -> pull onto the arm.
                 //   - at/behind the arm   -> real surface -> keep its own depth (no bridging across gaps).
                 //   - invalid             -> fill from the estimate.
                 // The result enters history, so pass 1 medians it.
-                if (HandMaskGrown(duv, _HandMarginTexels) > 0.5)
+                if (grown.g > 0.5)
                 {
                     float cellRaw   = SampleDepthRaw(duv);
                     bool  cellValid = (cellRaw > 0.0 && cellRaw < 1.0);
@@ -249,8 +240,8 @@ Shader "Hidden/DepthTemporalMedian"
                 return output;
             }
 
-            // Raw [0,1] depth + screen UV -> world position, via a frame's inverse VP. Matches
-            // MetaDepthCopy's reconstruction: clip = (uv, raw) * 2 - 1, then inverse-VP + w-divide.
+            // Raw [0,1] depth + screen UV -> world position, via a frame's inverse VP. Matches the
+            // CPU unprojection (DepthUnprojectionJob): clip = (uv, raw) * 2 - 1, inverse-VP, w-divide.
             float3 UnprojectRaw(float2 uv, float raw, float4x4 invVP)
             {
                 float4 clip  = float4(uv * 2.0 - 1.0, raw * 2.0 - 1.0, 1.0);
@@ -285,7 +276,7 @@ Shader "Hidden/DepthTemporalMedian"
                 float2 duv = input.uv * _CropUVScaleOffset.xy + _CropUVScaleOffset.zw;
 
                 float dCur = SAMPLE_TEXTURE2D_LOD(_TexCur, sampler_TexCur, duv, 0).r;
-                // Invalid current depth: pass through; MetaDepthCopy's (0,1) test rejects it.
+                // Invalid current depth: pass through; the CPU unprojection's (0,1) test rejects it.
                 if (dCur <= 0.0 || dCur >= 1.0) return dCur;
 
                 float3 P  = UnprojectRaw(duv, dCur, _CurInvVP);
