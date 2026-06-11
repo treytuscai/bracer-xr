@@ -4,13 +4,14 @@
 // Produces the GROWN hand mask in depth-frame UV space each dispatch, in two stages:
 //   Pass 0 GEOMETRY: render the CPU-baked hand mesh as a solid white silhouette (R8).
 //   Pass 1+2 DILATE: grow the silhouette with a separable max filter (horizontal, then
-//     vertical) into two channels: R = within _OccMarginTexels of the hand (carve zone),
-//     G = within _HandMarginTexels (the bleed-reconstruct ring). Separable passes compute
-//     the exact (2m+1)^2 dilation in 2*(2m+1) taps per texel, so the margin holds even
-//     around features narrower than itself (a pointing finger).
+//     vertical) into two channels: R = within _OccMarginTexels of the hand (the no-trust
+//     cushion), G = within _HandMarginTexels (the bleed-reconstruct ring). Separable passes
+//     compute the exact (2m+1)^2 dilation in 2*(2m+1) taps per texel, so the margin holds
+//     even around features narrower than itself (a pointing finger).
 //
-// The temporal median's extract pass (DepthTemporalMedian pass 0) is the sole consumer:
-// it single-taps R to carve the occluded hole and G to reconstruct the lifted bleed ring.
+// The temporal median's extract pass (DepthTemporalMedian pass 0) is the sole consumer of
+// both the raw silhouette and the grown mask: it carves the silhouette to a hole, rebuilds
+// the R cushion at borrowed arm depth, and depth-discriminates the G ring.
 //
 // Pass 0 is rendered via CommandBuffer.DrawMesh with Meta's depth VP (_DepthVP =
 // depthMatrices[0]) so the silhouette aligns with the depth texture's UV space, not Unity's
