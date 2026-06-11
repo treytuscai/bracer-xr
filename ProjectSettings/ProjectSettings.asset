@@ -12,8 +12,8 @@ PlayerSettings:
   targetDevice: 2
   useOnDemandResources: 0
   accelerometerFrequency: 60
-  companyName: CMU-HCII
-  productName: InkandInterface
+  companyName: Trey Tuscai
+  productName: Bracer XR
   defaultCursor: {fileID: 0}
   cursorHotspot: {x: 0, y: 0}
   m_SplashScreenBackgroundColor: {r: 0.13725491, g: 0.12156863, b: 0.1254902, a: 1}
@@ -164,7 +164,7 @@ PlayerSettings:
   androidSupportedAspectRatio: 1
   androidMaxAspectRatio: 2.1
   applicationIdentifier:
-    Android: com.UnityTechnologies.com.unity.template.urpblank
+    Android: com.treytuscai.bracerxr
     Standalone: com.Unity-Technologies.com.unity.template.urp-blank
     iPhone: com.Unity-Technologies.com.unity.template.urp-blank
   buildNumber:
@@ -851,14 +851,14 @@ PlayerSettings:
   apiCompatibilityLevelPerPlatform: {}
   m_RenderingPath: 1
   m_MobileRenderingPath: 1
-  metroPackageName: InkandInterface
+  metroPackageName: Bracer XR
   metroPackageVersion: 
   metroCertificatePath: 
   metroCertificatePassword: 
   metroCertificateSubject: 
   metroCertificateIssuer: 
   metroCertificateNotAfter: 0000000000000000
-  metroApplicationDescription: InkandInterface
+  metroApplicationDescription: Bracer XR
   wsaImages: {}
   metroTileShortName: 
   metroTileShowName: 0
@@ -931,7 +931,7 @@ PlayerSettings:
   cloudProjectId: c22671f2-23fc-4c48-bc35-1c033b4136e6
   framebufferDepthMemorylessMode: 0
   qualitySettingsNames: []
-  projectName: InkandInterface
+  projectName: Bracer XR
   organizationId: trey-tuscai
   cloudEnabled: 0
   legacyClampBlendShapeWeights: 0
