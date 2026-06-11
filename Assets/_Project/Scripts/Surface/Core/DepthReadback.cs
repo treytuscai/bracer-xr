@@ -48,6 +48,10 @@ namespace Surface.Core
         // start of its callback. Reset at callback start (not end) so that
         // exceptions in downstream processing don't permanently stall the pipeline.
         private bool _isReadbackPending;
+        // Set by Dispose(). AsyncGPUReadback holds its callback past component teardown, so a
+        // readback can complete after the owner has disposed every buffer; HandleReadback checks
+        // this before touching SurfaceBuffer or scheduling the unproject job.
+        private bool _isDisposed;
 
         // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
         // The forearm crop is sampled at ~1:1 with these texels (grid = crop's texel footprint).
@@ -354,6 +358,14 @@ namespace Surface.Core
             _isReadbackPending = false;
             RenderTexture.ReleaseTemporary(rt);
 
+            // TEARDOWN GUARD: this callback can fire after Dispose(), when the caller has already
+            // disposed SurfaceBuffer. Proceeding would reallocate the freed arrays (a leak) and
+            // schedule the unproject job over the readback memory, which dies when this callback
+            // returns — a use-after-free that player builds hit silently (the safety checks that
+            // would throw are compiled out). The caller's own destroyed-check runs too late: the
+            // job is already scheduled by the time onComplete fires. Don't invoke onComplete.
+            if (_isDisposed) return;
+
             if (request.hasError)
             {
                 onComplete?.Invoke(default, 0, 0);
@@ -491,17 +503,30 @@ namespace Surface.Core
         /// <summary>
         /// Releases the blit material, mask material, command buffer, and temporal-median resources.
         /// Call when the component is destroyed. The mask RenderTexture is pooled (GetTemporary) and
-        /// released each frame, so there is nothing persistent to free for it.
+        /// released each frame, so there is nothing persistent to free for it. Arms the teardown
+        /// guard first so an in-flight readback completing after this point is dropped.
         /// </summary>
         public void Dispose()
         {
+            _isDisposed = true;
+
             if (_blitMaterial != null) UnityEngine.Object.Destroy(_blitMaterial);
             if (_handMaskMat  != null) UnityEngine.Object.Destroy(_handMaskMat);
             if (_medianMat    != null) UnityEngine.Object.Destroy(_medianMat);
             _depthCmd?.Release();
 
+            // Release frees the GPU memory; Destroy frees the RenderTexture objects themselves
+            // (Release alone leaks them as orphaned managed/native shells).
             if (_depthHist != null)
-                foreach (var rt in _depthHist) if (rt != null) rt.Release();
+            {
+                foreach (var rt in _depthHist)
+                {
+                    if (rt == null) continue;
+                    rt.Release();
+                    UnityEngine.Object.Destroy(rt);
+                }
+                _depthHist = null;
+            }
         }
 
         // --------------------------------------------------------
