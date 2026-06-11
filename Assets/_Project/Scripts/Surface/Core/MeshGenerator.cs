@@ -22,7 +22,7 @@ namespace Surface.Core
     ///        projection along AxisRight ("projected center") that keeps the UV window on the visible
     ///        patch. Kept in the job graph so VertexJob can depend on it without a mid-pipeline Complete.
     ///   3.   VertexJob   — per surface cell, atomically claim a dense vertex slot; compute local
-    ///        position and UV0 (see CalculateUV; UV rationale in ArmFrame).
+    ///        position and UV0 (see SurfaceUV; UV rationale in ArmFrame).
     ///   4.   TriangleJob — per 2×2 block, emit up to two triangles, dropping any whose edge spans a
     ///        true-depth step (StepRatio) so folds don't web. NormalsJob runs alongside.
     ///
@@ -154,8 +154,8 @@ namespace Surface.Core
             };
             JobHandle triHandle = triJob.Schedule((rows - 1) * (cols - 1), 32, handle);
 
-            // PASS 4: Per-vertex normals from grid neighbors (parallel). Independent of triangles, so
-            // it runs alongside PASS 3 — replaces the main-thread Mesh.RecalculateNormals().
+            // PASS 4: Per-vertex normals from grid neighbors (parallel). Independent of triangles,
+            // so it runs alongside PASS 3.
             var normalsJob = new NormalsJob
             {
                 Hits         = surfBuf.Hits,
@@ -302,31 +302,12 @@ namespace Surface.Core
                 CellToVert[i] = vIdx;
 
                 OutVerts[vIdx] = WorldToLocal.MultiplyPoint3x4(Hits[i]);
-                OutUVs[vIdx]   = CalculateUV(Hits[i]);
-            }
-
-            /// <summary>
-            /// Computes UV0 for a surface hit by linear projection onto the arm axes. Two-panel
-            /// layout: U=[0,0.5] is the dorsal panel, U=[0.5,1] the palmar panel (set
-            /// DisplayWidth = DisplayHeight for square pixels).
-            ///   V: Dot(fromWrist, Axis) / Height, centered and flipped so V=0 is elbow-side, V=1 wrist-side.
-            ///   U: Dot(fromWrist, AxisRight) / Width, offset to the dorsal panel center (0.25); a 180°
-            ///      pronation adds 0.5 to scroll to the palmar panel (0.75) — content scrolls, the frame
-            ///      doesn't spin (AxisRight is camera-fixed).
-            /// </summary>
-            private Vector2 CalculateUV(Vector3 pt)
-            {
-                Vector3 fromWrist = pt - WristPos;
-
-                float distAlong = Vector3.Dot(fromWrist, Axis);
-                float v = 1f - (((distAlong - Offset) / Mathf.Max(Height, 1e-4f)) + 0.5f);
-
-                float projR = Vector3.Dot(fromWrist, AxisRight);
-                float u = ((projR - ProjCenter[0]) / Mathf.Max(Width, 1e-4f)) + 0.25f;
-
-                u += PronationScroll;
-
-                return new Vector2(u, v);
+                // UV0 via the shared mapping (SurfaceUV) so touch detection addresses the same
+                // texture region. Set DisplayWidth = DisplayHeight for square pixels.
+                OutUVs[vIdx] = SurfaceUV.Compute(
+                    Hits[i], WristPos, Axis, AxisRight,
+                    ProjCenter[0], PronationScroll,
+                    Offset, Width, Height);
             }
         }
 
@@ -414,7 +395,7 @@ namespace Surface.Core
         /// difference of the world hits along the row/col directions), transforms it to local
         /// space, and writes it to the cell's dense vertex slot. Parallel and scatter-free — the
         /// regular grid hands each cell its neighbors directly, so no adjacency build or atomics
-        /// are needed (unlike Mesh.RecalculateNormals, which is single-threaded on the main thread).
+        /// are needed.
         /// </summary>
         [BurstCompile]
         struct NormalsJob : IJobParallelFor

@@ -31,9 +31,9 @@ using Surface.Core;
 ///   5. Smoothing:     Boundary flicker is removed upstream by the temporal median (step 2); a parallel
 ///                     boundary smoother de-steps the mesh edge by averaging each boundary cell with its
 ///                     boundary neighbors.
-///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris with
-///                     an edge-length rejection pass, compute UVs corrected for arm twist,
-///                     and upload to the GPU mesh.
+///   6. Mesh:          Convert the final IsSurface hits to vertices, tile quads/tris while
+///                     dropping faces that span a true-depth discontinuity (depthStepRatio),
+///                     compute UVs corrected for arm twist, and upload to the GPU mesh.
 /// </summary>
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
@@ -166,24 +166,26 @@ public class ForearmDepthSurface : MonoBehaviour
     private Material _mat;
     // UI texture currently bound to the material; the orientation swap only writes on a change.
     private Texture _activeTexture;
-    // Cached in Start: true if the material exposes _MainTex (false for the debug cyan fallback).
+    // Cached in Start: true if the material exposes _MainTex; gates the orientation texture swap.
     private bool _hasMainTex;
+
+    private static readonly int MainTexID = Shader.PropertyToID("_MainTex");
 
     // ------------------------------------------------------------------
     // PER-FRAME STATE
     // ------------------------------------------------------------------
     // Grid dimensions of the current depth crop (in cells, not pixels).
-    int _rows, _cols;
+    private int _rows, _cols;
     // Backpressure guard: prevents a new GPU readback from being scheduled
     // while the previous frame's Burst chain is still executing, which would
     // alias SurfaceBuffer reads and writes across frames.
     private bool _isProcessingMesh = false;
     // Set to true once at least one valid surface frame has been produced.
-    bool _hasFrame;
+    private bool _hasFrame;
     // Mean projected position of all surface hits along AxisRight (world units).
     // Used by MeshGenerator to center the UV window on the visible arm patch
     // rather than on the wrist origin.
-    float _projCenter;
+    private float _projCenter;
 
     /// <summary>
     /// Constructs all pipeline stages and binds Inspector parameters to each.
@@ -225,13 +227,13 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshRenderer.material = surfaceMaterial != null ? surfaceMaterial : MakeFallback();
         _mat = _meshRenderer.material;
 
-        _hasMainTex = _mat.HasProperty("_MainTex");
+        _hasMainTex = _mat.HasProperty(MainTexID);
 
         // Show the portrait image until the arm frame reports an orientation. If unset, leave the
         // material's own UI Texture untouched.
         if (_hasMainTex && portraitTexture != null)
         {
-            _mat.SetTexture("_MainTex", portraitTexture);
+            _mat.SetTexture(MainTexID, portraitTexture);
             _activeTexture = portraitTexture;
         }
     }
@@ -293,7 +295,7 @@ public class ForearmDepthSurface : MonoBehaviour
             if (target != _activeTexture)
             {
                 _activeTexture = target;
-                _mat.SetTexture("_MainTex", target);
+                _mat.SetTexture(MainTexID, target);
             }
         }
 
@@ -316,8 +318,8 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Releases all unmanaged NativeArray memory held by pipeline stages.
-    /// Each stage that owns persistent NativeArrays implements IDisposable.
+    /// Releases all unmanaged NativeArray memory held by pipeline stages (each stage that owns
+    /// persistent NativeArrays implements IDisposable) plus the runtime-created mesh and material.
     /// </summary>
     void OnDestroy()
     {
@@ -329,6 +331,11 @@ public class ForearmDepthSurface : MonoBehaviour
         _meshBuffer?.Dispose();
         _surfaceBuffer.Dispose();
         _meshGenerator?.Dispose();
+
+        // Runtime instances: the Mesh created in Start and the material instance from
+        // MeshRenderer.material (instantiated even when surfaceMaterial is assigned).
+        if (_mesh != null) Destroy(_mesh);
+        if (_mat  != null) Destroy(_mat);
     }
 
     /// <summary>
@@ -398,8 +405,7 @@ public class ForearmDepthSurface : MonoBehaviour
         _mesh.SetVertices(_meshBuffer.Vertices, 0, _meshBuffer.VertexCount);
         _mesh.SetUVs(0, _meshBuffer.UVs, 0, _meshBuffer.VertexCount);
 
-        // Normals are precomputed off the main thread by NormalsJob — upload directly instead of
-        // the single-threaded Mesh.RecalculateNormals().
+        // Normals are precomputed off the main thread by NormalsJob — uploaded directly.
         _mesh.SetNormals(_meshBuffer.Normals, 0, _meshBuffer.VertexCount);
 
         // SetIndices with NativeArray<int> avoids the managed array allocation

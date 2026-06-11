@@ -30,7 +30,7 @@ Shader "Custom/ForearmProjection"
         // Transparent queue: renders after opaque geometry so alpha blending composites
         // correctly over the environment.
         Tags { "RenderType"="Transparent" "Queue"="Transparent" }
-        // Standard premultiplied-alpha blending.
+        // Standard straight-alpha blending.
         Blend SrcAlpha OneMinusSrcAlpha
         // No depth writes: transparent surfaces shouldn't occlude geometry behind them.
         ZWrite Off

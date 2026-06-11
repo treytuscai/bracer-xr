@@ -110,11 +110,13 @@ Assets/_Project/
 │   └── Surface/
 │       ├── Core/                  depth pipeline stages
 │       │   ├── ArmFrame.cs            wrist/elbow -> arm coordinate frame
-│       │   ├── DepthReadback.cs       async GPU readback + unprojection
-│       │   ├── HandMask.cs            GPU hand silhouette for depth exclusion
+│       │   ├── DepthReadback.cs       dispatch, async GPU readback + CPU unprojection
+│       │   ├── DepthStabilizer.cs     GPU hand mask + 3-frame temporal median
+│       │   ├── HandMask.cs            baked hand mesh + fingertip positions
 │       │   ├── SurfaceExtractor.cs    seed + BFS flood isolation
 │       │   ├── BoundarySmoother.cs    parallel Burst boundary smoothing
-│       │   └── MeshGenerator.cs       parallel mesh + UV + normal emission
+│       │   ├── MeshGenerator.cs       parallel mesh + UV + normal emission
+│       │   └── SurfaceUV.cs           shared display UV mapping (mesh + touch)
 │       ├── Buffer/                shared NativeArray data buses
 │       │   ├── SurfaceBuffer.cs
 │       │   └── MeshBuffer.cs

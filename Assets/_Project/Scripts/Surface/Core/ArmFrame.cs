@@ -38,12 +38,11 @@ namespace Surface.Core
         // ------------------------------------------------------------------
         // REFERENCES
         // _bodySkeleton and _centerEyeAnchor are set at construction.
-        // _cam is resolved lazily on the first valid TryUpdate call because
+        // Cam is resolved lazily on the first valid TryUpdate call because
         // the Camera component may not exist at construction time.
         // ------------------------------------------------------------------
         private readonly OVRSkeleton _bodySkeleton;
         private readonly Transform _centerEyeAnchor;
-        private Camera _cam;
 
         // ------------------------------------------------------------------
         // CONFIGURATION
@@ -103,13 +102,11 @@ namespace Surface.Core
             // 1. VALIDATION — fail fast if critical references are missing.
             if (_bodySkeleton == null || _centerEyeAnchor == null) return false;
 
-            // Lazy camera resolution: defer GetComponent until the first valid frame
-            // and assign the public Cam property only once.
-            if (_cam == null)
+            // Lazy camera resolution: defer GetComponent until the first valid frame.
+            if (Cam == null)
             {
-                _cam = _centerEyeAnchor.GetComponent<Camera>();
-                if (_cam == null) return false;
-                Cam = _cam;
+                Cam = _centerEyeAnchor.GetComponent<Camera>();
+                if (Cam == null) return false;
             }
 
             var bones = _bodySkeleton.Bones;
@@ -136,7 +133,7 @@ namespace Surface.Core
             // 3. ORTHOGONAL FRAME (camera-facing) — AxisRight anchored to the camera, not the bone
             // (see class summary).
             Vector3 armMid   = (wristPos + elbowPos) * 0.5f;
-            Vector3 toCamera = (_cam.transform.position - armMid).normalized;
+            Vector3 toCamera = (Cam.transform.position - armMid).normalized;
 
             // Cross(axis, toCamera) lies flat across the arm as seen from the headset,
             // regardless of forearm rotation. Guard: if the arm points almost directly at
@@ -179,8 +176,8 @@ namespace Surface.Core
             else if (OrientationMode == DisplayOrientation.Landscape) IsLandscape = true;
             else
             {
-                float screenH = Mathf.Abs(Vector3.Dot(axis, _cam.transform.right));
-                float screenV = Mathf.Abs(Vector3.Dot(axis, _cam.transform.up));
+                float screenH = Mathf.Abs(Vector3.Dot(axis, Cam.transform.right));
+                float screenV = Mathf.Abs(Vector3.Dot(axis, Cam.transform.up));
                 float angle   = Mathf.Atan2(screenH, screenV);
                 const float flipToLandscape = 55f * Mathf.Deg2Rad;
                 const float flipToPortrait  = 35f * Mathf.Deg2Rad;
