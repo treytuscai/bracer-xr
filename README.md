@@ -19,9 +19,9 @@ The forearm surface is reconstructed continuously from the Quest 3's environment
 **In brief:** each frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
 
 <p align="center">
-  <img src="docs/pipeline.png" alt="Per-frame pipeline: GPU depth processing (hand silhouette, hand-masked depth, temporal median), an async readback to CPU Burst jobs (unproject, seed, BFS flood, boundary smooth, mesh), then a GPU upload to composite the on-arm UI in passthrough." width="100%">
+  <img src="docs/pipeline.png" alt="Per-frame pipeline: GPU depth processing (grown hand mask, hand-masked depth, temporal median), an async readback to CPU Burst jobs (unproject, seed, BFS flood, boundary smooth, mesh), then a GPU upload to composite the on-arm UI in passthrough." width="100%">
   <br>
-  <sub><b>The per-frame pipeline.</b> On the GPU, the interacting hand is masked out of the depth image and stabilized with a 3-frame temporal median. An async readback hands the stabilized depth to CPU Burst jobs that unproject it into world space, isolate the forearm patch (seed, BFS flood, boundary smooth), and build the mesh. The mesh is uploaded back to the GPU to composite the touchable UI in passthrough.</sub>
+  <sub><b>The per-frame pipeline.</b> On the GPU, the interacting hand is grown into a two-zone mask, carved out of the depth image, and stabilized with a 3-frame temporal median. An async readback hands the stabilized depth to CPU Burst jobs that unproject it into world space, isolate the forearm patch (seed, BFS flood, boundary smooth), and build the mesh. The mesh is uploaded back to the GPU to composite the touchable UI in passthrough.</sub>
 </p>
 
 
@@ -29,7 +29,7 @@ The forearm surface is reconstructed continuously from the Quest 3's environment
 <summary><b>How each stage works</b></summary>
 
 1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame: axis, lateral, and normal vectors, plus the pronation angle and a portrait/landscape orientation.
-2. Render the interacting hand as a full-frame GPU silhouette, then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the finger is carved out of the depth history, and the stereo "bleed" ring it lifts around itself is reconstructed from the clean arm just outside it, so that fix enters history and stays temporally stable.
+2. Render the interacting hand as a full-frame GPU silhouette and grow it into a two-zone mask with a separable dilation — an inner carve zone and a bleed-reconstruct ring. Then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the carve zone is cut out of the depth history, and the stereo "bleed" the finger lifts in the ring around itself is reconstructed from the clean arm just outside it, so that fix enters history and stays temporally stable.
 3. Read back the stabilized forearm crop from the GPU asynchronously — at the crop's native depth-texel resolution and a single float per texel, so only the arm region ever crosses the bus. A Burst job then unprojects each depth texel into a world-space hit grid on the CPU, using the depth frame's own capture pose; all hand handling already happened during stabilization, so the carved finger arrives invalid and drops out as a hole.
 4. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders: the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
 5. A parallel Burst boundary smoother de-steps the extracted edge cells (the temporal median in step 2 is the depth denoise).
@@ -123,7 +123,7 @@ Assets/_Project/
 ├── Shaders/
 │   ├── ForearmProjection.shader     URP transparent shader for the surface mesh
 │   ├── DepthTemporalMedian.shader   3-frame reprojected median that stabilizes the depth
-│   └── HandMaskRender.shader        GPU hand silhouette
+│   └── HandMaskRender.shader        hand silhouette grown into the two-zone mask
 ├── Materials/   Scenes/   Textures/
 ```
 
