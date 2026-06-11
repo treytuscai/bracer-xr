@@ -203,7 +203,7 @@ namespace Surface.Core
             // The palm cap is folded in (when tracked) so the crop covers the palm too.
             if (!CalculateArmBounds(
                 ref depthVP, ref wristPos, ref elbowPos, ref palmCap, arm.HasPalm, ref camPos,
-                cam.fieldOfView, cam.pixelWidth, cam.pixelHeight,
+                cam.pixelWidth, cam.pixelHeight,
                 maxFloodDist,
                 out int cropX, out int cropY, out int cropW, out int cropH))
             {
@@ -595,9 +595,9 @@ namespace Surface.Core
 
         /// <summary>
         /// Projects the wrist and elbow into screen space using the depth camera's VP matrix,
-        /// expands the bounding box by a perspective-correct margin derived from maxFloodDist,
+        /// expands the bounding box per axis by maxFloodDist measured through that same VP,
         /// and clamps to screen bounds. Returns false if either bone is behind the camera or
-        /// the resulting crop is smaller than one pixel stride.
+        /// the resulting crop is degenerate (a few pixels).
         ///
         /// Uses ref parameters throughout to avoid copying Matrix4x4 (64 bytes) and
         /// Vector3 (12 bytes) structs on every call.
@@ -605,7 +605,7 @@ namespace Surface.Core
         private static bool CalculateArmBounds(
             ref Matrix4x4 depthVP,
             ref Vector3 wristPos, ref Vector3 elbowPos, ref Vector3 palmCap, bool hasPalm, ref Vector3 camPos,
-            float fov, int pixelWidth, int pixelHeight,
+            int pixelWidth, int pixelHeight,
             float maxFloodDist,
             out int xMin, out int yMin, out int width, out int height)
         {
@@ -625,19 +625,36 @@ namespace Surface.Core
                          out float elbowX, out float elbowY, out float elbowW);
             if (elbowW <= 0f) return false;
 
-            // Compute the arm midpoint's distance from the camera in world space.
-            // Unrolled manually to avoid allocating a Vector3 struct on the heap.
-            float midX = (wristPos.x + elbowPos.x) * 0.5f - camPos.x;
-            float midY = (wristPos.y + elbowPos.y) * 0.5f - camPos.y;
-            float midZ = (wristPos.z + elbowPos.z) * 0.5f - camPos.z;
-            float armMidDist = Mathf.Sqrt(midX * midX + midY * midY + midZ * midZ);
+            // PADDING — convert maxFloodDist (world metres) to pixels by measurement: project the
+            // arm midpoint plus two maxFloodDist offsets perpendicular to the view ray, and pad
+            // each axis by the larger projected distance. Measuring through depthVP itself keeps
+            // the padding exact for the depth camera's own frustum (wider FOV than the render
+            // camera, asymmetric) and for this pixel space's anisotropy (square depth NDC scaled
+            // by the double-wide screen dimensions) — one scalar focal can't serve both axes.
+            Vector3 mid     = (wristPos + elbowPos) * 0.5f;
+            Vector3 viewDir = (mid - camPos).normalized;
+            // World-space perpendiculars to the view ray; fallback for looking straight up/down.
+            Vector3 padRight = Vector3.Cross(viewDir, Vector3.up);
+            if (padRight.sqrMagnitude < 1e-6f) padRight = Vector3.Cross(viewDir, Vector3.right);
+            padRight.Normalize();
+            Vector3 padUp = Vector3.Cross(padRight, viewDir);   // unit: cross of orthonormal pair
 
-            // Convert maxFloodDist (world meters) to screen pixels at the arm's depth.
-            // focalPx is the pinhole camera focal length in pixels: f = h / (2 * tan(fov/2)).
-            // Hardcoding Deg2Rad (0.0174532924f) avoids a Unity constant lookup per call.
-            float focalPx       = pixelHeight / (2f * Mathf.Tan(fov * 0.5f * 0.0174532924f));
-            // At distance d, a world-space radius r subtends r/d radians, so r/d * f pixels.
-            float dynamicPadding = (maxFloodDist / armMidDist) * focalPx;
+            ProjectPoint(ref depthVP, ref mid, halfWidth, halfHeight,
+                         out float midPx, out float midPy, out float midW);
+            if (midW <= 0f) return false;
+
+            Vector3 offR = mid + padRight * maxFloodDist;
+            Vector3 offU = mid + padUp    * maxFloodDist;
+            ProjectPoint(ref depthVP, ref offR, halfWidth, halfHeight,
+                         out float rPx, out float rPy, out float rW);
+            ProjectPoint(ref depthVP, ref offU, halfWidth, halfHeight,
+                         out float uPx, out float uPy, out float uW);
+            if (rW <= 0f || uW <= 0f) return false;
+
+            // Either offset can land diagonally in pixel space (head roll), so take the larger
+            // component per axis — the padding then covers the flood radius in every direction.
+            float padX = Mathf.Max(Mathf.Abs(rPx - midPx), Mathf.Abs(uPx - midPx));
+            float padY = Mathf.Max(Mathf.Abs(rPy - midPy), Mathf.Abs(uPy - midPy));
 
             // Bounding box of the two projected points, expanded by the padding.
             float minX = wristX < elbowX ? wristX : elbowX;
@@ -660,10 +677,10 @@ namespace Surface.Core
                 }
             }
 
-            float fXMin = minX - dynamicPadding;
-            float fXMax = maxX + dynamicPadding;
-            float fYMin = minY - dynamicPadding;
-            float fYMax = maxY + dynamicPadding;
+            float fXMin = minX - padX;
+            float fXMax = maxX + padX;
+            float fYMin = minY - padY;
+            float fYMax = maxY + padY;
 
             // Clamp to screen bounds using branchless ternary (avoids Mathf.Clamp overhead).
             fXMin = fXMin > 0f ? fXMin : 0f;
