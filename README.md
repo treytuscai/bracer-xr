@@ -10,6 +10,10 @@ This is an on-body interaction system for extended reality: the forearm acts as 
 
 _Built for the **Ink & Interface** research study, exploring how body artist principles carry over to authoring on-skin interfaces. This repository is the XR prototype behind it: the reconstructed forearm surface those interfaces build on._
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Demo: a touchable UI projected onto the reconstructed forearm surface in passthrough on Quest 3." width="640">
+</p>
+
 ---
 
 ## How It Works
