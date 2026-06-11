@@ -255,7 +255,8 @@ public class ForearmDepthSurface : MonoBehaviour
     }
 
     /// <summary>
-    /// Requests a new depth readback each frame (unless one is in flight).
+    /// Requests a new depth readback each frame (unless one is in flight or no new depth
+    /// frame has arrived — reconstruction is capped at the depth rate, ~25 Hz).
     /// Runs in LateUpdate so bone transforms are finalized after animation
     /// and physics before they are consumed by the arm coordinate frame.
     /// </summary>
@@ -294,13 +295,18 @@ public class ForearmDepthSurface : MonoBehaviour
             }
         }
 
+        // Fingertip touch candidates are cheap bone reads, updated every frame so touch tracks
+        // the hand at render rate. The expensive hand-mesh bake lives inside TryDispatch, which
+        // runs it only when a reconstruction actually dispatches (~depth rate).
+        _handMask.UpdateFingertips();
+
         // Only request a new GPU readback if the previous frame's pipeline has finished.
         // The flag is set to TryDispatch()'s return value: TryDispatch has several silent
-        // early-return paths (no depth matrices, arm off-screen) that never call
-        // OnDepthReady, so arming unconditionally would permanently deadlock the pipeline.
+        // early-return paths (no depth matrices, no new depth frame, arm off-screen) that
+        // never call OnDepthReady, so arming unconditionally would permanently deadlock the
+        // pipeline.
         if (!_isProcessingMesh)
         {
-            _handMask.SnapshotMesh();
             _isProcessingMesh = _depthReadback.TryDispatch(
                 _armFrame, maxFloodDist,
                 _surfaceBuffer, OnDepthReady

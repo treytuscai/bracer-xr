@@ -17,8 +17,9 @@ namespace Surface.Core
     /// the finger), so `above` reads slightly positive even when the finger is flat; touchHoverHeight
     /// (~0.02m) covers this offset plus intentional hover.
     ///
-    /// SnapshotMesh() runs once per LateUpdate before DepthReadback.TryDispatch() so the GPU
-    /// silhouette and the touch candidates share the same frame's hand pose.
+    /// The two outputs update at different rates: UpdateFingertips() runs every LateUpdate so
+    /// touch tracks the hand at render rate, while BakeSilhouette() runs only when DepthReadback
+    /// commits a dispatch (~depth rate) so the silhouette pairs with the depth frame it masks.
     /// </summary>
     public class HandMask : IDisposable
     {
@@ -69,17 +70,25 @@ namespace Surface.Core
         }
 
         /// <summary>
-        /// Bakes the full hand mesh (for the GPU silhouette) and records the world-space
-        /// joint position of each active fingertip bone (for touch detection).
-        /// Call from LateUpdate before DepthReadback.TryDispatch().
+        /// Bakes the full hand mesh for the GPU silhouette. Called by DepthReadback only when a
+        /// reconstruction dispatch commits (~depth rate, not render rate) — BakeMesh is the
+        /// expensive half of the hand snapshot and the silhouette is only consumed per dispatch.
         /// </summary>
-        public void SnapshotMesh()
+        public void BakeSilhouette()
         {
             if (_handMesh == null) return;
             if (!_isInitialized && !TryInit()) return;
 
             _handMesh.BakeMesh(_bakedMesh);
+        }
 
+        /// <summary>
+        /// Records the world-space joint position of each active fingertip bone for touch
+        /// detection. Cheap (a few transform reads) — call every LateUpdate so touch tracks the
+        /// hand at render rate even on frames where the reconstruction dispatch is skipped.
+        /// </summary>
+        public void UpdateFingertips()
+        {
             _vertCount = 0;
             var bones = _handSkeleton != null ? _handSkeleton.Bones : null;
             if (bones == null || bones.Count == 0) return;

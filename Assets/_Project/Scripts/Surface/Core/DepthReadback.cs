@@ -7,6 +7,7 @@ using Unity.Jobs;
 using UnityEngine;
 using UnityEngine.Rendering;
 using System;
+using System.Collections.Generic;
 using Surface.Buffer;
 
 namespace Surface.Core
@@ -51,6 +52,21 @@ namespace Surface.Core
         // Native resolution of Meta's _EnvironmentDepthTexture (e.g. 320x320), cached once.
         // The forearm crop is sampled at ~1:1 with these texels (grid = crop's texel footprint).
         private int _depthTexW, _depthTexH;
+
+        // ------------------------------------------------------------------
+        // SKIP-REDUNDANT DISPATCH
+        // ------------------------------------------------------------------
+        // Depth VP of the last frame actually reconstructed. Meta republishes the reprojection
+        // matrices every render frame, but recomputes them from descriptors frozen with each depth
+        // frame, so the value is bit-identical until a NEW depth frame arrives (~25 Hz vs 72 Hz
+        // render). Comparing against it skips dispatches that would reprocess identical depth —
+        // and keeps duplicate frames out of the temporal-median history ring, where
+        // median(cur, cur, h) = cur would let a one-frame outlier through unfiltered.
+        private Matrix4x4 _lastReconstructedMatrix;
+        // Scratch for the non-allocating GetGlobalMatrixArray overload. The array overload
+        // allocates a managed Matrix4x4[] per call, and TryDispatch runs every render frame
+        // while dispatches are being skipped.
+        private readonly List<Matrix4x4> _depthMatrices = new List<Matrix4x4>(2);
 
         // ------------------------------------------------------------------
         // HAND MASK (GPU silhouette)
@@ -136,8 +152,9 @@ namespace Surface.Core
         /// <summary>
         /// Validates depth matrices, crops the forearm region, blits world positions,
         /// and enqueues an async GPU readback + Burst unproject job.
-        /// Returns true only when a readback was actually enqueued; false on any
-        /// early-out (readback in flight, no depth matrices, arm off-screen, shader missing).
+        /// Returns true only when a readback was actually enqueued; false on any early-out
+        /// (readback in flight, no depth matrices, no NEW depth frame since the last
+        /// reconstruction, arm off-screen, shader missing).
         /// Callers must only arm their in-flight guard when this returns true.
         /// </summary>
         public bool TryDispatch(
@@ -153,8 +170,19 @@ namespace Surface.Core
             // Meta sets _EnvironmentDepthReprojectionMatrices once per depth frame.
             // Index 0 is the left eye world->clip matrix for the depth camera's pose
             // at the time that depth frame was captured (not the current render pose).
-            Matrix4x4[] depthMatrices = Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices");
-            if (depthMatrices == null || depthMatrices.Length == 0) return false;
+            _depthMatrices.Clear();
+            Shader.GetGlobalMatrixArray("_EnvironmentDepthReprojectionMatrices", _depthMatrices);
+            if (_depthMatrices.Count == 0) return false;
+            Matrix4x4 depthVP = _depthMatrices[0];
+
+            // SKIP-REDUNDANT: an unchanged matrix means the depth frame is the same one already
+            // reconstructed — skip and retry next frame. This caps reconstruction at the depth
+            // rate (~25 Hz) while render runs free, and guarantees the median's history ring holds
+            // three DISTINCT frames. Exact equality on purpose: republished matrices are
+            // bit-identical between depth updates, while a real new frame always differs (its
+            // capture pose moved by at least tracking jitter). Caveat: moving/recentering the
+            // tracking space changes the matrix without new depth — one harmless extra dispatch.
+            if (MatrixEquals(depthVP, _lastReconstructedMatrix)) return false;
 
             // Depth texture dimensions are needed to size the grid; bail until it's bound.
             if (!TryCacheDepthDims()) return false;
@@ -169,7 +197,7 @@ namespace Surface.Core
             // camera's VP matrix so crop coordinates align with the depth texture.
             // The palm cap is folded in (when tracked) so the crop covers the palm too.
             if (!CalculateArmBounds(
-                ref depthMatrices[0], ref wristPos, ref elbowPos, ref palmCap, arm.HasPalm, ref camPos,
+                ref depthVP, ref wristPos, ref elbowPos, ref palmCap, arm.HasPalm, ref camPos,
                 cam.fieldOfView, cam.pixelWidth, cam.pixelHeight,
                 maxFloodDist,
                 out int cropX, out int cropY, out int cropW, out int cropH))
@@ -187,16 +215,38 @@ namespace Surface.Core
             int cols = Mathf.Max(2, Mathf.RoundToInt((float)cropW / screenW * _depthTexW));
             int rows = Mathf.Max(2, Mathf.RoundToInt((float)cropH / screenH * _depthTexH));
 
+            // Bake the hand silhouette mesh only now that a dispatch is committed — BakeMesh is
+            // the expensive part of the hand snapshot and would otherwise run every render frame
+            // while dispatches are being skipped.
+            _handMaskSource?.BakeSilhouette();
+
             // Render the hand mask + world-position blit at grid resolution; returns the pooled
             // world-position RT to read back (released in the readback callback).
             RenderTexture rt = DispatchReconstruction(
-                depthMatrices[0], cropX, cropY, cropW, cropH, screenW, screenH, cols, rows);
+                depthVP, cropX, cropY, cropW, cropH, screenW, screenH, cols, rows);
 
             // Read back the whole grid-resolution RT — the RT *is* the grid, so no sub-region crop.
             _isReadbackPending = true;
             AsyncGPUReadback.Request(
                 rt, 0,
                 request => HandleReadback(request, rt, buffer, rows, cols, onComplete));
+
+            // Mark this depth frame consumed only on commit, so an early-out above (e.g. arm
+            // off-screen) leaves the frame eligible for reconstruction on a later attempt.
+            _lastReconstructedMatrix = depthVP;
+            return true;
+        }
+
+        /// <summary>
+        /// Exact (bitwise) matrix equality for the skip-redundant check. Unity's Matrix4x4 ==
+        /// is epsilon-approximate and could mistake a real new depth frame for a republish when
+        /// the head is nearly still; republished matrices between depth frames are bit-identical,
+        /// so exact comparison is the correct test in both directions.
+        /// </summary>
+        private static bool MatrixEquals(in Matrix4x4 a, in Matrix4x4 b)
+        {
+            for (int i = 0; i < 16; i++)
+                if (a[i] != b[i]) return false;
             return true;
         }
 

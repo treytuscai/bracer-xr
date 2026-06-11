@@ -63,7 +63,7 @@ public class ForearmInteraction : MonoBehaviour
     /// <summary>
     /// Runs touch detection and updates the cached per-frame result.
     /// Runs in LateUpdate so it reads hand vertices and surface data that were
-    /// both finalized after animation (SnapshotMesh and OnDepthReady both run
+    /// both finalized after animation (UpdateFingertips and OnDepthReady both run
     /// in LateUpdate and the callback fires on the main thread before this).
     /// </summary>
     void LateUpdate()
