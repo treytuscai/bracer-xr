@@ -10,6 +10,7 @@ authors:
   - family-names: Tuscai
     given-names: Trey
     affiliation: "Carnegie Mellon University"
+    orcid: "https://orcid.org/0009-0004-0916-1043"
 license: Apache-2.0
 keywords:
   - extended reality
