@@ -62,6 +62,10 @@ Bracer XR is a research prototype with a deliberately narrow scope:
 - **One forearm, one interacting hand.** The system reconstructs a single arm and tracks a single touching hand at a time.
 - **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole exactly where its silhouette sits; the surface around it is rebuilt from neighbouring arm, so the canvas reaches the hand. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
 
+### Known issues
+
+- **Hand tracking can occasionally fail to initialize on launch** (OVRHand never reports valid data), so the hands don't lock on and touch never registers. A mitigation is in place but is not fully reliable; the issue is being investigated. Restarting the app usually recovers.
+
 ---
 
 ## Requirements
@@ -159,7 +163,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
-| `orientationMode` | Portrait | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
+| `orientationMode` | Auto | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
 | `portraitTexture` | none | Image shown upright; drives the material's UI Texture |
 | `landscapeTexture` | none | Image shown sideways (author it already sideways) |
 
