@@ -123,7 +123,7 @@ public class ForearmDepthSurface : MonoBehaviour
     public float displayOffset = 0.08f;
     [Tooltip("Auto = swap portrait/landscape image with the arm's pitch. Portrait/Landscape = lock to " +
              "one image, no swap.")]
-    public DisplayOrientation orientationMode = DisplayOrientation.Portrait;
+    public DisplayOrientation orientationMode = DisplayOrientation.Auto;
     [Tooltip("Image shown when the arm is upright (portrait). Drives the material's UI Texture.")]
     public Texture portraitTexture;
     [Tooltip("Image shown when the arm is horizontal (landscape). Author it sideways: orientation swaps the texture.")]

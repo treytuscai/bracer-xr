@@ -803,7 +803,7 @@ MonoBehaviour:
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
-  orientationMode: 1
+  orientationMode: 0
   portraitTexture: {fileID: 2800000, guid: b72898f434fc04fab9155dffea020606, type: 3}
   landscapeTexture: {fileID: 2800000, guid: c17d766c0f0054f0e943b36ce56d3883, type: 3}
 --- !u!23 &995909437
