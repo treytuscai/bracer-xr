@@ -1,244 +1,185 @@
-# Ink & Interface — XR Prototype
+# Bracer XR
 
-On-body interaction paradigms for Extended Reality. Renders interactive digital UI on the user's forearm via Meta Quest 3 passthrough, with direct-touch input detected from the opposite hand against a live-reconstructed skin surface.
+[![Unity](https://img.shields.io/badge/Unity-2022.3.62f3-000000?logo=unity&logoColor=white)](https://unity.com/releases/editor/archive)
+[![Platform](https://img.shields.io/badge/Platform-Meta%20Quest%203-0467DF?logo=meta&logoColor=white)](https://www.meta.com/quest/quest-3/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20669281.svg)](https://doi.org/10.5281/zenodo.20669281)
+
+**The forearm as a touchscreen.** A directly touchable interface, reconstructed in real time from the Meta Quest 3's environment depth. No controllers, no markers, no external hardware.
+
+This is an on-body interaction system for extended reality: the forearm acts as the display surface and the opposite hand as the input, bringing phone-style direct touch to bare skin.
+
+_Built for the **Ink & Interface** research study, exploring how body artist principles carry over to authoring on-skin interfaces. This repository is the XR prototype behind it: the reconstructed forearm surface those interfaces build on._
+
+<p align="center">
+  <img src="docs/demo.gif" alt="Demo: a touchable UI projected onto the reconstructed forearm surface in passthrough on Quest 3." width="640">
+</p>
 
 ---
 
-## Prerequisites
+## How It Works
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Unity Hub | 3.8+ | [unity.com/download](https://unity.com/download) |
-| Unity Editor | **2022.3.62f3** | Must match exactly. Install via Unity Hub with **Android Build Support** (Android SDK & NDK, OpenJDK) |
-| Git LFS | 2.0+ | `git lfs install` before cloning |
-| Meta Quest Developer Hub | Latest | [developer.oculus.com/downloads](https://developer.oculus.com/downloads) |
-| Meta Quest 3 | v69+ firmware | Developer Mode enabled via Meta phone app |
+The forearm surface is reconstructed continuously from the Quest 3's environment depth, which the headset computes by stereo-matching its passthrough cameras. The pipeline spans the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled asynchronously, and the main thread uploads each finished mesh only once its jobs complete.
 
-> **Important:** The Unity version must match exactly (`2022.3.62f3`). Mismatched versions cause reimports and can break prefab references.
+**In brief:** each frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
+
+<p align="center">
+  <img src="docs/pipeline.png" alt="Per-frame pipeline: GPU depth processing (grown hand mask, hand-masked depth, temporal median), an async readback to CPU Burst jobs (unproject, seed, BFS flood, boundary smooth, mesh), then a GPU upload to composite the on-arm UI in passthrough." width="100%">
+  <br>
+  <sub><b>The per-frame pipeline.</b> On the GPU, the interacting hand is grown into a two-zone mask, carved out of the depth image, and stabilized with a 3-frame temporal median. An async readback hands the stabilized depth to CPU Burst jobs that unproject it into world space, isolate the forearm patch (seed, BFS flood, boundary smooth), and build the mesh. The mesh is uploaded back to the GPU to composite the touchable UI in passthrough.</sub>
+</p>
+
+
+<details>
+<summary><b>How each stage works</b></summary>
+
+1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame: axis, lateral, and normal vectors, plus the pronation angle and a portrait/landscape orientation.
+2. Render the interacting hand as a full-frame GPU silhouette and grow it into a two-zone mask with a separable dilation — an inner no-trust cushion and a bleed-reconstruct ring. Then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the hand silhouette is cut out of the depth history, the cushion around it is rebuilt at arm depth borrowed from just outside the mask (its own readings are bleed or hand, never trusted), and the stereo "bleed" the finger lifts in the ring beyond that is reconstructed from the same clean arm — so the canvas continues right up to the hand, and the fixes enter history and stay temporally stable.
+3. Read back the stabilized forearm crop from the GPU asynchronously — at the crop's native depth-texel resolution and a single float per texel, so only the arm region ever crosses the bus. A Burst job then unprojects each depth texel into a world-space hit grid on the CPU, using the depth frame's own capture pose; all hand handling already happened during stabilization, so the carved finger arrives invalid and drops out as a hole.
+4. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders: the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
+5. A parallel Burst boundary smoother de-steps the extracted edge cells (the temporal median in step 2 is the depth denoise).
+6. Generate the mesh: vertices and triangles are emitted in parallel through atomic counters, normals are computed in parallel across the grid, and UVs follow a linear, camera-fixed projection (with a pronation scroll offset).
+
+</details>
+
+### Touch detection
+
+Each frame, the interacting hand's skinned-mesh vertices are tested against the reconstructed surface: the nearest surface cell within range is found, the signed distance above the surface is computed, and a UV coordinate is derived at sub-cell precision from the finger position. The surface keeps updating throughout interaction (pronation included), with no freeze step.
+
+### UV design
+
+UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps the viewport upright regardless of wrist rotation, and pronation adds a U scroll offset so rotating the wrist reveals new content rather than spinning the image. Two panels: `U=[0,0.5]` dorsal, `U=[0.5,1]` palmar.
 
 ---
 
-## Getting Started
+## Limitations & Scope
+
+Bracer XR is a research prototype with a deliberately narrow scope:
+
+- **Quest 3 only.** It depends on Meta's environment depth API and Movement SDK body tracking; it does not run on other headsets.
+- **The depth source is low-resolution.** Quest's environment depth is a single ~320×320 image spread across the entire field of view, so the forearm occupies only a fraction of it. The surface captures the arm and a finger fine, but thin gaps and small, fine-grained features are below what it can resolve.
+- **A hovering finger lifts the depth around itself.** Quest's stereo depth pulls arm texels toward a nearby finger (a mixed-pixel "bleed"), which would raise the reconstructed surface at the contact point. The pipeline reconstructs that ring from the clean arm just outside it, but a slight residual raise remains at the resolution limit.
+- **The arm patch is found from depth, not trusted from the skeleton.** Wrist and elbow bone tracking is only a rough starting point and can be inaccurate, so the patch is seeded from a tight, confident region near the bone axis and grown by a BFS flood through depth-connected cells. The flood is walled to forearm and palm cylinders because, left unbounded, BFS can leak across depth-continuous neighbours into surfaces that are not the arm.
+- **One forearm, one interacting hand.** The system reconstructs a single arm and tracks a single touching hand at a time.
+- **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole exactly where its silhouette sits; the surface around it is rebuilt from neighbouring arm, so the canvas reaches the hand. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
+
+### Known issues
+
+- **Hand tracking can occasionally fail to initialize on launch** (OVRHand never reports valid data), so the hands don't lock on and touch never registers. A mitigation is in place but is not fully reliable; the issue is being investigated. Restarting the app usually recovers.
+
+---
+
+## Requirements
+
+| | |
+|------|------|
+| Meta Quest 3 | v69+ firmware, Developer Mode enabled |
+| Unity Editor | **2022.3.62f3** (must match exactly) with Android Build Support (SDK, NDK, OpenJDK) |
+| Git LFS | `git lfs install` before cloning |
+| SDKs (already in repo) | Meta XR All-in-One SDK (hand tracking, passthrough), Meta Movement SDK (body tracking) |
+
+---
+
+## Build & Run
 
 ```bash
 git lfs install
-git clone <repo-url>
+git clone https://github.com/treytuscai/bracer-xr.git
 ```
 
-1. Open **Unity Hub** --> **Open** --> select the cloned `InkAndInterface` folder
-2. Wait for Library regeneration (10–15 minutes on first open — this is normal)
-3. Open the scene: `Assets/Scenes/MainScene.unity`
-4. Connect Quest 3 via USB
-5. **File → Build Settings** --> verify Android is the active platform and MainScene is in the scene list
-6. **Build and Run**
+1. Open the project in Unity Hub with editor **2022.3.62f3**.
+2. Open `Assets/_Project/Scenes/MainScene.unity`.
+3. Connect the Quest 3 over USB (`adb devices` to confirm).
+4. **File -> Build Settings** -> confirm Android is the active platform and the scene is listed -> **Build and Run**.
 
-That's it. All project settings, SDK config, and OVRManager settings are already committed.
+All project, SDK, and OVRManager settings are committed. No manual configuration is required.
 
 ---
 
-## System Overview
+## Usage
 
-The project has gone through two surface approaches. The depth-based reconstruction is the current system. The cylinder approach lives in `Deprecated/` and is preserved as a reference baseline for the team's earlier interaction experiments.
+Once the app is running on the headset:
 
-### Depth-Based Surface Reconstruction (Current)
+1. **Hold out your left arm** in view of the headset. The UI appears on your forearm once body and hand tracking lock on.
+2. **Touch with your other hand.** Bring a fingertip to the surface. Contact registers from a slight hover down through a shallow press (`touchHoverHeight` / `touchDepth`).
+3. **Rotate your wrist to switch panels.** The display has two: dorsal (`U=[0,0.5]`) and palmar (`U=[0.5,1]`).
+4. **Turn your arm upright or sideways** to swap between the portrait and landscape images (`portraitTexture` / `landscapeTexture`). Set `orientationMode` to lock to one. The image is swapped, not rotated, so author each one in its own orientation.
 
-The forearm surface is reconstructed live each frame from the Quest 3's environment depth API (stereo camera computed depth, not an IR sensor). The pipeline runs entirely on the GPU and CPU worker threads with no main thread blocking beyond two minimal sync points.
-
-**Pipeline per frame:**
-1. Resolve wrist and elbow bones from the body skeleton to compute the arm coordinate frame (axis, lateral, normal vectors, pronation, orientation).
-2. Render the interacting hand as a GPU silhouette using Meta's depth camera projection. Blit the full depth texture through a reconstruction shader — hand pixels are rejected at the source so they never enter the reconstruction.
-3. Async GPU readback of the forearm crop. Burst jobs unproject depth pixels into a world-space hit grid.
-4. Seed cylinder + BFS flood isolates the forearm patch from background geometry.
-5. Laplacian smoothing + boundary contour smoothing on the hit grid.
-6. Mesh generation: atomic parallel vertex/triangle emission with UV projection (linear, camera-fixed, with pronation scroll offset).
-
-**Touch detection:**  
-Each frame, the interacting hand's skinned mesh vertices are tested against the reconstructed surface. The nearest surface cell within range is found, the signed depth above the surface is computed, and a UV coordinate is derived at sub-cell precision from the actual finger position. Touch is live — the surface updates continuously during interaction, pronation works mid-touch, and there is no freeze step.
-
-**UV design:**  
-UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps the viewport upright regardless of wrist rotation. Pronation adds a U scroll offset so rotating the wrist reveals new content rather than spinning the image. Two panels: U=[0,0.5] dorsal, U=[0.5,1] palmar.
-
-### Cylinder-Based Surface (Deprecated — the team's Baseline)
-
-An earlier approach approximating the forearm as a geometric cylinder fit to the arm bones. No depth data, no live reconstruction. Used as the foundation for the team's UI and interaction experiments on a separate branch. These experiments are pending port to the depth-based surface.
-
-Scripts in `Assets/_Project/Scripts/Surface/Deprecated/`:
-
-| File | Role |
-|------|------|
-| `ArmSurfaceGenerator.cs` | Builds the cylinder mesh from wrist/elbow bones |
-| `CalibrationManager.cs` | Maps the cylinder to the physical arm at session start |
-| `HandTrackingController.cs` | Hand input against the cylinder surface |
-| `TouchInputManager.cs` | Touch event routing |
-| `VisualFeedbackController.cs` | Feedback effects on touch |
+The surface updates continuously. Keep your hand on it while moving or rotating the arm. There is no need to pull away or recalibrate.
 
 ---
 
-## Current Project Structure
+## Example Experiments
 
-```
-Assets/
-├── _Project/                 <- OUR CODE AND ASSETS
-│   ├── Scripts/
-│   │   ├── Surface/
-│   │   │   ├── Core/               depth pipeline stages (ArmFrame, DepthReadback, SurfaceExtractor, etc.)
-│   │   │   ├── Buffer/             shared NativeArray data buses (SurfaceBuffer, MeshBuffer)
-│   │   │   ├── ForearmDepthSurface.cs   root MonoBehaviour, orchestrates pipeline
-│   │   │   ├── ForearmInteraction.cs    touch detection against reconstructed surface
-│   │   │   └── Deprecated/         cylinder-based prototype (preserved for reference)
-│   │   ├── Interaction/
-│   │   ├── UI/
-│   │   └── Data/
-│   ├── Materials/
-│   ├── Prefabs/
-│   ├── Shaders/
-│   │   ├── ForearmProjection.shader     URP transparent shader for the surface mesh
-│   │   ├── MetaDepthCopy.shader         depth reconstruction blit (world positions from depth texture)
-│   │   └── HandMaskRender.shader        GPU hand silhouette for depth exclusion
-│   └── Textures/
-├── Scenes/
-├── Oculus/                   <- DO NOT MODIFY (Meta SDK config)
-├── Resources/                <- DO NOT MODIFY (Meta SDK runtime settings)
-├── Settings/                 <- DO NOT MODIFY (URP pipeline settings)
-├── StreamingAssets/          <- DO NOT MODIFY
-└── XR/                       <- DO NOT MODIFY (XR plugin settings)
-```
-
-All our work goes in `_Project/`. Everything else is SDK or Unity-managed.
+`master` is the surface system itself. The [`experiment-merge`](https://github.com/treytuscai/bracer-xr/tree/experiment-merge) branch holds example experiment apps from the Ink & Interface study, built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished — read it as a demo of what the surface supports, not as part of the system itself.
 
 ---
 
-## Scene Hierarchy
+## Project Structure
+
+Application code and assets live in `Assets/_Project/`; everything else under `Assets/` is SDK- or Unity-managed.
 
 ```
-MainScene
-├── OVRCameraRig
-│   ├── TrackingSpace
-│   │   ├── LeftHandAnchor
-│   │   ├── RightHandAnchor
-│   │   └── CenterEyeAnchor
-│   └── OVRPassthroughLayer
-├── Directional Light
-└── [Managers]
+Assets/_Project/
+├── Scripts/
+│   └── Surface/
+│       ├── Core/                  depth pipeline stages
+│       │   ├── ArmFrame.cs            wrist/elbow -> arm coordinate frame
+│       │   ├── DepthReadback.cs       dispatch, async GPU readback + CPU unprojection
+│       │   ├── DepthStabilizer.cs     GPU hand mask + 3-frame temporal median
+│       │   ├── HandMask.cs            baked hand mesh + fingertip positions
+│       │   ├── SurfaceExtractor.cs    seed + BFS flood isolation
+│       │   ├── BoundarySmoother.cs    parallel Burst boundary smoothing
+│       │   ├── MeshGenerator.cs       parallel mesh + UV + normal emission
+│       │   └── SurfaceUV.cs           shared display UV mapping (mesh + touch)
+│       ├── Buffer/                shared NativeArray data buses
+│       │   ├── SurfaceBuffer.cs
+│       │   └── MeshBuffer.cs
+│       ├── ForearmDepthSurface.cs     root MonoBehaviour; orchestrates the pipeline
+│       └── ForearmInteraction.cs      touch detection against the surface
+├── Shaders/
+│   ├── ForearmProjection.shader     URP transparent shader for the surface mesh
+│   ├── DepthTemporalMedian.shader   3-frame reprojected median that stabilizes the depth
+│   └── HandMaskRender.shader        hand silhouette grown into the two-zone mask
+├── Materials/   Scenes/   Textures/
 ```
 
 ---
 
-## Scene Editing Rules
+## Key Parameters
 
-**DO NOT edit `MainScene.unity` without coordinating first.**
-
-Unity scenes are serialized YAML. Even small changes (moving an object, clicking a checkbox) rewrite large sections of the file, causing **unmergeable git conflicts**. Two people editing the same scene simultaneously will almost certainly lose someone's work.
-
-**Rules:**
-- **Announce in Discord before opening the scene for editing**
-- **Announce when you're done** so others can pull
-- If you need to add new functionality, **use prefabs** — build your feature as a prefab in `_Project/Prefabs/`, then one person adds it to the scene
-- If a merge conflict does happen on a `.unity` file, **do not attempt to manually merge** — have the person with the most recent working version rebuild the scene
-
----
-
-## OVRManager Settings (already configured)
-
-These are set on the OVRCameraRig and committed. Listed here for reference — you shouldn't need to change them.
-
-| Setting | Value |
-|---------|-------|
-| Hand Tracking Support | Hands Only |
-| Hand Tracking Frequency | HIGH |
-| Hand Tracking Skeleton Version | **OpenXR** |
-| Body Tracking Support | Required |
-| Body Tracking Fidelity | High |
-| Body Tracking Joint Set | Upper Body |
-| Passthrough Support | Required |
-| Insight Passthrough | Enabled |
-| Quest Features > Hand Tracking | Required |
-| Quest Features > Body Tracking | Required |
-| Quest Features > Passthrough | Required |
-| Tracking Origin Type | Floor Level |
-
----
-
-## Player Settings (already configured)
-
-| Setting | Value |
-|---------|-------|
-| Color Space | Linear |
-| Minimum API Level | 32 (Android 12L) |
-| Scripting Backend | IL2CPP |
-| Target Architectures | ARM64 only |
-| Graphics APIs | Vulkan, OpenGL ES 3.0 |
-| XR Plug-in Management | Oculus (NOT OpenXR) |
-
----
-
-## Installed SDKs
-
-| Package | Purpose |
-|---------|---------|
-| Meta XR All-in-One SDK | Hand tracking, passthrough, device integration |
-| Meta Movement SDK | Body tracking (forearm/elbow estimation) |
-
----
-
-## Building & Deploying
-
-1. Connect Quest 3 via USB (verify with `adb devices`)
-2. **File → Build Settings** → confirm Android platform and scene is listed
-3. **Build and Run**
-4. First IL2CPP build takes 5–15 minutes. Subsequent builds are faster.
-
----
-
-## Key Inspector Parameters
-
-These live on the `ForearmDepthSurface` component and are the primary tuning surface.
+Primary tuning surface, on the `ForearmDepthSurface` component:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `pixelStride` | 6 | Depth sample spacing in pixels. Lower = denser mesh, more compute |
-| `seedRadialDist` | 0.05m | Tight inner cylinder radius for confident forearm seeds |
-| `maxRadialDist` | 0.15m | Outer flood wall — caps BFS growth away from arm |
-| `connectivityThreshold` | 0.010m | Max 3D distance between adjacent flood cells |
-| `maxQuadEdge` | 0.014m | Rejects quads whose edges exceed this — prevents bridging depth gaps |
-| `smoothPasses` | 3 | Laplacian smoothing iterations |
-| `edgeSmoothPasses` | 2 | Boundary contour smoothing iterations |
-| `handMaskInflate` | 0.001m | Outward silhouette inflation to cover fast-motion depth bleed |
-| `displayHeight` | 0.4m | Physical height of the UV display window on the arm |
-| `displayWidth` | 0.4m | Physical width of one display panel (set equal to height for square pixels) |
-| `displayOffset` | 0.08m | Center of display window along arm from wrist |
-| `touchHoverHeight` | 0.02m | How far above the surface a finger can hover and still register |
-| `touchDepth` | 0.04m | How far through the surface a press can go before being rejected |
+| `handMarginTexels` | 8 | Depth texels the hand silhouette is grown by, covering the stereo bleed/lift around the hand. The finger inside it is carved from depth history; the bleed ring is reconstructed from clean arm. Raise until the lift clears. |
+| `occlusionMarginTexels` | 1 | Cushion (depth texels) around the hand where measured depth is never trusted — the strongest bleed plus the real hand peeking past the rendered mask. Rebuilt at borrowed arm depth, so the canvas reaches the hand silhouette instead of a wider hole. Stays below `handMarginTexels` |
+| `borrowDepthBand` | 0.03 m | When reconstructing the bleed ring, the depth window behind the nearest borrowed sample that still counts as the same surface (rejects a farther background, e.g. a table behind the arm) |
+| `enablePalm` | true | Include the palm (wrist -> middle-finger MCP) in the reconstruction; off = forearm only |
+| `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
+| `maxFloodDist` | 0.1 m | Outer wall that caps BFS flood growth away from the arm |
+| `maxFromElbow` | 0.02 m | How far past the elbow the forearm cylinder extends (the wrist-side cap is flat; the palm cylinder takes over) |
+| `connectivityThreshold` | 0.01 m | Max 3D step between adjacent flood cells to count as connected |
+| `edgeSmoothPasses` / `edgeWindowRadius` | 3 / 2 | Boundary smoothing iterations and per-pass neighborhood half-width (cells) |
+| `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
+| `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
+| `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
+| `orientationMode` | Auto | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
+| `portraitTexture` | none | Image shown upright; drives the material's UI Texture |
+| `landscapeTexture` | none | Image shown sideways (author it already sideways) |
+
+Touch tuning, on the `ForearmInteraction` component:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `touchHoverHeight` | 0.008 m | How far above the surface a finger still registers |
+| `touchDepth` | 0.04 m | How far through the surface a press can go before being ignored |
+| `maxCellSearchDist` | 0.04 m | Max arm-frame distance to the nearest surface cell for a touch to register |
 
 ---
 
-## Development Phases
+## License
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1. Hand Tracking Foundation | Done | Passthrough + hand skeleton + wrist anchor |
-| 2. Cylinder Prototype | Done | Geometric arm cylinder, calibration, basic touch — baseline for UI experiments |
-| 3. Depth Surface Reconstruction | Done | Live forearm mesh from Quest depth API, GPU hand masking, sub-cell touch detection |
-| 4. UI Experiments + Integration | In Progress | Port the team's interaction work from cylinder to depth surface |
-| 5. User Evaluation | Later | Data logging + evaluation protocol |
+The original work in this repository (primarily the code under `Assets/_Project/`) is licensed under the [Apache License 2.0](LICENSE) — © 2026 Trey Tuscai. You are free to use, modify, and build upon it, provided you retain the copyright and attribution notices (see [NOTICE](NOTICE)).
 
----
-
-## Common Issues
-
-| Symptom | Fix |
-|---------|-----|
-| Black screen on Quest | Camera background = solid black alpha 0. OVRPassthroughLayer = Underlay. Passthrough Support = Required. |
-| Hand tracking not working | OVRManager > Hand Tracking Support must NOT be "Controllers Only". Ensure adequate lighting. |
-| "InteractionSDK OpenXR skeleton" warning | OVRManager > Hand Tracking Skeleton Version → set to **OpenXR**. This is a data format, NOT the Unity OpenXR plugin. |
-| Body tracking not initializing | Body Tracking Support = Required. Joint Set = Upper Body. |
-| Joints return (0,0,0) | OVRSkeleton needs 1–2 frames to init. Check `IsTracked` before reading. |
-| Surface not appearing | Check that `ForearmDepthSurface` Inspector references (bodySkeleton, handMesh, centerEyeAnchor, surfaceMaterial) are all assigned. |
-| Hand depth bleeding through surface | Increase `handMaskInflate` slightly (try 0.003m). |
-| Surface has large hole where hand is | Depth sensor has wider FOV than render display — the mask is intentionally conservative. Expected behavior. |
-| Touch not registering | Verify `ForearmInteraction` is on the same GameObject as `ForearmDepthSurface`. Check `maxCellSearchDist` is not too small. |
-| Build fails: Gradle error | Ensure Android SDK/NDK installed via Unity Hub modules. Min API >= 32. Try deleting `Library/Bee/`. |
-| App crashes on launch | Run `adb logcat -s Unity` and look for NullReferenceException. Usually a missing Inspector reference. |
-| Library/ folder is huge | Normal. It's gitignored. Unity regenerates it from Assets/ and ProjectSettings/. |
-| Missing .meta files after pull | Someone deleted a .meta without its asset. Never delete .meta files independently. |
-| Scene merge conflict | See Scene Editing Rules above. Do not manually merge `.unity` files. |
+Third-party SDKs vendored elsewhere under `Assets/` and `Packages/` (Meta XR SDK, Meta Movement SDK, etc.) are governed by their own license terms, not the Apache License above.
