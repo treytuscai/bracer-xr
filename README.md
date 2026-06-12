@@ -79,7 +79,7 @@ Bracer XR is a research prototype with a deliberately narrow scope:
 
 ```bash
 git lfs install
-git clone <repo-url>
+git clone https://github.com/treytuscai/bracer-xr.git
 ```
 
 1. Open the project in Unity Hub with editor **2022.3.62f3**.
@@ -101,6 +101,12 @@ Once the app is running on the headset:
 4. **Turn your arm upright or sideways** to swap between the portrait and landscape images (`portraitTexture` / `landscapeTexture`). Set `orientationMode` to lock to one. The image is swapped, not rotated, so author each one in its own orientation.
 
 The surface updates continuously. Keep your hand on it while moving or rotating the arm. There is no need to pull away or recalibrate.
+
+---
+
+## Example Experiments
+
+`master` is the surface system itself. The [`experiment-merge`](https://github.com/treytuscai/bracer-xr/tree/experiment-merge) branch holds example experiment apps from the Ink & Interface study, built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger).
 
 ---
 
@@ -161,7 +167,7 @@ Touch tuning, on the `ForearmInteraction` component:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `touchHoverHeight` | 0.005 m | How far above the surface a finger still registers |
+| `touchHoverHeight` | 0.008 m | How far above the surface a finger still registers |
 | `touchDepth` | 0.04 m | How far through the surface a press can go before being ignored |
 | `maxCellSearchDist` | 0.04 m | Max arm-frame distance to the nearest surface cell for a touch to register |
 

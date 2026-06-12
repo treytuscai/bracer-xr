@@ -17,6 +17,6 @@ keywords:
   - depth reconstruction
   - Meta Quest 3
   - Unity
-# repository-code: "<repo-url>"
-# version: "1.0.0"
-# date-released: 2026-01-01
+repository-code: "https://github.com/treytuscai/bracer-xr"
+version: "0.9.0"
+date-released: 2026-06-12
