@@ -111,7 +111,7 @@ The surface updates continuously. Keep your hand on it while moving or rotating 
 
 ## Example Experiments
 
-`master` is the surface system itself. The [`experiment-merge`](https://github.com/treytuscai/bracer-xr/tree/experiment-merge) branch holds example experiment apps from the Ink & Interface study, built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger).
+`master` is the surface system itself. The [`experiment-merge`](https://github.com/treytuscai/bracer-xr/tree/experiment-merge) branch holds example experiment apps from the Ink & Interface study, built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished — read it as a demo of what the surface supports, not as part of the system itself.
 
 ---
 
