@@ -15,7 +15,7 @@ namespace Surface.Core
     ///
     /// Touch detection uses the bone joint center directly. It sits ~5-10mm above the skin (inside
     /// the finger), so `above` reads slightly positive even when the finger is flat; touchHoverHeight
-    /// (~0.02m) covers this offset plus intentional hover.
+    /// covers this offset plus intentional hover.
     ///
     /// The two outputs update at different rates: UpdateFingertips() runs every LateUpdate so
     /// touch tracks the hand at render rate, while BakeSilhouette() runs only when DepthReadback

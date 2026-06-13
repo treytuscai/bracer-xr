@@ -21,12 +21,12 @@ _Built for the **Ink & Interface** research study, exploring how body artist pri
 
 The forearm surface is reconstructed continuously from the Quest 3's environment depth, which the headset computes by stereo-matching its passthrough cameras. The pipeline spans the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled asynchronously, and the main thread uploads each finished mesh only once its jobs complete.
 
-**In brief:** each frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
+**In brief:** for each new depth frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
 
 <p align="center">
-  <img src="docs/pipeline.png" alt="Per-frame pipeline: GPU depth processing (grown hand mask, hand-masked depth, temporal median), an async readback to CPU Burst jobs (unproject, seed, BFS flood, boundary smooth, mesh), then a GPU upload to composite the on-arm UI in passthrough." width="100%">
+  <img src="docs/pipeline.png" alt="Per-depth-frame pipeline: GPU depth processing (grown hand mask, hand-masked depth, temporal median), an async readback to CPU Burst jobs (unproject, seed, BFS flood, boundary smooth, mesh), then a GPU upload to composite the on-arm UI in passthrough." width="100%">
   <br>
-  <sub><b>The per-frame pipeline.</b> On the GPU, the interacting hand is grown into a two-zone mask, carved out of the depth image, and stabilized with a 3-frame temporal median. An async readback hands the stabilized depth to CPU Burst jobs that unproject it into world space, isolate the forearm patch (seed, BFS flood, boundary smooth), and build the mesh. The mesh is uploaded back to the GPU to composite the touchable UI in passthrough.</sub>
+  <sub><b>The per-depth-frame pipeline.</b> On the GPU, the interacting hand is grown into a two-zone mask, carved out of the depth image, and stabilized with a 3-frame temporal median. An async readback hands the stabilized depth to CPU Burst jobs that unproject it into world space, isolate the forearm patch (seed, BFS flood, boundary smooth), and build the mesh. The mesh is uploaded back to the GPU to composite the touchable UI in passthrough.</sub>
 </p>
 
 
@@ -44,7 +44,7 @@ The forearm surface is reconstructed continuously from the Quest 3's environment
 
 ### Touch detection
 
-Each frame, the interacting hand's skinned-mesh vertices are tested against the reconstructed surface: the nearest surface cell within range is found, the signed distance above the surface is computed, and a UV coordinate is derived at sub-cell precision from the finger position. The surface keeps updating throughout interaction (pronation included), with no freeze step.
+Each frame, the fingertip joints reported by hand tracking (currently the index fingertip) are tested against the reconstructed surface: the nearest surface cell within range is found, the signed distance above the surface is computed, and a UV coordinate is derived at sub-cell precision from the finger position. Touch comes from the tracked skeleton rather than from sensing the fingertip in the noisy depth map, which keeps it stereo-stable. The surface keeps updating throughout interaction (pronation included), with no freeze step.
 
 ### UV design
 
