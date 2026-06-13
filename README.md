@@ -54,7 +54,7 @@ UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps
 
 Everything runs on the headset and the pipeline is built to disappear into the frame budget.
 
-- **Holds the Quest 3's 72 fps** with the full pipeline running (~5 ms GPU per frame against the ~13.9 ms budget).
+- **Holds the Quest 3's 72 fps** with the full pipeline running (~4 ms GPU per frame against the ~13.9 ms budget).
 - **Reconstruction is gated to the depth sensor's cadence** (~25 Hz). A bit-exact check on the depth reprojection matrix skips redundant frames, so the same depth data is never reconstructed twice; rendering and touch stay decoupled at the headset's full refresh rate.
 - **No main-thread stalls.** The CPU stages are Burst-compiled jobs spread across worker threads and frame-pipelined — the readback, segmentation, and meshing for one depth frame are harvested a frame later, so the main thread never blocks on them.
 - **Only the arm crosses the bus.** The async GPU readback is cropped to the forearm at the depth texture's native resolution (one float per texel) so the GPU->CPU transfer scales with the arm, not the screen.
