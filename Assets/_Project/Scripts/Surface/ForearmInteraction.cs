@@ -66,9 +66,8 @@ public class ForearmInteraction : MonoBehaviour
 
     /// <summary>
     /// Runs touch detection and updates the cached per-frame result.
-    /// Runs in LateUpdate so it reads fingertip positions and surface data that were
-    /// both finalized after animation (UpdateFingertips and OnDepthReady both run
-    /// in LateUpdate and the callback fires on the main thread before this).
+    /// ForearmDepthSurface has a lower execution order, so its LateUpdate
+    /// (UpdateFingertips + the readback harvest) finishes before this one.
     /// </summary>
     void LateUpdate()
     {
@@ -128,8 +127,8 @@ public class ForearmInteraction : MonoBehaviour
             // are UV adjustments, not physical). The U lower bound is -0.5, not 0, to cover the full
             // pronation scroll: at palm-up the palmar panel's left edge sits at u≈-0.25 pre-scroll, so
             // a 0 bound would drop valid touches there.
-            float u = ((across - _surface.ProjCenter) / _surface.displayWidth) + 0.25f;
-            float v = (along  - displayStart)          / (displayEnd - displayStart);
+            float u = ((across - _surface.ProjCenter) / Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.25f;
+            float v = (along  - displayStart)          / Mathf.Max(displayEnd - displayStart, 1e-4f);
             if (u < -0.5f || u > 1f || v < 0f || v > 1f) continue;
 
             // Find the nearest reconstructed surface cell in arm-frame 2D space.
