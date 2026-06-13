@@ -106,7 +106,7 @@ public class ForearmInteraction : MonoBehaviour
         uv         = Vector2.zero;
         worldPoint = Vector3.zero;
 
-        if (!_surface.IsValid || !_surface.HasHandVertices) return false;
+        if (!_surface.IsValid || !_surface.HasFingertips) return false;
 
         // Physical extents of the display window along the arm axis.
         float displayStart = _surface.displayOffset - _surface.displayHeight * 0.5f;
@@ -115,9 +115,9 @@ public class ForearmInteraction : MonoBehaviour
         float bestAbove = float.MaxValue;
         bool  found     = false;
 
-        for (int i = 0; i < _surface.HandVertexCount; i++)
+        for (int i = 0; i < _surface.FingertipCount; i++)
         {
-            Vector3 pos   = _surface.HandVertices[i];
+            Vector3 pos   = _surface.Fingertips[i];
             Vector3 toPos = pos - _surface.WristPosition;
 
             // Project onto the arm coordinate frame.

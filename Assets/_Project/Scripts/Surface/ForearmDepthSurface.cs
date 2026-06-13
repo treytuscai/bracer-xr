@@ -458,9 +458,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // World-space fingertip joint positions from hand tracking (currently the index
     // fingertip), refreshed each LateUpdate. Consumed by ForearmInteraction to iterate
     // finger candidates for touch detection. The array is fixed-size scratch; only the
-    // first HandVertexCount entries are valid.
+    // first FingertipCount entries are valid.
     // ------------------------------------------------------------------
-    public Vector4[] HandVertices    => _handMask.Vertices;
-    public int       HandVertexCount => _handMask.VertexCount;
-    public bool      HasHandVertices => _handMask.HasVertices;
+    public Vector4[] Fingertips     => _handMask.Fingertips;
+    public int       FingertipCount => _handMask.FingertipCount;
+    public bool      HasFingertips  => _handMask.HasFingertips;
 }
