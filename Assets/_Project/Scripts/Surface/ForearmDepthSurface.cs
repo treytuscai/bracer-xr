@@ -36,6 +36,9 @@ using Surface.Core;
 ///                     dropping faces that span a true-depth discontinuity (depthStepRatio),
 ///                     compute UVs corrected for arm twist, and upload to the GPU mesh.
 /// </summary>
+// Runs before default-order scripts so it produces the surface (mesh + fingertips) earlier in
+// LateUpdate than its consumers (ForearmInteraction) read it.
+[DefaultExecutionOrder(-100)]
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
 public class ForearmDepthSurface : MonoBehaviour
@@ -116,9 +119,9 @@ public class ForearmDepthSurface : MonoBehaviour
     // ------------------------------------------------------------------
     [Header("Display")]
     [Tooltip("Physical height of the display region along the arm (m). Primary value — set this first.")]
-    public float displayHeight = 0.4f;
+    [Min(0.01f)] public float displayHeight = 0.4f;
     [Tooltip("Physical width of one display panel (m). Set equal to displayHeight for square (undistorted) pixels.")]
-    public float displayWidth = 0.4f;
+    [Min(0.01f)] public float displayWidth = 0.4f;
     [Tooltip("Center of the display window along the arm axis from the wrist (m).")]
     public float displayOffset = 0.08f;
     [Tooltip("Auto = swap portrait/landscape image with the arm's pitch. Portrait/Landscape = lock to " +
