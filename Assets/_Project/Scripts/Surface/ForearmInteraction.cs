@@ -68,7 +68,7 @@ public class ForearmInteraction : MonoBehaviour
 
     /// <summary>
     /// Runs touch detection and updates the cached per-frame result.
-    /// Runs in LateUpdate so it reads hand vertices and surface data that were
+    /// Runs in LateUpdate so it reads fingertip positions and surface data that were
     /// both finalized after animation (UpdateFingertips and OnDepthReady both run
     /// in LateUpdate and the callback fires on the main thread before this).
     /// </summary>
@@ -88,9 +88,9 @@ public class ForearmInteraction : MonoBehaviour
     }
 
     /// <summary>
-    /// Finds the hand vertex closest to the arm surface within the display region and
+    /// Finds the fingertip closest to the arm surface within the display region and
     /// returns its UV coordinate on the rendered texture and its world-space position
-    /// projected onto the surface. Returns false when no qualifying vertex exists.
+    /// projected onto the surface. Returns false when no qualifying fingertip exists.
     /// Safe to call outside LateUpdate; serves the last cached result while the surface
     /// buffers are mid-update on worker threads.
     /// </summary>
@@ -108,7 +108,7 @@ public class ForearmInteraction : MonoBehaviour
         uv         = Vector2.zero;
         worldPoint = Vector3.zero;
 
-        if (!_surface.IsValid || !_surface.HasHandVertices) return false;
+        if (!_surface.IsValid || !_surface.HasFingertips) return false;
 
         // Physical extents of the display window along the arm axis.
         float displayStart = _surface.displayOffset - _surface.displayHeight * 0.5f;
@@ -117,9 +117,9 @@ public class ForearmInteraction : MonoBehaviour
         float bestAbove = float.MaxValue;
         bool  found     = false;
 
-        for (int i = 0; i < _surface.HandVertexCount; i++)
+        for (int i = 0; i < _surface.FingertipCount; i++)
         {
-            Vector3 pos   = _surface.HandVertices[i];
+            Vector3 pos   = _surface.Fingertips[i];
             Vector3 toPos = pos - _surface.WristPosition;
 
             // Project onto the arm coordinate frame.
@@ -149,7 +149,7 @@ public class ForearmInteraction : MonoBehaviour
             Vector2 hitUV        = ComputeMeshUV(projectedPos);
             if (hitUV.x < 0f || hitUV.x > 1f || hitUV.y < 0f || hitUV.y > 1f) continue;
 
-            // Among all qualifying vertices, prefer the one that is closest to or
+            // Among all qualifying fingertips, prefer the one that is closest to or
             // furthest through the surface — the most deliberate contact.
             if (above < bestAbove)
             {

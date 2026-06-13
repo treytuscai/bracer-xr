@@ -151,7 +151,7 @@ public class ForearmDepthSurface : MonoBehaviour
     // in sequence inside OnDepthReady.
     // ------------------------------------------------------------------
     private ArmFrame _armFrame;                 // Bone resolution and arm coordinate frame
-    private HandMask _handMask;                 // Baked mesh for GPU silhouette + touch vertices
+    private HandMask _handMask;                 // Baked mesh for GPU silhouette + fingertip joints for touch
     private SurfaceExtractor _surfaceExtractor; // Seed cylinder + BFS flood
     private DepthReadback _depthReadback;       // GPU crop, readback, and world-space unproject
     private MeshGenerator _meshGenerator;       // Vertex/UV/triangle generation
@@ -454,11 +454,13 @@ public class ForearmDepthSurface : MonoBehaviour
     public bool          SurfaceStable => !_harvestPending;
 
     // ------------------------------------------------------------------
-    // PUBLIC API — HAND VERTICES
-    // Downsampled world-space hand positions baked each frame. Consumed by
-    // ForearmInteraction to iterate finger candidates for touch detection.
+    // PUBLIC API — HAND FINGERTIPS (touch candidates)
+    // World-space fingertip joint positions from hand tracking (currently the index
+    // fingertip), refreshed each LateUpdate. Consumed by ForearmInteraction to iterate
+    // finger candidates for touch detection. The array is fixed-size scratch; only the
+    // first FingertipCount entries are valid.
     // ------------------------------------------------------------------
-    public Vector4[] HandVertices    => _handMask.Vertices;
-    public int       HandVertexCount => _handMask.VertexCount;
-    public bool      HasHandVertices => _handMask.HasVertices;
+    public Vector4[] Fingertips     => _handMask.Fingertips;
+    public int       FingertipCount => _handMask.FingertipCount;
+    public bool      HasFingertips  => _handMask.HasFingertips;
 }
