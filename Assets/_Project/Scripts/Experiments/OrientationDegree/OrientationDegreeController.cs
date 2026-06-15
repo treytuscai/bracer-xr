@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using Experiments.Cli;
-using Surface.Core;
 using UnityEngine;
+using UnityEngine.Serialization;
 using UnityEngine.UI;
 
 /// <summary>
@@ -17,6 +17,7 @@ using UnityEngine.UI;
 ///
 /// expctl: switch (toggle images), angle (log current angle).
 /// Per-image scale, offset, and rotation are set in the Inspector.
+/// Single bone anchor + bone-fixed UV for stable placement on the forearm.
 /// </summary>
 [DefaultExecutionOrder(110)]
 public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
@@ -31,12 +32,11 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         [Tooltip("Stamp height as a fraction of the arm UV patch. Width follows native pixel aspect.")]
         [Range(0.05f, 1f)] public float scale = 0.6f;
 
-        [Tooltip("Pin the image to a bone-stable point on the forearm each frame. " +
-                 "Uses the wrist bone frame (not camera-facing axes) so the image does not " +
-                 "slide around the arm when you rotate it.")]
+        [Tooltip("Pin the image to a bone-stable point on the forearm (OrientationDegreeBoneUV).")]
         public bool trackArmAnchor = true;
         [Tooltip("Anchor distance from the wrist along the forearm axis (m).")]
-        public float anchorAlongArm = 0.08f;
+        [FormerlySerializedAs("baseAlongArm")]
+        public float anchorAlongArm = 0.09f;
         [Tooltip("Anchor offset from the arm axis toward the camera-facing (dorsal) side (m).")]
         public float anchorRadialArm = 0.05f;
         [Tooltip("Anchor offset around the arm circumference (m). Positive = wrist.up side.")]
@@ -46,7 +46,7 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
                  "added on top of the arm anchor when on.")]
         [Range(-0.5f, 0.5f)] public float centerOffsetU = 0f;
         [Range(-0.5f, 0.5f)] public float centerOffsetV = 0f;
-        [Tooltip("Rotation on the arm (degrees, counter-clockwise in UV space).")]
+        [Tooltip("Extra rotation on the arm (degrees, CCW in UV space). Added on top of wrist aim.")]
         [Range(-180f, 180f)] public float rotationDegrees = 0f;
     }
 
@@ -63,8 +63,14 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     public ArmImageLayout imageAltLayout = new ArmImageLayout();
 
     [Header("Image placement stability")]
-    [Tooltip("Smooth arm-anchored UV center (s). Reduces residual jitter from depth mesh noise.")]
+    [Tooltip("Smooth arm-anchored UV center (s). Reduces jitter from depth mesh noise.")]
     [Min(0f)] public float placementSmoothingTime = 0.03f;
+    [Tooltip("When arm anchor is on, align stamp +V toward the wrist (bone UV estimate).")]
+    public bool alignImageTowardWrist = false;
+    [Tooltip("Blend arm elevation angle into stamp rotation (0 = base→wrist aim only).")]
+    [Range(0f, 1f)] public float elevationRotationBlend = 0f;
+    [Tooltip("Optional extra rotation filter (s). 0 = use anchor smoothing only.")]
+    [Min(0f)] public float rotationSmoothingTime = 0f;
 
     [Header("Angle (world elevation)")]
     [Tooltip("Flip the forearm axis direction if the angle reads inverted.")]
@@ -106,7 +112,9 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     Vector3 _lastAxis;
     float _smoothedCenterOffsetU;
     float _smoothedCenterOffsetV;
+    float _smoothedImageRotationRad;
     bool _havePlacementSample;
+    bool _haveRotationSample;
     Quaternion _prevHeadRot;
     bool _haveHeadRot;
 
@@ -153,6 +161,7 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
 
         _usingAltImage = !_usingAltImage;
         _havePlacementSample = false;
+        _haveRotationSample = false;
         ApplyActiveTexture();
         ApplyLayout();
         string name = ActiveTexture != null ? ActiveTexture.name : "(none)";
@@ -214,13 +223,61 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         Texture2D tex = ActiveTexture ?? image ?? imageAlt;
 
         ResolveCenterOffsets(layout, out float offsetU, out float offsetV);
+        float rotationRad = ResolveImageRotationRadians(layout);
         _mat.SetFloat(ScaleId, layout.scale);
         _mat.SetFloat(OffsetUId, offsetU);
         _mat.SetFloat(OffsetVId, offsetV);
         if (_mat.HasProperty(ImageAspectId))
             _mat.SetFloat(ImageAspectId, ResolveContentAspect(tex, layout));
         if (_mat.HasProperty(ImageRotationId))
-            _mat.SetFloat(ImageRotationId, layout.rotationDegrees * Mathf.Deg2Rad);
+            _mat.SetFloat(ImageRotationId, rotationRad);
+    }
+
+    float ResolveImageRotationRadians(ArmImageLayout layout)
+    {
+        float rotationRad = layout.rotationDegrees * Mathf.Deg2Rad;
+
+        if (layout.trackArmAnchor && alignImageTowardWrist && surface != null && surface.IsValid)
+        {
+            Vector3 anchor = ResolveBoneStableAnchor(layout, out Vector3 boneLateral);
+            float pronationScroll = surface.PronationAngle / (2f * Mathf.PI);
+            rotationRad += OrientationDegreeBoneUV.ComputeTowardWristRotationRadians(
+                anchor,
+                surface.WristPosition,
+                surface.AxisDir,
+                boneLateral,
+                pronationScroll,
+                surface.displayOffset,
+                surface.displayWidth,
+                surface.displayHeight);
+
+            if (elevationRotationBlend > 0f)
+            {
+                SampleAndSmoothAngle();
+                rotationRad += _smoothedAngle * Mathf.Deg2Rad * elevationRotationBlend;
+            }
+        }
+
+        if (rotationSmoothingTime > 0.001f)
+        {
+            if (!_haveRotationSample)
+            {
+                _smoothedImageRotationRad = rotationRad;
+                _haveRotationSample = true;
+            }
+            else
+            {
+                float alpha = 1f - Mathf.Exp(-Time.deltaTime / rotationSmoothingTime);
+                _smoothedImageRotationRad = Mathf.LerpAngle(
+                    _smoothedImageRotationRad * Mathf.Rad2Deg,
+                    rotationRad * Mathf.Rad2Deg,
+                    alpha) * Mathf.Deg2Rad;
+            }
+
+            rotationRad = _smoothedImageRotationRad;
+        }
+
+        return rotationRad;
     }
 
     void ResolveCenterOffsets(ArmImageLayout layout, out float offsetU, out float offsetV)
@@ -231,13 +288,12 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
 
         if (layout.trackArmAnchor && surface != null && surface.IsValid)
         {
-            Vector3 anchor = ResolveBoneStableAnchor(layout);
-            Vector2 uv = SurfaceUV.Compute(
+            Vector3 anchor = ResolveBoneStableAnchor(layout, out Vector3 boneLateral);
+            Vector2 uv = OrientationDegreeBoneUV.Compute(
                 anchor,
                 surface.WristPosition,
                 surface.AxisDir,
-                surface.AxisRight,
-                surface.ProjCenter,
+                boneLateral,
                 pronationScroll,
                 surface.displayOffset,
                 surface.displayWidth,
@@ -247,7 +303,6 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         }
         else
         {
-            // Fixed UV patch; add pronation scroll so wrist roll does not drag the image in U.
             offsetU = layout.centerOffsetU + pronationScroll;
             offsetV = layout.centerOffsetV;
         }
@@ -272,6 +327,22 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         }
     }
 
+    Vector3 ResolveBoneStableAnchor(ArmImageLayout layout, out Vector3 boneLateral)
+    {
+        TryGetWristTransform(out Transform wrist);
+        if (!OrientationDegreeBoneUV.TryGetBoneLateral(surface.AxisDir, wrist, surface.AxisUp, out boneLateral))
+            boneLateral = surface.AxisRight;
+
+        return OrientationDegreeBoneUV.ResolveAnchorWorld(
+            surface.WristPosition,
+            surface.AxisDir,
+            wrist,
+            surface.AxisUp,
+            layout.anchorAlongArm,
+            layout.anchorRadialArm,
+            layout.anchorLateralArm);
+    }
+
     static float ResolveContentAspect(Texture2D tex, ArmImageLayout layout)
     {
         int w, h;
@@ -291,35 +362,6 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         }
 
         return w / (float)Mathf.Max(1, h);
-    }
-
-    Vector3 ResolveBoneStableAnchor(ArmImageLayout layout)
-    {
-        Vector3 wristPos = surface.WristPosition;
-        Vector3 axis = surface.AxisDir;
-
-        if (!TryGetWristTransform(out Transform wrist))
-            return wristPos + axis * layout.anchorAlongArm;
-
-        Vector3 boneLateral = Vector3.Cross(axis, -wrist.up);
-        if (boneLateral.sqrMagnitude < 1e-4f)
-            boneLateral = Vector3.Cross(axis, surface.AxisUp);
-        boneLateral.Normalize();
-
-        Vector3 boneOut = Vector3.Cross(boneLateral, axis);
-        if (boneOut.sqrMagnitude < 1e-4f)
-            boneOut = surface.AxisUp;
-        else
-            boneOut.Normalize();
-
-        // Prefer the side of the arm facing the camera so radial offset lands on visible skin.
-        if (Vector3.Dot(boneOut, surface.AxisUp) < 0f)
-            boneOut = -boneOut;
-
-        return wristPos
-            + axis * layout.anchorAlongArm
-            + boneOut * layout.anchorRadialArm
-            + boneLateral * layout.anchorLateralArm;
     }
 
     bool TryGetWristTransform(out Transform wrist)

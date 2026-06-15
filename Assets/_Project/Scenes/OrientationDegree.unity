@@ -1709,9 +1709,9 @@ MonoBehaviour:
   imageAlt: {fileID: 2800000, guid: 405acf223e539034098c968ddfba36f8, type: 3}
   imageLayout:
     nativePixels: {x: 400, y: 700}
-    scale: 0.2
+    scale: 0.3
     trackArmAnchor: 1
-    anchorAlongArm: 0.08
+    anchorAlongArm: 0.09
     anchorRadialArm: 0.05
     anchorLateralArm: 0
     centerOffsetU: 0
@@ -1719,20 +1719,23 @@ MonoBehaviour:
     rotationDegrees: 0
   imageAltLayout:
     nativePixels: {x: 400, y: 700}
-    scale: 0.2
+    scale: 0.3
     trackArmAnchor: 1
-    anchorAlongArm: 0.08
-    anchorRadialArm: 0.05
+    anchorAlongArm: 0.09
+    anchorRadialArm: 0.02
     anchorLateralArm: 0
-    centerOffsetU: 0.069
+    centerOffsetU: 0
     centerOffsetV: 0
     rotationDegrees: 0
   placementSmoothingTime: 0.03
+  alignImageTowardWrist: 0
+  elevationRotationBlend: 0
+  rotationSmoothingTime: 0
   flipAxis: 0
   smoothingTime: 0.08
   deadbandDegrees: 2.5
   headMotionFreezeDegPerSec: 25
-  showAnglePanel: 1
+  showAnglePanel: 0
   cameraAnchor: {fileID: 0}
   hudDistance: 0.55
   hudRightMeters: 0.2
