@@ -53,6 +53,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/_Project/Scenes/1hHorizVertical.unity
     guid: e7bde1ace59bc1c45b51fa63731ac148
+  - enabled: 1
+    path: Assets/_Project/Scenes/1kFlowVersusGrid.unity
+    guid: 56e916a74124b7a4b938d43c5239bb6d
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: aa8655defb79a45d2be9c4c46366fe0b,
       type: 2}
