@@ -50,6 +50,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/_Project/Scenes/1gSituationDependent.unity
     guid: 9ab086ed9dff3fc42a46e290d8574fcc
+  - enabled: 1
+    path: Assets/_Project/Scenes/1hHorizVertical.unity
+    guid: e7bde1ace59bc1c45b51fa63731ac148
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: aa8655defb79a45d2be9c4c46366fe0b,
       type: 2}
