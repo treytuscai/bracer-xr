@@ -676,6 +676,11 @@ PrefabInstance:
       propertyPath: _skeletonMaterial
       value: 
       objectReference: {fileID: 2100000, guid: 9c05c5a6e4902ff4082cfb34e5b64b2d, type: 2}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
@@ -689,11 +694,6 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
@@ -953,24 +953,27 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   bodySkeleton: {fileID: 745195948}
-  raycastManager: {fileID: 2129304608}
+  handMesh: {fileID: 0}
+  handSkeleton: {fileID: 0}
   centerEyeAnchor: {fileID: 2129304609}
   surfaceMaterial: {fileID: 2100000, guid: b75c0f313d1517540804fe2527f38a1d, type: 2}
-  wristBoneIndex: 19
-  elbowBoneIndex: 11
-  pixelStride: 10
-  maxRadialDist: 0.08
-  minFromWrist: -0.02
+  handMarginTexels: 8
+  occlusionMarginTexels: 1
+  borrowDepthBand: 0.03
+  enablePalm: 1
+  seedRadialDist: 0.05
+  maxFloodDist: 0.1
   maxFromElbow: 0.05
   connectivityThreshold: 0.025
-  floodRadialMultiplier: 1.5
-  smoothPasses: 3
   edgeSmoothPasses: 4
   edgeWindowRadius: 3
-  maxQuadEdge: 0.03
-  textWidthMeters: 0.15
-  textHeightMeters: 0.25
-  drawAxis: 0
+  depthStepRatio: 0.15
+  displayHeight: 0.4
+  displayWidth: 0.4
+  displayOffset: 0.08
+  orientationMode: 1
+  portraitTexture: {fileID: 0}
+  landscapeTexture: {fileID: 0}
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -1073,19 +1076,7 @@ MonoBehaviour:
   circumferenceSegments: 16
   lengthSegments: 6
   skinOffset: 0.001
-  radiusScale: 0.9
   forearmMaterial: {fileID: 2100000, guid: b75c0f313d1517540804fe2527f38a1d, type: 2}
-  publishRenderMesh: 1
-  constrainForearmLength: 1
-  forearmLength: 0.28
-  elbowDirectionSmoothing: 0.7
-  overrideElbowFromWristRotation: 0
-  wristToElbowLocalDir: {x: -1, y: 0, z: 0}
-  elbowPitchOffsetDeg: 0
-  canvasArcCenterU: 0.5
-  canvasArcSpanU: 0.5
-  flipLateralU: 0
-  flipAxialV: 0
 --- !u!23 &1092937301
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -1391,6 +1382,7 @@ MonoBehaviour:
   headAnchor: {fileID: 2129304609}
   paletteRect: {fileID: 1304201935}
   itemListController: {fileID: 1543996769}
+  widgetPlacementOverride: {fileID: 0}
   deleteIconSprite: {fileID: 0}
   deleteIconSize: {x: 56, y: 56}
   deleteHoverHighlightColor: {r: 1, g: 0.35, b: 0.35, a: 1}
@@ -1400,6 +1392,18 @@ MonoBehaviour:
   deleteSeparatorWidth: 2
   deleteSeparatorColor: {r: 1, g: 1, b: 1, a: 0.85}
   deleteSeparatorPadding: 8
+  clearIconSprite: {fileID: 0}
+  clearIconSize: {x: 56, y: 56}
+  clearHoverHighlightColor: {r: 0.35, g: 0.75, b: 1, a: 1}
+  clearLabelText: Clear
+  clearTitleFontSize: 16
+  clearColumnSpacing: 10
+  gridEditController: {fileID: 0}
+  editLabelText: Resize/Rotate Image
+  editIconSize: {x: 56, y: 56}
+  editTitleFontSize: 13
+  editColumnSpacing: 10
+  editHoverHighlightColor: {r: 0.35, g: 0.95, b: 0.45, a: 1}
   followHead: 0
   distanceMeters: 0.55
   heightOffsetMeters: 0
@@ -1414,6 +1418,7 @@ MonoBehaviour:
   useGridLayout: 1
   gridColumns: 3
   gridCellSize: {x: 70, y: 70}
+  templateDisplayScale: 1.5
   gridSpacing: {x: 12, y: 12}
   gridPaddingLeft: 12
   gridPaddingRight: 12
@@ -1422,7 +1427,10 @@ MonoBehaviour:
   deleteSeparatorSpacing: 16
   hoverDistanceMeters: 0.035
   pressDistanceMeters: 0.018
+  templatePickDepthMeters: 0.09
+  projectFingerOntoPalettePlane: 1
   pickPaddingLocal: 8
+  extraTopPickPadding: 10
   showHoverOutline: 1
   hoverOutlineColor: {r: 0.25, g: 0.95, b: 0.35, a: 1}
   hoverOutlineDistance: {x: 5, y: -5}
@@ -1556,8 +1564,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 260e45a709f6b480aa5815c09322053f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  leftHand: {fileID: 0}
-  leftSkeleton: {fileID: 0}
   rightHand: {fileID: 2123695744}
   rightSkeleton: {fileID: 2123695743}
 --- !u!1 &1529137805
@@ -1884,12 +1890,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fcfeef268d04f427ca1c0ca8bc66563a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  bodySkeleton: {fileID: 745195948}
-  raycastManager: {fileID: 2129304608}
-  centerEyeAnchor: {fileID: 2129304609}
-  pixelStride: 11
-  screenPadding: 30
-  maxRadialDist: 0.08
 --- !u!1 &1712984847
 GameObject:
   m_ObjectHideFlags: 0
@@ -2322,6 +2322,11 @@ PrefabInstance:
       propertyPath: HandType
       value: 1
       objectReference: {fileID: 0}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114925265787909616, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: _meshType
@@ -2335,11 +2340,6 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []

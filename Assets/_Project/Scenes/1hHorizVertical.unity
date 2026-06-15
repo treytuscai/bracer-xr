@@ -336,7 +336,7 @@ MonoBehaviour:
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
-  orientationMode: 0
+  orientationMode: 1
   portraitTexture: {fileID: 0}
   landscapeTexture: {fileID: 0}
 --- !u!23 &66024356
@@ -396,7 +396,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 66024352}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 5b3d9e20f8c1547e0f2a3b4c5d6e7f8a, type: 3}
   m_Name: 
@@ -421,7 +421,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 66024352}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 4a2f8c19e7b0436d9e1f2a3b4c5d6e7f, type: 3}
   m_Name: 
@@ -1780,12 +1780,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f8a7b6c5d4e342109876543210fedcba, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  grid: {fileID: 66024359}
   surface: {fileID: 66024355}
   interaction: {fileID: 66024354}
-  widgetPlacement: {fileID: 66024358}
-  touchManager: {fileID: 613064085}
-  headAnchor: {fileID: 188644609}
+  uvImageShader: {fileID: 4800000, guid: a1b2c3d4e5f6478990abcdef12345678, type: 3}
   verticalInterface: {fileID: 2800000, guid: 264b140291143794c98067d133120c68, type: 3}
   horizontalInterface: {fileID: 2800000, guid: 90e470ecc95b97f438883c23263def38, type: 3}
   verticalNativePixels: {x: 400, y: 700}
@@ -1797,20 +1794,14 @@ MonoBehaviour:
     displayHeight: 0.4
     displayWidth: 0.4
     vertical:
-      useMeshUv: 0
-      meshU: 0.697
+      meshU: 0.628
       meshV: 0.566
-      col: 12
-      row: 9
-      scale: 2
+      size: 0.2
       rotationDegrees: 15
     horizontal:
-      useMeshUv: 0
-      meshU: 0.697
-      meshV: 0.566
-      col: 10
-      row: 10
-      scale: 2
+      meshU: 0.521
+      meshV: 0.54
+      size: 0.1
       rotationDegrees: 75
   - label: Outer Forearm
     overrideDisplayWindow: 0
@@ -1818,69 +1809,47 @@ MonoBehaviour:
     displayHeight: 0.4
     displayWidth: 0.4
     vertical:
-      useMeshUv: 0
       meshU: 0.245
       meshV: 0.497
-      col: 4
-      row: 9
-      scale: 2
-      rotationDegrees: 0
+      size: 0.2
+      rotationDegrees: 5
     horizontal:
-      useMeshUv: 0
-      meshU: 0.245
+      meshU: 0.23
       meshV: 0.497
-      col: 4
-      row: 9
-      scale: 2
-      rotationDegrees: 80
+      size: 0.1
+      rotationDegrees: 70
   - label: Back of Hand
     overrideDisplayWindow: 1
     displayOffset: 0.18
     displayHeight: 0.35
     displayWidth: 0.35
     vertical:
-      useMeshUv: 1
-      meshU: 0.146
-      meshV: 0.724
-      col: 0
-      row: 18
-      scale: 2
+      meshU: 0.199
+      meshV: 0.824
+      size: 0.15
       rotationDegrees: 20
     horizontal:
-      useMeshUv: 1
-      meshU: 0.238
-      meshV: 0.838
-      col: 0
-      row: 18
-      scale: 2
-      rotationDegrees: 80
+      meshU: 0.349
+      meshV: 0.812
+      size: 0.1
+      rotationDegrees: 70
   - label: Palm
     overrideDisplayWindow: 1
     displayOffset: 0.18
     displayHeight: 0.35
     displayWidth: 0.35
     vertical:
-      useMeshUv: 1
       meshU: 0.502
-      meshV: 0.705
-      col: 12
-      row: 19
-      scale: 2
-      rotationDegrees: 0
+      meshV: 0.824
+      size: 0.15
+      rotationDegrees: 25
     horizontal:
-      useMeshUv: 1
-      meshU: 0.529
-      meshV: 0.751
-      col: 12
-      row: 19
-      scale: 2
-      rotationDegrees: 90
-  configMode: 0
+      meshU: 0.659
+      meshV: 0.847
+      size: 0.1
+      rotationDegrees: 55
   useSavedPlacements: 1
-  configPaletteHeightOffset: -0.3
-  configPaletteDistance: 0.4
-  configPaletteLateralOffset: 0.22
-  logOrientationChanges: 1
+  logOnNext: 1
 --- !u!1 &2045335459
 GameObject:
   m_ObjectHideFlags: 0

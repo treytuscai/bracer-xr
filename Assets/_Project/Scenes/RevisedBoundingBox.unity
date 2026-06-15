@@ -301,6 +301,7 @@ MonoBehaviour:
   touchHoverHeight: 0.01
   touchDepth: 0.04
   maxCellSearchDist: 0.03
+  maxHoverPreviewDistance: 0.1
   showTouchDebug: 1
 --- !u!114 &66024355
 MonoBehaviour:
@@ -333,7 +334,9 @@ MonoBehaviour:
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
-  lockOrientation: 1
+  orientationMode: 1
+  portraitTexture: {fileID: 0}
+  landscapeTexture: {fileID: 0}
 --- !u!23 &66024356
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -456,6 +459,11 @@ PrefabInstance:
       propertyPath: HandType
       value: 1
       objectReference: {fileID: 0}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: _skeletonType
@@ -490,11 +498,6 @@ PrefabInstance:
         type: 3}
       propertyPath: m_Materials.Array.data[1]
       value: 
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
-      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -999,6 +1002,11 @@ PrefabInstance:
       propertyPath: _skeletonMaterial
       value: 
       objectReference: {fileID: 2100000, guid: 9c05c5a6e4902ff4082cfb34e5b64b2d, type: 2}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
@@ -1012,11 +1020,6 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []

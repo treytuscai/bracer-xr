@@ -303,6 +303,7 @@ MonoBehaviour:
   touchHoverHeight: 0.008
   touchDepth: 0.04
   maxCellSearchDist: 0.03
+  maxHoverPreviewDistance: 0.1
   showTouchDebug: 1
 --- !u!114 &66024355
 MonoBehaviour:
@@ -335,7 +336,9 @@ MonoBehaviour:
   displayHeight: 0.4
   displayWidth: 0.4
   displayOffset: 0.08
-  lockOrientation: 1
+  orientationMode: 1
+  portraitTexture: {fileID: 0}
+  landscapeTexture: {fileID: 0}
 --- !u!23 &66024356
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -407,6 +410,10 @@ MonoBehaviour:
   fingerCarrySmoothTime: 0.048
   carryAttachOffsetTipLocal: {x: 0, y: 0, z: 0}
   stickWidgetOriginToFingertip: 1
+  showPlacementPreview: 1
+  hideFingerCarryWhenPreviewShown: 1
+  placementPreviewMaxDistanceMeters: 0.1
+  placementPreviewAlpha: 0.45
 --- !u!114 &66024359
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -425,6 +432,7 @@ MonoBehaviour:
   rows: 12
   keepSquareCells: 1
   contentTileResolution: 512
+  maxBakeTileResolution: 1024
   cellContentPadding: 0.08
   contentAlphaCutoff: 0.15
   contentAlphaSoftness: 0.14
@@ -582,6 +590,11 @@ PrefabInstance:
       propertyPath: HandType
       value: 1
       objectReference: {fileID: 0}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: _skeletonType
@@ -616,11 +629,6 @@ PrefabInstance:
         type: 3}
       propertyPath: m_Materials.Array.data[1]
       value: 
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
-      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -760,7 +768,10 @@ MonoBehaviour:
   deleteSeparatorSpacing: 16
   hoverDistanceMeters: 0.035
   pressDistanceMeters: 0.018
+  templatePickDepthMeters: 0.09
+  projectFingerOntoPalettePlane: 1
   pickPaddingLocal: 8
+  extraTopPickPadding: 10
   showHoverOutline: 1
   hoverOutlineColor: {r: 0.25, g: 0.95, b: 0.35, a: 1}
   hoverOutlineDistance: {x: 5, y: -5}
@@ -1259,6 +1270,11 @@ PrefabInstance:
       propertyPath: _skeletonMaterial
       value: 
       objectReference: {fileID: 2100000, guid: 9c05c5a6e4902ff4082cfb34e5b64b2d, type: 2}
+    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
+        type: 3}
+      propertyPath: m_showState
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 114567484643301796, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
@@ -1272,11 +1288,6 @@ PrefabInstance:
     - target: {fileID: 137619227449585070, guid: 835e735ca71bf78459fb2cababd74112,
         type: 3}
       propertyPath: m_Enabled
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 114428879332287356, guid: 835e735ca71bf78459fb2cababd74112,
-        type: 3}
-      propertyPath: m_showState
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []

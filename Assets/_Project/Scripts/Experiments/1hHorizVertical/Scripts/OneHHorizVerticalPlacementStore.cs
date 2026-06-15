@@ -2,7 +2,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// Persists 1H body-region placements (vertical + horizontal) across app runs.
+/// Persists 1H body-region UV placements (vertical + horizontal) across app runs.
 /// </summary>
 public static class OneHHorizVerticalPlacementStore
 {
@@ -12,13 +12,14 @@ public static class OneHHorizVerticalPlacementStore
     public struct PlacementData
     {
         public bool IsValid;
-        public bool UseMeshUv;
         public float MeshU;
         public float MeshV;
-        public int Col;
-        public int Row;
-        public float Scale;
+        public float Size;
         public float RotationDegrees;
+
+        // Legacy — loaded from older saves.
+        public float UvHalfHeight;
+        public float Scale;
     }
 
     [System.Serializable]
@@ -92,7 +93,11 @@ public static class OneHHorizVerticalPlacementStore
             return false;
 
         data = horizontal ? region.Horizontal : region.Vertical;
-        return data.IsValid;
+        if (!data.IsValid)
+            return false;
+
+        MigrateLegacy(ref data);
+        return true;
     }
 
     public static void Save(int regionIndex, string label, bool horizontal, in PlacementData data)
@@ -113,7 +118,7 @@ public static class OneHHorizVerticalPlacementStore
         _dirty = true;
         Flush();
         Debug.Log($"[OneHPlacementStore] Saved {(horizontal ? "horizontal" : "vertical")} " +
-                  $"'{label}' uv=({copy.MeshU:F3},{copy.MeshV:F3}) cell=({copy.Col},{copy.Row}) scale={copy.Scale:F2} rot={copy.RotationDegrees:F0}°");
+                  $"'{label}' uv=({copy.MeshU:F3},{copy.MeshV:F3}) size={copy.Size:F3} rot={copy.RotationDegrees:F0}°");
     }
 
     public static void ClearAll()
@@ -122,17 +127,6 @@ public static class OneHHorizVerticalPlacementStore
         _dirty = true;
         Flush();
         Debug.Log("[OneHPlacementStore] Cleared all saved placements.");
-    }
-
-    public static void ClearRegion(int regionIndex)
-    {
-        EnsureLoaded();
-        if (_cache.Regions == null || regionIndex < 0 || regionIndex >= _cache.Regions.Length)
-            return;
-
-        _cache.Regions[regionIndex] = new RegionRecord();
-        _dirty = true;
-        Flush();
     }
 
     static void Flush()
@@ -151,28 +145,39 @@ public static class OneHHorizVerticalPlacementStore
         }
     }
 
+    static void MigrateLegacy(ref PlacementData data)
+    {
+        if (data.Size > 0f)
+            return;
+
+        if (data.UvHalfHeight > 0f)
+            data.Size = data.UvHalfHeight;
+        else if (data.Scale > 0f)
+            data.Size = Mathf.Clamp(data.Scale * 0.04f, 0.005f, 0.25f);
+        else
+            data.Size = 0.08f;
+    }
+
     public static PlacementData FromOrientedPlacement(in OneHHorizVerticalController.OrientedPlacement placement) =>
         new PlacementData
         {
             IsValid = true,
-            UseMeshUv = placement.useMeshUv,
             MeshU = placement.meshU,
             MeshV = placement.meshV,
-            Col = placement.col,
-            Row = placement.row,
-            Scale = placement.scale,
+            Size = placement.size,
             RotationDegrees = placement.rotationDegrees
         };
 
-    public static OneHHorizVerticalController.OrientedPlacement ToOrientedPlacement(in PlacementData data) =>
-        new OneHHorizVerticalController.OrientedPlacement
+    public static OneHHorizVerticalController.OrientedPlacement ToOrientedPlacement(in PlacementData data)
+    {
+        var copy = data;
+        MigrateLegacy(ref copy);
+        return new OneHHorizVerticalController.OrientedPlacement
         {
-            useMeshUv = data.UseMeshUv,
-            meshU = data.MeshU,
-            meshV = data.MeshV,
-            col = data.Col,
-            row = data.Row,
-            scale = data.Scale,
-            rotationDegrees = data.RotationDegrees
+            meshU = copy.MeshU,
+            meshV = copy.MeshV,
+            size = copy.Size,
+            rotationDegrees = copy.RotationDegrees
         };
+    }
 }
