@@ -15,7 +15,7 @@ using UnityEngine.UI;
 /// Axis source: ForearmDepthSurface.AxisDir — wrist→elbow from the body
 /// skeleton's left-arm bones (wrist 19, elbow 11 on the IOBT rig).
 ///
-/// expctl: switch (toggle images), angle (log current angle).
+/// expctl: switch, angle, calibrate point 0|45|90, calibrate apply, calibrate status, calibrate clear.
 /// Per-image scale, offset, and rotation are set in the Inspector.
 /// Single bone anchor + bone-fixed UV for stable placement on the forearm.
 /// </summary>
@@ -72,16 +72,32 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     [Tooltip("Optional extra rotation filter (s). 0 = use anchor smoothing only.")]
     [Min(0f)] public float rotationSmoothingTime = 0f;
 
-    [Header("Angle (world elevation)")]
-    [Tooltip("Flip the forearm axis direction if the angle reads inverted.")]
+    [Header("Angle (world elevation — body wrist→elbow)")]
+    [Tooltip("Single-offset mode only. Multi-point apply sets scale + offset automatically.")]
+    public float angleOffsetDegrees;
+    [Tooltip("Linear fit scale (corrected = scale × raw + offset). 1 = no stretch.")]
+    public float angleScale = 1f;
+    public OrientationDegreeCalibration.Mode calibrationMode =
+        OrientationDegreeCalibration.Mode.SingleOffset;
+    [Tooltip("Captured iPhone reference poses. Fill via expctl calibrate point 0|45|90.")]
+    public OrientationDegreeCalibration.Point[] calibrationPoints =
+    {
+        new OrientationDegreeCalibration.Point(0f),
+        new OrientationDegreeCalibration.Point(45f),
+        new OrientationDegreeCalibration.Point(90f),
+    };
+    [Tooltip("Smooth body wrist position (s) before axis is computed.")]
+    [Min(0f)] public float wristSmoothingTime = 0.04f;
+    [Tooltip("Smooth body elbow position (s). Slower = less head-motion coupling (elbow estimate drifts with headset).")]
+    [Min(0f)] public float elbowSmoothingTime = 0.45f;
+    [Tooltip("Flip the measured direction if the angle reads inverted.")]
     public bool flipAxis = false;
     [Tooltip("Smoothing time constant (s). Higher = more lag but less jitter.")]
     [Min(0f)] public float smoothingTime = 0.25f;
     [Tooltip("Ignore raw angle changes smaller than this (degrees). Suppresses micro-drift.")]
     [Min(0f)] public float deadbandDegrees = 2.5f;
-    [Tooltip("While the headset rotates faster than this (deg/sec), freeze the angle. " +
-             "Quest body tracking nudges the estimated elbow when the head turns. Set to 0 to disable.")]
-    [Min(0f)] public float headMotionFreezeDegPerSec = 25f;
+    [Tooltip("While the headset rotates faster than this (deg/sec), hold the last angle and bone estimates.")]
+    [Min(0f)] public float headMotionFreezeDegPerSec = 10f;
 
     [Header("Angle panel")]
     [Tooltip("Show the floating world-space angle readout.")]
@@ -110,6 +126,10 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     bool _haveAngleSample;
     bool _usingAltImage;
     Vector3 _lastAxis;
+    Vector3 _smoothedWristWorld;
+    Vector3 _smoothedElbowWorld;
+    bool _haveBonePositionSample;
+    bool _angleFrozenByHead;
     float _smoothedCenterOffsetU;
     float _smoothedCenterOffsetV;
     float _smoothedImageRotationRad;
@@ -152,6 +172,165 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     {
         commands["switch"] = _ => SwitchImage();
         commands["angle"] = _ => LogAngle();
+        commands["calibrate"] = HandleCalibrateCommand;
+        commands["offset"] = HandleOffsetCommand;
+    }
+
+    string HandleCalibrateCommand(IReadOnlyDictionary<string, string> args)
+    {
+        if (!args.TryGetValue("0", out string sub))
+            return CalibrateUsage();
+
+        string key = sub.Trim().ToLowerInvariant();
+        switch (key)
+        {
+            case "clear":
+                ClearCalibration();
+                return "calibration cleared (single-offset mode)";
+            case "status":
+                return OrientationDegreeCalibration.FormatStatus(
+                    calibrationMode, angleScale, angleOffsetDegrees, calibrationPoints);
+            case "apply":
+                return ApplyCalibration(args.TryGetValue("1", out string modeArg) ? modeArg : "linear");
+            case "point":
+                if (!args.TryGetValue("1", out string refText) ||
+                    !float.TryParse(refText, out float referenceDegrees))
+                    return "usage: calibrate point <0|45|90>";
+                return CaptureCalibrationPoint(referenceDegrees);
+            default:
+                if (!float.TryParse(sub, out float legacyRef))
+                    return CalibrateUsage();
+                return ApplySingleOffsetCalibration(legacyRef);
+        }
+    }
+
+    static string CalibrateUsage()
+    {
+        return "usage: calibrate point 0|45|90  |  calibrate apply [linear|piecewise]  |  " +
+               "calibrate status  |  calibrate clear  |  calibrate <ref> (single offset)";
+    }
+
+    void ClearCalibration()
+    {
+        calibrationMode = OrientationDegreeCalibration.Mode.SingleOffset;
+        angleScale = 1f;
+        angleOffsetDegrees = 0f;
+        for (int i = 0; i < calibrationPoints.Length; i++)
+            calibrationPoints[i] = new OrientationDegreeCalibration.Point(calibrationPoints[i].referenceDegrees);
+    }
+
+    string CaptureCalibrationPoint(float referenceDegrees)
+    {
+        SampleAndSmoothAngle();
+        int slot = FindCalibrationSlot(referenceDegrees);
+        if (slot < 0)
+            return "no calibration slot (expected 0, 45, or 90)";
+
+        calibrationPoints[slot] = new OrientationDegreeCalibration.Point(referenceDegrees)
+        {
+            rawDegrees = _rawAngle,
+            captured = true,
+        };
+
+        string msg = $"captured {referenceDegrees:F0}° raw={_rawAngle:F1} " +
+                     $"({OrientationDegreeCalibration.CapturedCount(calibrationPoints)}/3)";
+        Debug.Log("[OrientationDegree] " + msg);
+        return msg;
+    }
+
+    int FindCalibrationSlot(float referenceDegrees)
+    {
+        int best = -1;
+        float bestDist = float.MaxValue;
+        for (int i = 0; i < calibrationPoints.Length; i++)
+        {
+            float dist = Mathf.Abs(calibrationPoints[i].referenceDegrees - referenceDegrees);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = i;
+            }
+        }
+
+        return bestDist <= 5f ? best : -1;
+    }
+
+    string ApplyCalibration(string modeArg)
+    {
+        int captured = OrientationDegreeCalibration.CapturedCount(calibrationPoints);
+        if (captured < 2)
+            return $"need at least 2 points (have {captured}). Use: calibrate point 0|45|90";
+
+        string mode = modeArg.Trim().ToLowerInvariant();
+        if (mode is "piecewise" or "piece")
+        {
+            calibrationMode = OrientationDegreeCalibration.Mode.PiecewiseLinear;
+            RefreshCorrectedAngleImmediate();
+            string msg = "piecewise calibration applied — " +
+                         OrientationDegreeCalibration.FormatStatus(
+                             calibrationMode, angleScale, angleOffsetDegrees, calibrationPoints);
+            Debug.Log("[OrientationDegree] " + msg);
+            return msg;
+        }
+
+        if (!OrientationDegreeCalibration.TryFitLinear(
+                calibrationPoints, out float scale, out float offset))
+            return "linear fit failed";
+
+        angleScale = scale;
+        angleOffsetDegrees = offset;
+        calibrationMode = OrientationDegreeCalibration.Mode.LinearScaleOffset;
+        RefreshCorrectedAngleImmediate();
+        string linearMsg = $"linear fit scale={scale:F3} offset={offset:F1}° (R² over {captured} pts)";
+        Debug.Log("[OrientationDegree] " + linearMsg);
+        return linearMsg;
+    }
+
+    string ApplySingleOffsetCalibration(float referenceDegrees)
+    {
+        SampleAndSmoothAngle();
+        calibrationMode = OrientationDegreeCalibration.Mode.SingleOffset;
+        angleScale = 1f;
+        angleOffsetDegrees = referenceDegrees - _rawAngle;
+        RefreshCorrectedAngleImmediate();
+        string msg = $"single offset={angleOffsetDegrees:F1}° (ref={referenceDegrees:F0} raw={_rawAngle:F1})";
+        Debug.Log("[OrientationDegree] " + msg);
+        return msg;
+    }
+
+    void RefreshCorrectedAngleImmediate()
+    {
+        float corrected = CorrectRawAngle(_rawAngle);
+        _targetAngle = corrected;
+        _smoothedAngle = corrected;
+    }
+
+    float CorrectRawAngle(float rawDegrees) =>
+        OrientationDegreeCalibration.Apply(
+            rawDegrees, calibrationMode, angleScale, angleOffsetDegrees, calibrationPoints);
+
+    string CalibrationSummary()
+    {
+        switch (calibrationMode)
+        {
+            case OrientationDegreeCalibration.Mode.LinearScaleOffset:
+                return $"×{angleScale:F2} {angleOffsetDegrees:+0;-0}°";
+            case OrientationDegreeCalibration.Mode.PiecewiseLinear:
+                return $"piecewise {OrientationDegreeCalibration.CapturedCount(calibrationPoints)}/3";
+            default:
+                return $"off {angleOffsetDegrees:+0;-0}°";
+        }
+    }
+
+    string HandleOffsetCommand(IReadOnlyDictionary<string, string> args)
+    {
+        if (!args.TryGetValue("0", out string offText) || !float.TryParse(offText, out float degrees))
+            return CalibrationSummary();
+
+        calibrationMode = OrientationDegreeCalibration.Mode.SingleOffset;
+        angleScale = 1f;
+        angleOffsetDegrees = degrees;
+        return CalibrationSummary();
     }
 
     string SwitchImage()
@@ -172,10 +351,10 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
     string LogAngle()
     {
         SampleAndSmoothAngle();
+        int corrected = Mathf.RoundToInt(CorrectRawAngle(_rawAngle));
         int smoothed = Mathf.RoundToInt(_smoothedAngle);
-        int raw = Mathf.RoundToInt(_rawAngle);
         string msg = surface != null && surface.IsValid
-            ? $"angle={smoothed} raw={raw}"
+            ? $"angle={smoothed} corrected={corrected} raw={Mathf.RoundToInt(_rawAngle)} {CalibrationSummary()}"
             : "angle=-- (no arm tracking)";
         Debug.Log("[OrientationDegree] " + msg);
         return msg;
@@ -396,40 +575,79 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
         return degPerSec <= headMotionFreezeDegPerSec;
     }
 
-    static float WorldElevationDegrees(Vector3 axis)
-    {
-        return Mathf.Abs(Mathf.Asin(Mathf.Clamp(axis.y, -1f, 1f)) * Mathf.Rad2Deg);
-    }
-
     void SampleAndSmoothAngle()
     {
         if (surface == null || !surface.IsValid)
         {
             _rawAngle = 0f;
+            _angleFrozenByHead = false;
             return;
         }
 
-        Vector3 axis = (flipAxis ? -surface.AxisDir : surface.AxisDir).normalized;
-        _lastAxis = axis;
-        float angle = WorldElevationDegrees(axis);
-        _rawAngle = angle;
         bool headSteady = IsHeadSteady();
+        _angleFrozenByHead = !headSteady;
+
+        if (!headSteady)
+            return;
+
+        Vector3 rawWrist = surface.WristPosition;
+        Vector3 rawElbow = surface.ElbowPosition;
+
+        if (!_haveBonePositionSample)
+        {
+            _smoothedWristWorld = rawWrist;
+            _smoothedElbowWorld = rawElbow;
+            _haveBonePositionSample = true;
+        }
+        else
+        {
+            if (wristSmoothingTime > 0.001f)
+            {
+                float alphaW = 1f - Mathf.Exp(-Time.deltaTime / wristSmoothingTime);
+                _smoothedWristWorld = Vector3.Lerp(_smoothedWristWorld, rawWrist, alphaW);
+            }
+            else
+            {
+                _smoothedWristWorld = rawWrist;
+            }
+
+            if (elbowSmoothingTime > 0.001f)
+            {
+                float alphaE = 1f - Mathf.Exp(-Time.deltaTime / elbowSmoothingTime);
+                _smoothedElbowWorld = Vector3.Lerp(_smoothedElbowWorld, rawElbow, alphaE);
+            }
+            else
+            {
+                _smoothedElbowWorld = rawElbow;
+            }
+        }
+
+        if (!OrientationDegreeAngle.TryDirectionFromBonePositions(
+                _smoothedWristWorld, _smoothedElbowWorld, flipAxis, out Vector3 direction))
+        {
+            return;
+        }
+
+        _lastAxis = direction;
+        float angle = OrientationDegreeAngle.ElevationFromHorizontalDegrees(direction);
+        _rawAngle = angle;
+        float corrected = CorrectRawAngle(angle);
 
         if (!_haveAngleSample)
         {
-            _targetAngle = angle;
-            _smoothedAngle = angle;
+            _targetAngle = corrected;
+            _smoothedAngle = corrected;
             _haveAngleSample = true;
         }
-        else if (headSteady && Mathf.Abs(angle - _targetAngle) > deadbandDegrees)
+        else if (Mathf.Abs(corrected - _targetAngle) > deadbandDegrees)
         {
-            _targetAngle = angle;
+            _targetAngle = corrected;
         }
 
-        float alpha = smoothingTime > 0.001f
+        float alphaSmooth = smoothingTime > 0.001f
             ? 1f - Mathf.Exp(-Time.deltaTime / smoothingTime)
             : 1f;
-        _smoothedAngle = Mathf.Lerp(_smoothedAngle, _targetAngle, alpha);
+        _smoothedAngle = Mathf.Lerp(_smoothedAngle, _targetAngle, alphaSmooth);
     }
 
     void UpdateAnglePanel()
@@ -448,9 +666,9 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
 
         if (_debugText != null && showDebugAxis)
         {
-            bool headSteady = IsHeadSteady();
-            string freeze = headSteady ? "" : "  [head moving]";
-            _debugText.text = $"axis ({_lastAxis.x:F2}, {_lastAxis.y:F2}, {_lastAxis.z:F2}){freeze}";
+            string freeze = _angleFrozenByHead ? "  [head frozen]" : "";
+            _debugText.text =
+                $"raw {_rawAngle:F0}°  {CalibrationSummary()}{freeze}";
         }
     }
 
@@ -490,7 +708,7 @@ public class OrientationDegreeController : MonoBehaviour, IExperimentCommands
 
         var hintRect = MakeUiRect("Hint", panel, new Vector2(380f, 28f));
         hintRect.anchoredPosition = new Vector2(0f, -34f);
-        AddText(hintRect, "0° = level   90° = straight up", 16, TextAnchor.MiddleCenter,
+        AddText(hintRect, "Cal: point 0|45|90 then apply", 16, TextAnchor.MiddleCenter,
             new Color(0.65f, 0.65f, 0.7f, 1f));
 
         if (showDebugAxis)

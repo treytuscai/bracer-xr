@@ -1734,7 +1734,7 @@ MonoBehaviour:
   flipAxis: 0
   smoothingTime: 0.08
   deadbandDegrees: 2.5
-  headMotionFreezeDegPerSec: 25
+  headMotionFreezeDegPerSec: 10
   showAnglePanel: 0
   cameraAnchor: {fileID: 0}
   hudDistance: 0.55
