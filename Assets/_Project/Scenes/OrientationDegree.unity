@@ -335,7 +335,7 @@ MonoBehaviour:
   displayWidth: 0.4
   displayOffset: 0.08
   orientationMode: 1
-  portraitTexture: {fileID: 0}
+  portraitTexture: {fileID: 2800000, guid: b72898f434fc04fab9155dffea020606, type: 3}
   landscapeTexture: {fileID: 0}
 --- !u!23 &66024356
 MeshRenderer:
@@ -1704,19 +1704,41 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   surface: {fileID: 66024355}
-  imageShader: {fileID: 4800000, guid: 9a410ea33add20049aaa7966a8a48420, type: 3}
-  image: {fileID: 2800000, guid: 174f6a4de6b608143b0f5bcaf019a8d3, type: 3}
-  imageScale: 0.6
-  imageCenterOffsetU: 0
-  imageCenterOffsetV: 0
+  imageShader: {fileID: 4800000, guid: b7e4c2a91d3f8e547a6b1c0d9e2f4a8b, type: 3}
+  image: {fileID: 2800000, guid: 6d8a2a361df33454b8b058c8ea73f77f, type: 3}
+  imageAlt: {fileID: 2800000, guid: 405acf223e539034098c968ddfba36f8, type: 3}
+  imageLayout:
+    nativePixels: {x: 400, y: 700}
+    scale: 0.2
+    trackArmAnchor: 1
+    anchorAlongArm: 0.08
+    anchorRadialArm: 0.05
+    anchorLateralArm: 0
+    centerOffsetU: 0
+    centerOffsetV: 0
+    rotationDegrees: 0
+  imageAltLayout:
+    nativePixels: {x: 400, y: 700}
+    scale: 0.2
+    trackArmAnchor: 1
+    anchorAlongArm: 0.08
+    anchorRadialArm: 0.05
+    anchorLateralArm: 0
+    centerOffsetU: 0.069
+    centerOffsetV: 0
+    rotationDegrees: 0
+  placementSmoothingTime: 0.03
   flipAxis: 0
   smoothingTime: 0.08
   deadbandDegrees: 2.5
   headMotionFreezeDegPerSec: 25
+  showAnglePanel: 1
   cameraAnchor: {fileID: 0}
   hudDistance: 0.55
   hudRightMeters: 0.2
   hudUpMeters: 0.14
+  panelWorldWidthMeters: 0.28
+  showDebugAxis: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
