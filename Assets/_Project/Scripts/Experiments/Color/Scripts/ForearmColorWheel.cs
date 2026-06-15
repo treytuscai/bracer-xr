@@ -257,7 +257,7 @@ public class ForearmColorWheel : MonoBehaviour
         // Backing card.
         var bg = MakeRect("Background", _root, new Vector2(PanelW, PanelH));
         bg.anchoredPosition = Vector2.zero;
-        AddSolidImage(bg, new Color(0.10f, 0.10f, 0.12f, 1f));
+        AddSolidImage(bg, new Color(0.10f, 0.10f, 0.12f, 0.5f));
 
         // Panel header label ("Text Color Settings" / "Canvas Color Settings").
         string headerText = channel == Channel.Text ? "Text Color Settings" : "Canvas Color Settings";

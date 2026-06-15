@@ -2,32 +2,18 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// World-space hue slider for the RevisedBoundingBox experiment.
+/// World-space hue slider + Toggle Erase for RevisedBoundingBox.
 ///
-/// A single vertical rainbow track lets the user pick the paint colour for grid
-/// cells. The panel is placed once at Start, eye-level and slightly to the
-/// user's right (same placement convention as the Color experiment panels).
-///
-/// While the right index fingertip is on the track, grid-cell toggling is
-/// suppressed so adjusting colour does not accidentally paint the arm.
+/// PLACEMENT: position this GameObject in the scene (same as ForearmColorWheel /
+/// SizeScaleSlider). Default scene position: (0.2, 0.74, 0.35). The panel never
+/// moves at runtime.
 /// </summary>
-[DefaultExecutionOrder(105)] // Before RevisedBoundingBoxController (110)
+[DefaultExecutionOrder(105)]
 public class RevisedBoundingBoxColorSlider : MonoBehaviour
 {
-    [Header("References")]
-    public ForearmDepthSurface surface;
-
     [Header("Input")]
-    [Tooltip("Right-hand OVRSkeleton for fingertip interaction.")]
     public OVRSkeleton rightHandSkeleton;
-
-    [Tooltip("How close to the panel plane the fingertip must be to register (m).")]
-    [Min(0.005f)] public float pressDistanceMeters = 0.02f;
-
-    [Header("Placement")]
-    [Min(0.2f)] public float panelDistance   = 0.55f;
-    public float             panelRightMeters = 0.22f;
-    public float             panelUpMeters    = 0f;
+    [Min(0.005f)] public float pressDistanceMeters = 0.04f;
 
     [Header("Layout")]
     [Min(0.05f)] public float panelWorldWidthMeters = 0.12f;
@@ -38,30 +24,30 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
     [Range(0f, 1f)] public float lightness  = 0.5f;
     [Range(0f, 1f)] public float paintAlpha = 0.65f;
 
-    // ── Canvas layout (pixel units) ───────────────────────────────────────────
-
-    const int PanelW  = 120;
-    const int PanelH  = 280;
+    const int PanelW  = 130;
+    const int PanelH  = 340;
     const int TopPad  = 44;
-    const int BotPad  = 52;
+    const int BotPad  = 96;
     const int TrackX  = 0;
     const int TrackW  = 14;
     const int HandleW = 30;
     const int HandleH = 12;
+    const int ToggleBtnW = 118;
+    const int ToggleBtnH = 36;
     const int IndexTipBone = 10;
-
-    // ── Runtime ───────────────────────────────────────────────────────────────
 
     RectTransform _root;
     RectTransform _handle;
+    RectTransform _toggleBtn;
     Image         _swatchImg;
+    Image         _toggleBtnBg;
+    Text          _toggleBtnLabel;
     float         _hue;
-    bool          _panelPlaced;
+    bool          _toggleHeld;
 
-    /// <summary>True while the right index finger is actively on the slider track.</summary>
     public bool IsFingerOnPanel { get; private set; }
+    public bool EraseMode { get; private set; }
 
-    /// <summary>Colour applied to newly selected grid cells (includes paintAlpha).</summary>
     public Color CurrentPaintColor
     {
         get
@@ -72,22 +58,19 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
         }
     }
 
-    // ── Unity lifecycle ───────────────────────────────────────────────────────
+    float SwatchY => -(PanelH * 0.5f) + 62f;
+    float ToggleBtnY => -(PanelH * 0.5f) + 24f;
 
     void Awake()
     {
         _hue = startHue;
         BuildUI();
         RefreshHandle();
-        // Hide until head tracking is valid and placement succeeds.
-        if (_root != null) _root.gameObject.SetActive(false);
+        RefreshToggleButton();
     }
 
     void Start()
     {
-        if (surface == null)
-            surface = FindObjectOfType<ForearmDepthSurface>();
-
         if (rightHandSkeleton == null)
         {
             foreach (var s in FindObjectsOfType<OVRSkeleton>())
@@ -103,32 +86,9 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
 
     void LateUpdate()
     {
-        if (!_panelPlaced)
-            PositionHUD();
-
         IsFingerOnPanel = false;
         HandleInteraction();
     }
-
-    // ── Placement ─────────────────────────────────────────────────────────────
-
-    void PositionHUD()
-    {
-        Transform eye = surface != null ? surface.centerEyeAnchor : null;
-        if (eye == null || eye.position.sqrMagnitude < 0.01f) return;
-
-        transform.SetPositionAndRotation(
-            eye.position
-                + eye.forward * panelDistance
-                + eye.right   * panelRightMeters
-                + eye.up      * panelUpMeters,
-            Quaternion.LookRotation(eye.forward, eye.up));
-
-        if (_root != null) _root.gameObject.SetActive(true);
-        _panelPlaced = true;
-    }
-
-    // ── Interaction ───────────────────────────────────────────────────────────
 
     Transform FingerTip
     {
@@ -137,7 +97,6 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
             if (rightHandSkeleton == null ||
                 !rightHandSkeleton.IsInitialized ||
                 !rightHandSkeleton.IsDataValid) return null;
-
             var bones = rightHandSkeleton.Bones;
             if (bones == null || bones.Count <= IndexTipBone) return null;
             return bones[IndexTipBone].Transform;
@@ -156,7 +115,12 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
         if (planeDist > pressDistanceMeters) return;
 
         Vector2 local = _root.InverseTransformPoint(tip.position);
+
+        if (TryHandleToggleButton(tip))
+            return;
+
         if (Mathf.Abs(local.x) > PanelW * 0.5f) return;
+        if (local.y < -(PanelH * 0.5f) || local.y > (PanelH * 0.5f)) return;
 
         float trackBottom = -(PanelH * 0.5f) + BotPad;
         float trackTop    =  (PanelH * 0.5f) - TopPad;
@@ -170,6 +134,40 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
             _hue = t;
             RefreshHandle();
         }
+    }
+
+    bool TryHandleToggleButton(Transform tip)
+    {
+        if (_toggleBtn == null) return false;
+
+        Vector2 btnLocal = _toggleBtn.InverseTransformPoint(tip.position);
+        const float pad = 8f;
+        bool onBtn = Mathf.Abs(btnLocal.x) <= ToggleBtnW * 0.5f + pad
+                    && Mathf.Abs(btnLocal.y) <= ToggleBtnH * 0.5f + pad;
+
+        if (!onBtn)
+        {
+            _toggleHeld = false;
+            return false;
+        }
+
+        IsFingerOnPanel = true;
+        if (!_toggleHeld)
+        {
+            _toggleHeld = true;
+            EraseMode = !EraseMode;
+            RefreshToggleButton();
+        }
+        return true;
+    }
+
+    void RefreshToggleButton()
+    {
+        if (_toggleBtnBg == null || _toggleBtnLabel == null) return;
+
+        _toggleBtnBg.color = Color.black;
+        _toggleBtnLabel.text = EraseMode ? "Toggle Draw" : "Toggle Erase";
+        _toggleBtnLabel.color = Color.white;
     }
 
     void RefreshHandle()
@@ -186,8 +184,6 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
             _swatchImg.color = new Color(c.r, c.g, c.b, 1f);
         }
     }
-
-    // ── UI construction ───────────────────────────────────────────────────────
 
     void BuildUI()
     {
@@ -220,7 +216,7 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
         var track = MakeRect("HueTrack", _root, new Vector2(TrackW, trackH));
         track.anchoredPosition = new Vector2(TrackX, trackMidY);
         var trackImg = track.gameObject.AddComponent<RawImage>();
-        trackImg.texture    = BuildHueGradient(Mathf.Max(2, Mathf.RoundToInt(trackH)));
+        trackImg.texture = BuildHueGradient(Mathf.Max(2, Mathf.RoundToInt(trackH)));
         trackImg.raycastTarget = false;
 
         _handle = MakeRect("HueHandle", _root, new Vector2(HandleW, HandleH));
@@ -228,8 +224,17 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
         AddSolidImage(_handle, new Color(1f, 1f, 1f, 0.90f));
 
         var swatch = MakeRect("Swatch", _root, new Vector2(48f, 36f));
-        swatch.anchoredPosition = new Vector2(0f, -(PanelH * 0.5f) + 26f);
+        swatch.anchoredPosition = new Vector2(0f, SwatchY);
         _swatchImg = AddSolidImage(swatch, Color.green);
+
+        _toggleBtn = MakeRect("ToggleEraseButton", _root, new Vector2(ToggleBtnW, ToggleBtnH));
+        _toggleBtn.anchoredPosition = new Vector2(0f, ToggleBtnY);
+        _toggleBtnBg = AddSolidImage(_toggleBtn, Color.black);
+
+        var toggleLabel = MakeRect("ToggleEraseLabel", _toggleBtn, new Vector2(ToggleBtnW, ToggleBtnH));
+        toggleLabel.anchoredPosition = Vector2.zero;
+        _toggleBtnLabel = MakeText(toggleLabel, "Toggle Erase", 13, TextAnchor.MiddleCenter, Color.white);
+        RefreshToggleButton();
     }
 
     static Texture2D BuildHueGradient(int height)
@@ -271,6 +276,7 @@ public class RevisedBoundingBoxColorSlider : MonoBehaviour
         t.alignment     = alignment;
         t.color         = color;
         t.raycastTarget = false;
+        t.horizontalOverflow = HorizontalWrapMode.Overflow;
         return t;
     }
 }

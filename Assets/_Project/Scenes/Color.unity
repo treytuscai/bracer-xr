@@ -1187,7 +1187,7 @@ Transform:
   m_GameObject: {fileID: 309891315}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.2, y: 1.2, z: 0.35}
+  m_LocalPosition: {x: -0.2, y: 0.74, z: 0.35}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1213,10 +1213,10 @@ MonoBehaviour:
   rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.02
   panelWorldWidthMeters: 0.18
-  startHue: 0
-  startSaturation: 1
+  startHue: 0.5
+  startSaturation: 0.5
   startLightness: 0.5
-  startOpacity: 1
+  startOpacity: 0.5
 --- !u!1 &338176640
 GameObject:
   m_ObjectHideFlags: 0
@@ -1254,10 +1254,10 @@ MonoBehaviour:
   rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.02
   panelWorldWidthMeters: 0.18
-  startHue: 0
-  startSaturation: 1
+  startHue: 0.5
+  startSaturation: 0.5
   startLightness: 0.5
-  startOpacity: 1
+  startOpacity: 0.5
 --- !u!4 &338176645
 Transform:
   m_ObjectHideFlags: 0
@@ -1267,7 +1267,7 @@ Transform:
   m_GameObject: {fileID: 338176640}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.2, y: 1.2, z: 0.35}
+  m_LocalPosition: {x: 0.2, y: 0.74, z: 0.35}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

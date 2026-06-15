@@ -10,7 +10,7 @@ using Experiments.Cli;
 /// user paint individual cells with the right index fingertip using the colour
 /// chosen on the floating hue slider:
 ///   • Touch an empty cell  → fills it with the current slider colour.
-///   • Touch a painted cell → clears it back to semi-transparent default.
+///   • Touch a painted cell → clears it only when Erase mode is on (HUD button).
 ///
 /// Each cell stores its own RGBA colour, so multiple colours can coexist on the arm.
 /// Grid rendering uses Custom/ForearmGrid (shader + per-cell state texture) — no
@@ -68,6 +68,7 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
 
     int   _lastToggledCell = -1;
     float _inactiveTimer;
+    bool  _lastEraseMode;
 
     static readonly int GridColumnsId   = Shader.PropertyToID("_GridColumns");
     static readonly int GridRowsId      = Shader.PropertyToID("_GridRows");
@@ -163,6 +164,13 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
             RebuildGrid();
 
         PushMaterialParams();
+
+        if (colorSlider != null && colorSlider.EraseMode != _lastEraseMode)
+        {
+            _lastToggledCell = -1;
+            _lastEraseMode = colorSlider.EraseMode;
+        }
+
         HandleTouch();
     }
 
@@ -248,21 +256,24 @@ public class RevisedBoundingBoxController : MonoBehaviour, IExperimentCommands {
         if (idx == _lastToggledCell) return;
 
         _lastToggledCell = idx;
-        ToggleCell(idx);
+        ApplyCellTouch(idx);
     }
 
-    void ToggleCell(int idx)
+    void ApplyCellTouch(int idx)
     {
         if (_cellColors == null || idx < 0 || idx >= _cellColors.Length) return;
 
         bool painted = _cellColors[idx].a > 127;
+        bool eraseMode = colorSlider != null && colorSlider.EraseMode;
 
-        if (painted)
+        if (eraseMode)
         {
+            if (!painted) return;
             _cellColors[idx] = new Color32(0, 0, 0, 0);
         }
         else
         {
+            if (painted) return;
             Color paint = colorSlider != null
                 ? colorSlider.CurrentPaintColor
                 : new Color(0.1f, 0.85f, 0.2f, 0.65f);
