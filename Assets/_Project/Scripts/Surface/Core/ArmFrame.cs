@@ -35,6 +35,10 @@ namespace Surface.Core
         private const int ElbowBoneIndex = 11;
         private const int PalmCapBoneIndex = 30;
 
+        // Forearm twist (deg) at the home pose (palm to camera): the rig's fixed wrist/elbow neutral roll
+        // there. Pronation is measured from this so home reads PI (the palmar panel).
+        private const float HomeTwistDeg = 67f;
+
         // ------------------------------------------------------------------
         // REFERENCES
         // _bodySkeleton and _centerEyeAnchor are set at construction.
@@ -69,8 +73,9 @@ namespace Surface.Core
         public Vector3    AxisRight     { get; private set; }
         // Camera-facing arm surface normal; completes the right-handed frame.
         public Vector3    AxisUp        { get; private set; }
-        // Forearm twist in radians, clamped [0, PI]: 0 = palm-down, PI = palm-up. MeshGenerator adds
-        // it as a U scroll offset so wrist rotation scrolls the display rather than spinning it.
+        // Forearm twist in radians, clamped [0, PI]: PI at the home pose (palm to camera), 0 at the
+        // opposite face. Pitch-invariant (elbow-referenced; see step 4). MeshGenerator adds it as a U
+        // scroll offset so wrist rotation scrolls the display.
         public float      Pronation     { get; private set; }
         // True when the arm is held horizontally (landscape), false when upright (portrait). The
         // consumer reads this directly to pick which image to show.
@@ -146,26 +151,32 @@ namespace Surface.Core
             // The result is the arm's surface normal pointing generally toward the camera.
             AxisUp = Vector3.Cross(AxisRight, axis).normalized;
 
-            // 4. PRONATION (signed forearm twist from a palm-down reference). In the IOBT rig
-            // wrist.up faces the palm, so Cross(axis, -wrist.up) is the wrist's lateral direction
-            // projected perpendicular to the axis; palmDownRef is that same vector in the palm-down
-            // pose (dorsal faces worldUp). The angle between them is gravity-anchored: 0 palm-down, PI palm-up.
+            // 4. PRONATION (signed forearm twist, measured against the elbow so it's pitch-invariant).
+            // boneRight = Cross(axis, -wrist.up) is the wrist's lateral (wrist.up faces the palm); elbowRef
+            // is elbow.up flattened onto the plane perpendicular to axis, a lateral fixed to the elbow. The
+            // signed angle between them around axis is the wrist's roll relative to the forearm — whole-arm
+            // pitch turns both together and cancels, leaving only real twist.
             Vector3 boneRightRaw = Vector3.Cross(axis, -wrist.up);
-            Vector3 palmDownRef  = Vector3.Cross(axis, Vector3.up);
-            if (boneRightRaw.sqrMagnitude >= 0.001f && palmDownRef.sqrMagnitude >= 0.001f)
+            Vector3 elbowRef     = elbow.up - Vector3.Dot(elbow.up, axis) * axis;
+
+            if (boneRightRaw.sqrMagnitude >= 0.001f && elbowRef.sqrMagnitude >= 0.001f)
             {
                 Vector3 boneRight = boneRightRaw.normalized;
-                palmDownRef       = palmDownRef.normalized;
+                elbowRef          = elbowRef.normalized;
 
-                float cos          = Vector3.Dot(boneRight, palmDownRef);
-                float sin          = Vector3.Dot(Vector3.Cross(boneRight, palmDownRef), axis);
+                float cos          = Vector3.Dot(boneRight, elbowRef);
+                float sin          = Vector3.Dot(Vector3.Cross(boneRight, elbowRef), axis);
                 float rawPronation = Mathf.Atan2(sin, cos);
                 _smoothedPronation = Mathf.LerpAngle(
                     _smoothedPronation * Mathf.Rad2Deg,
                     rawPronation       * Mathf.Rad2Deg,
                     0.15f) * Mathf.Deg2Rad;
             }
-            Pronation = Mathf.Clamp(_smoothedPronation, 0f, Mathf.PI);
+            // Anchor the scroll to the home pose: palm-to-camera reads PI (palmar panel) and rotating
+            // toward the dorsal side drops to 0 (dorsal panel), so the shown panel tracks the visible
+            // face. DeltaAngle handles wraparound; the clamp drops over-rotation past either end.
+            float pronationDeg = 180f - Mathf.DeltaAngle(_smoothedPronation * Mathf.Rad2Deg, HomeTwistDeg);
+            Pronation    = Mathf.Clamp(pronationDeg * Mathf.Deg2Rad, 0f, Mathf.PI);
 
             // 5. ORIENTATION. Decide portrait vs landscape from how the arm projects onto the screen
             // (camera right vs up), ignoring depth. A dead band gives hysteresis: tilt past 55° to enter
