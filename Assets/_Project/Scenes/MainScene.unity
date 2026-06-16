@@ -706,8 +706,8 @@ MonoBehaviour:
   displayWidth: 0.4
   displayOffset: 0.08
   orientationMode: 0
-  portraitTexture: {fileID: 2800000, guid: b72898f434fc04fab9155dffea020606, type: 3}
-  landscapeTexture: {fileID: 2800000, guid: c17d766c0f0054f0e943b36ce56d3883, type: 3}
+  portraitTexture: {fileID: 2800000, guid: b549fead8104746538aacfc1c41545aa, type: 3}
+  landscapeTexture: {fileID: 2800000, guid: be263b475022c491ab903e41e44cf71d, type: 3}
 --- !u!23 &995909437
 MeshRenderer:
   m_ObjectHideFlags: 0
