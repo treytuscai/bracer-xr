@@ -125,8 +125,8 @@ public class ForearmInteraction : MonoBehaviour
 
             // FAST PRE-REJECTION in physical arm-frame extents (pronation/orientation omitted — those
             // are UV adjustments, not physical). The U lower bound is -0.5, not 0, to cover the full
-            // pronation scroll: at palm-up the palmar panel's left edge sits at u≈-0.25 pre-scroll, so
-            // a 0 bound would drop valid touches there.
+            // pronation scroll: at the home pose (palm to camera, scroll = 0.5) the palmar panel's left
+            // edge sits at u≈-0.25 pre-scroll, so a 0 bound would drop valid touches there.
             float u = ((across - _surface.ProjCenter) / Mathf.Max(_surface.displayWidth, 1e-4f)) + 0.25f;
             float v = (along  - displayStart)          / Mathf.Max(displayEnd - displayStart, 1e-4f);
             if (u < -0.5f || u > 1f || v < 0f || v > 1f) continue;

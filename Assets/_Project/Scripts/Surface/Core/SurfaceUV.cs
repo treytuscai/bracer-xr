@@ -19,9 +19,9 @@ namespace Surface.Core
         ///   V: Dot(fromWrist, axis) / height, centered on offset and flipped so V=0 is
         ///      elbow-side, V=1 wrist-side.
         ///   U: Dot(fromWrist, axisRight) / width, centered on projCenter and offset to the dorsal
-        ///      panel center (0.25). pronationScroll (pronation / 2π) adds up to 0.5 at full
-        ///      palm-up — content scrolls to the palmar panel; the frame doesn't spin because
-        ///      axisRight is camera-fixed (see ArmFrame).
+        ///      panel center (0.25). pronationScroll (pronation / 2π) reaches 0.5 at the home pose
+        ///      (palm to camera) — content scrolls to the palmar panel; the frame doesn't spin
+        ///      because axisRight is camera-fixed (see ArmFrame).
         /// </summary>
         public static Vector2 Compute(
             Vector3 pt, Vector3 wristPos, Vector3 axis, Vector3 axisRight,
