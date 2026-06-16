@@ -80,10 +80,13 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Remove all widgets baked into the forearm grid. |
+| `placed` | Original and current size (content scale) and rotation (degrees) of the most recently placed image. Updates when the participant edits that cell via the resize/rotate panel. |
 
 ```bash
 ./Tools/expctl load RevisedPlaceRotateScale
 ./Tools/expctl clear
+./Tools/expctl placed
+# e.g. original_size=2.00 original_rotation=0.00 current_size=2.50 current_rotation=45.00
 ```
 
 ---
@@ -93,11 +96,13 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Clear all placed widgets from the arm grid. |
+| `placed` | Original and current size/rotation of the most recently placed image (updates after resize/rotate edits on that cell). |
 | `next` | Clear the arm and show the next template in the randomized sequence. Returns `all templates complete` when finished. |
 
 ```bash
 ./Tools/expctl load 1dElicitationofPlacement
 ./Tools/expctl next
+./Tools/expctl placed
 ```
 
 ---
@@ -107,6 +112,7 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Clear all placed widgets from the arm grid. |
+| `placed` | Original and current size/rotation of the most recently placed image (updates after resize/rotate edits on that cell). |
 | `next` | Same as 1d — advance to the next palette template. |
 
 ```bash
@@ -121,6 +127,7 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Clear all placed widgets from the arm grid. |
+| `placed` | Original and current size/rotation of the most recently placed image (updates after resize/rotate edits on that cell). |
 | `next` | Clear the arm and enable manual placement from the palette. |
 
 ```bash
@@ -135,6 +142,7 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Clear all placed widgets from the arm grid. |
+| `placed` | Original and current size/rotation of the most recently placed image (updates after resize/rotate edits on that cell). |
 
 ```bash
 ./Tools/expctl load 1eContentDependent
@@ -148,6 +156,7 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `clear` | Clear all placed widgets from the arm grid. |
+| `placed` | Original and current size/rotation of the most recently grid-placed image (updates after resize/rotate edits on that cell). |
 | `next` | Advance to the next step (body region × vertical/horizontal interface). |
 | `loguv` / `uv` | Log latched touch UV on the arm. Touch the arm first, then run the command. |
 | `status` | Current step, placement source (saved/inspector), UV center, size, rotation. |
@@ -172,11 +181,13 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 | Command | Description |
 |---------|-------------|
 | `next` | Show the next interface image in the sequence (8 flow/grid variants). |
+| `back` | Show the previous interface image. Returns `at first image` on the first image. |
 | `status` | Current image index and filename. |
 
 ```bash
 ./Tools/expctl load 1kFlowVersusGrid
 ./Tools/expctl next
+./Tools/expctl back
 ./Tools/expctl status
 ```
 
@@ -208,6 +219,21 @@ Erase vs draw is toggled on-device via the **Toggle Erase** HUD button (not expc
 
 ---
 
+### `placeRotateScaleInterfaces` / `chooseColorWithColorwheel`
+
+Legacy canvas placement on the arm (not grid-baked). `size` is the placed widget’s canvas pixel extent; `rotation` is degrees (typically `0`).
+
+| Command | Description |
+|---------|-------------|
+| `placed` | Original and current size/rotation of the most recently placed image. |
+
+```bash
+./Tools/expctl load placeRotateScaleInterfaces
+./Tools/expctl placed
+```
+
+---
+
 ## Scenes with no scene-specific commands
 
 These scenes only support **global** commands:
@@ -215,9 +241,7 @@ These scenes only support **global** commands:
 | Scene | Notes |
 |-------|-------|
 | `experimentSelectScene` | Experiment picker menu |
-| `placeRotateScaleInterfaces` | Legacy place/rotate/scale |
-| `boundingBoxDemarcation` | Polygon bounding-box demarcation |
-| `chooseColorWithColorwheel` | Legacy color wheel scene |
+| `boundingBoxDemarcation` | Polygon bounding-box demarcation (`placed` available if widgets are placed via legacy canvas) |
 | `SizeAndScale` | Size/gap slider experiment |
 | `MainScene` | — |
 
@@ -239,4 +263,5 @@ After loading any scene, run `help` to confirm which commands are registered on 
 
 - Server: `ExperimentCommandServer` (port **9999**, loopback only).
 - Scene commands are registered by components implementing `IExperimentCommands` when each scene loads.
+- `placed` records original values at bake/commit time; `current_*` updates when the participant edits that same cell via the resize/rotate panel (`SetSelectedCellScale` / `SetSelectedCellRotation`). Also logged to the Unity console.
 - Wrapper scripts: `Tools/expctl` (bash), `Tools/expctl.bat` (Windows).

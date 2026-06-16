@@ -1,3 +1,4 @@
+using Experiments.Cli;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -733,6 +734,7 @@ public class OneHHorizVerticalGridController : MonoBehaviour
         _cellMeta[idx] = meta;
         RebakeCell(_selectedCol, _selectedRow);
         PushCellTransform(_selectedCol, _selectedRow);
+        LastWidgetPlacement.UpdateCurrentAtCell(_selectedCol, _selectedRow, meta.Scale, meta.RotationDegrees);
     }
 
     public void SetSelectedCellRotation(float rotationDegrees)
@@ -743,6 +745,7 @@ public class OneHHorizVerticalGridController : MonoBehaviour
         meta.RotationDegrees = rotationDegrees;
         _cellMeta[idx] = meta;
         PushCellTransform(_selectedCol, _selectedRow);
+        LastWidgetPlacement.UpdateCurrentAtCell(_selectedCol, _selectedRow, meta.Scale, meta.RotationDegrees);
     }
 
     /// <summary>
@@ -838,6 +841,7 @@ public class OneHHorizVerticalGridController : MonoBehaviour
         RebakeCell(col, row);
         PushCellTransform(col, row);
         MarkCellOccupied(col, row);
+        LastWidgetPlacement.RecordAtCell(col, row, scale, rotationDegrees);
     }
 
     void PushCellTransform(int col, int row)

@@ -155,6 +155,7 @@ namespace Experiments.Cli
         void RebuildSceneCommands(Scene scene)
         {
             _scene.Clear();
+            LastWidgetPlacement.Clear();
             if (!scene.IsValid()) return;
 
             var providers = FindObjectsOfType<MonoBehaviour>(includeInactive: true);

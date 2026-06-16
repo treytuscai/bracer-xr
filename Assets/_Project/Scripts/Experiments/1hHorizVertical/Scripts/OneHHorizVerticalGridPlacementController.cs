@@ -20,6 +20,7 @@ public class OneHHorizVerticalGridPlacementController : MonoBehaviour, IForearmW
             ClearAll();
             return "cleared placed widgets";
         };
+        PlacementCliCommands.Register(commands);
     }
     [Header("References")]
     public OneHHorizVerticalGridController grid;

@@ -23,6 +23,7 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
             ClearAll();
             return "cleared placed widgets";
         };
+        PlacementCliCommands.Register(commands);
     }
     [Header("References")]
     public RevisedGridController grid;

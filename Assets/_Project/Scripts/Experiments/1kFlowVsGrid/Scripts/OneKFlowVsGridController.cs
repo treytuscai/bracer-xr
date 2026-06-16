@@ -7,6 +7,7 @@ using UnityEngine;
 /// <summary>
 /// 1K Flow vs Grid — displays interface art via ForearmDepthSurface portrait texture.
 /// expctl next steps through the assigned interface images in order.
+/// expctl back returns to the previous image.
 /// </summary>
 [DefaultExecutionOrder(125)]
 public class OneKFlowVsGridController : MonoBehaviour, IExperimentCommands
@@ -69,6 +70,7 @@ public class OneKFlowVsGridController : MonoBehaviour, IExperimentCommands
     public void RegisterCommands(IDictionary<string, Func<IReadOnlyDictionary<string, string>, string>> commands)
     {
         commands["next"] = _ => AdvanceToNextImage();
+        commands["back"] = _ => GoBackToPreviousImage();
         commands["status"] = _ => BuildStatus();
     }
 
@@ -88,6 +90,34 @@ public class OneKFlowVsGridController : MonoBehaviour, IExperimentCommands
             return "all interfaces complete";
         }
 
+        ApplyCurrentImage();
+        string msg = $"{FormatProgress()}: {CurrentImageName()}";
+        Debug.Log("[OneKFlowVsGrid] " + msg);
+        return msg;
+    }
+
+    public string GoBackToPreviousImage()
+    {
+        if (!_initialized)
+            return "not ready";
+
+        if (_queue.Count == 0)
+            return "no images";
+
+        if (_sequenceComplete)
+        {
+            _sequenceComplete = false;
+            _index = _queue.Count - 1;
+            ApplyCurrentImage();
+            string restored = $"{FormatProgress()}: {CurrentImageName()}";
+            Debug.Log("[OneKFlowVsGrid] " + restored);
+            return restored;
+        }
+
+        if (_index <= 0)
+            return "at first image";
+
+        _index--;
         ApplyCurrentImage();
         string msg = $"{FormatProgress()}: {CurrentImageName()}";
         Debug.Log("[OneKFlowVsGrid] " + msg);

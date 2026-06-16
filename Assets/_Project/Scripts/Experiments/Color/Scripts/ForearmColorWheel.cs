@@ -33,6 +33,17 @@ public class ForearmColorWheel : MonoBehaviour
     [Header("Layout")]
     [Min(0.05f)] public float panelWorldWidthMeters = 0.18f;
 
+    [Header("Head follow")]
+    [Tooltip("Keep the panel in front of the user's eyes and update each frame as they turn.")]
+    public bool followHead = true;
+    [Tooltip("Eye anchor. Auto-resolves OVRCameraRig centerEyeAnchor if empty.")]
+    public Transform headAnchor;
+    [Min(0.1f)] public float distanceMeters = 0.35f;
+    [Tooltip("Vertical offset from the eye anchor (meters).")]
+    public float heightOffsetMeters = 0f;
+    [Tooltip("Lateral offset from the eye anchor (meters). Positive = user's right.")]
+    public float lateralOffsetMeters;
+
     [Header("Initial HSL + Opacity")]
     [Range(0f, 1f)] public float startHue        = 0f;
     [Range(0f, 1f)] public float startSaturation = 1f;
@@ -79,6 +90,9 @@ public class ForearmColorWheel : MonoBehaviour
 
     void Awake()
     {
+        if (Mathf.Approximately(lateralOffsetMeters, 0f))
+            lateralOffsetMeters = channel == Channel.Text ? -0.2f : 0.2f;
+
         _hue       = startHue;
         _sat       = startSaturation;
         _lightness = startLightness;
@@ -90,6 +104,9 @@ public class ForearmColorWheel : MonoBehaviour
 
     void LateUpdate()
     {
+        if (followHead)
+            ApplyHeadFollow();
+
         Transform tip = FingerTip;
         if (tip == null || _root == null) return;
 
@@ -126,6 +143,53 @@ public class ForearmColorWheel : MonoBehaviour
         }
 
         if (changed) Emit();
+    }
+
+    void ApplyHeadFollow()
+    {
+        Transform anchor = ResolveHeadAnchor();
+        if (anchor == null || _root == null)
+            return;
+
+        Vector3 viewForward = anchor.forward;
+        if (viewForward.sqrMagnitude < 1e-6f)
+            viewForward = Vector3.forward;
+        viewForward.Normalize();
+
+        Vector3 viewRight = anchor.right;
+        if (viewRight.sqrMagnitude < 1e-6f)
+            viewRight = Vector3.right;
+        viewRight.Normalize();
+
+        Vector3 anchorPos = anchor.position;
+        Vector3 targetPos = anchorPos
+            + viewForward * distanceMeters
+            + viewRight * lateralOffsetMeters
+            + anchor.up * heightOffsetMeters;
+
+        transform.SetPositionAndRotation(targetPos, ComputeFacingRotation(anchorPos, targetPos, anchor.up));
+    }
+
+    Transform ResolveHeadAnchor()
+    {
+        if (headAnchor != null)
+            return headAnchor;
+
+        var rig = FindObjectOfType<OVRCameraRig>();
+        if (rig != null && rig.centerEyeAnchor != null)
+            headAnchor = rig.centerEyeAnchor;
+
+        return headAnchor;
+    }
+
+    static Quaternion ComputeFacingRotation(Vector3 anchorPos, Vector3 targetPos, Vector3 up)
+    {
+        Vector3 faceDir = anchorPos - targetPos;
+        if (faceDir.sqrMagnitude < 1e-6f)
+            faceDir = Vector3.forward;
+
+        Vector3 upAxis = up.sqrMagnitude > 1e-6f ? up.normalized : Vector3.up;
+        return Quaternion.LookRotation(faceDir.normalized, upAxis);
     }
 
     // ── Color output ─────────────────────────────────────────────────────────
@@ -245,7 +309,7 @@ public class ForearmColorWheel : MonoBehaviour
         _root.sizeDelta = new Vector2(PanelW, PanelH);
         _root.pivot     = new Vector2(0.5f, 0.5f);
         float s         = panelWorldWidthMeters / PanelW;
-        _root.localScale    = new Vector3(s, s, s);
+        _root.localScale    = followHead ? new Vector3(-s, s, s) : new Vector3(s, s, s);
         _root.localPosition = Vector3.zero;
         _root.localRotation = Quaternion.identity;
 

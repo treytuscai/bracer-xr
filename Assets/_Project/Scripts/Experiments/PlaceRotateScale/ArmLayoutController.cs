@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using Experiments.Cli;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -7,8 +10,13 @@ using UnityEngine.UI;
 /// <see cref="InteractionMode.FreePlace"/> pick presses a widget → it follows the index fingertip in world space;
 /// committing maps it back onto the decal using linear UV projection.
 /// </summary>
-public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement
+public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement, IExperimentCommands
 {
+    public void RegisterCommands(IDictionary<string, Func<IReadOnlyDictionary<string, string>, string>> commands)
+    {
+        PlacementCliCommands.Register(commands);
+    }
+
     public enum InteractionMode
     {
         VerticalListReorder,
@@ -1088,6 +1096,10 @@ public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement
         // (We intentionally do NOT restore the old sibling index here — once placed
         //  freely the user expects it to stay where they put it visually.)
         draggedItem.SetAsLastSibling();
+
+        float placedSize = Mathf.Max(draggedItem.rect.width, draggedItem.rect.height);
+        float placedRotation = draggedItem.localEulerAngles.z;
+        LastWidgetPlacement.RecordCanvas(placedSize, placedRotation);
 
         if (!keepIgnoreLayoutAfterFreePlace)
         {
