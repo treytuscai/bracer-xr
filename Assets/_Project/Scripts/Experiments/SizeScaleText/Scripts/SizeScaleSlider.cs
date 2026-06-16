@@ -6,16 +6,8 @@ using UnityEngine.UI;
 ///   LEFT  track — Gap   (switches between GapGroups in SizeScaleController)
 ///   RIGHT track — Size  (switches between images within the current GapGroup)
 ///
-/// PLACEMENT
-///   Set <see cref="panelWorldPosition"/> (and optional rotation) on this component,
-///   or move the GameObject in the scene — both are synced at startup.
-///   The panel does not move after that unless you change the Inspector fields in Play mode.
-///
-/// INTERACTION
-///   Right index fingertip drives both sliders simultaneously.
-///   When the fingertip is within pressDistanceMeters of the panel plane AND
-///   within the panel bounds, the horizontal position of the finger determines
-///   which track is active (left half → Gap, right half → Size).
+/// When <see cref="followHead"/> is enabled, the panel stays in front of the user's eyes.
+/// Otherwise uses <see cref="panelWorldPosition"/> / <see cref="panelWorldEulerAngles"/>.
 /// </summary>
 [DefaultExecutionOrder(120)]   // After SizeScaleController (110)
 public class SizeScaleSlider : MonoBehaviour
@@ -39,10 +31,20 @@ public class SizeScaleSlider : MonoBehaviour
     [Min(0.05f)] public float panelWorldWidthMeters = 0.22f;
 
     [Header("Placement")]
-    [Tooltip("World-space position of the Gap/Size slider panel.")]
+    [Tooltip("Keep the panel in front of the user's eyes and update each frame as they turn.")]
+    public bool followHead = true;
+    [Tooltip("Eye anchor. Auto-resolves OVRCameraRig centerEyeAnchor if empty.")]
+    public Transform headAnchor;
+    [Min(0.1f)] public float distanceMeters = 0.65f;
+    [Tooltip("Vertical offset from the eye anchor (meters).")]
+    public float heightOffsetMeters = 0f;
+    [Tooltip("Lateral offset from the eye anchor (meters). Positive = user's right.")]
+    public float lateralOffsetMeters = 0.2f;
+
+    [Tooltip("World-space position when followHead is off.")]
     public Vector3 panelWorldPosition = new Vector3(0.2f, 1.2f, 0.35f);
 
-    [Tooltip("World-space rotation of the panel (degrees).")]
+    [Tooltip("World-space rotation of the panel (degrees) when followHead is off.")]
     public Vector3 panelWorldEulerAngles = Vector3.zero;
 
     // ── Canvas layout constants (canvas-pixel units) ──────────────────────────
@@ -103,6 +105,9 @@ public class SizeScaleSlider : MonoBehaviour
 
     void ApplyPlacement()
     {
+        if (followHead)
+            return;
+
         transform.SetPositionAndRotation(
             panelWorldPosition,
             Quaternion.Euler(panelWorldEulerAngles));
@@ -111,14 +116,64 @@ public class SizeScaleSlider : MonoBehaviour
 #if UNITY_EDITOR
     void OnValidate()
     {
-        if (!isActiveAndEnabled) return;
+        if (!isActiveAndEnabled || followHead) return;
         ApplyPlacement();
     }
 #endif
 
     void LateUpdate()
     {
+        if (followHead)
+            ApplyHeadFollow();
+
         HandleInteraction();
+    }
+
+    void ApplyHeadFollow()
+    {
+        Transform anchor = ResolveHeadAnchor();
+        if (anchor == null || _root == null)
+            return;
+
+        Vector3 viewForward = anchor.forward;
+        if (viewForward.sqrMagnitude < 1e-6f)
+            viewForward = Vector3.forward;
+        viewForward.Normalize();
+
+        Vector3 viewRight = anchor.right;
+        if (viewRight.sqrMagnitude < 1e-6f)
+            viewRight = Vector3.right;
+        viewRight.Normalize();
+
+        Vector3 anchorPos = anchor.position;
+        Vector3 targetPos = anchorPos
+            + viewForward * distanceMeters
+            + viewRight * lateralOffsetMeters
+            + anchor.up * heightOffsetMeters;
+
+        transform.SetPositionAndRotation(targetPos, ComputeFacingRotation(anchorPos, targetPos, anchor.up));
+    }
+
+    Transform ResolveHeadAnchor()
+    {
+        if (headAnchor != null)
+            return headAnchor;
+
+        var rig = FindObjectOfType<OVRCameraRig>();
+        if (rig != null && rig.centerEyeAnchor != null)
+            headAnchor = rig.centerEyeAnchor;
+
+        return headAnchor;
+    }
+
+    static Quaternion ComputeFacingRotation(Vector3 anchorPos, Vector3 targetPos, Vector3 up)
+    {
+        Vector3 faceDir = anchorPos - targetPos;
+        if (faceDir.sqrMagnitude < 1e-6f)
+            faceDir = Vector3.forward;
+
+        Vector3 upAxis = up.sqrMagnitude > 1e-6f ? up.normalized : Vector3.up;
+        return Quaternion.LookRotation(faceDir.normalized, upAxis);
     }
 
     // ── Reference resolution ─────────────────────────────────────────────────
@@ -283,7 +338,7 @@ public class SizeScaleSlider : MonoBehaviour
         _root.sizeDelta  = new Vector2(PanelW, PanelH);
         _root.pivot      = new Vector2(0.5f, 0.5f);
         float s          = panelWorldWidthMeters / PanelW;
-        _root.localScale = new Vector3(s, s, s);
+        _root.localScale = followHead ? new Vector3(-s, s, s) : new Vector3(s, s, s);
         _root.localPosition = Vector3.zero;
         _root.localRotation = Quaternion.identity;
 

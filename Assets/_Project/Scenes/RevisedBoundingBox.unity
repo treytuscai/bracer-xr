@@ -298,7 +298,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 958027c9e65da408f8f19aee70980d65, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  touchHoverHeight: 0.01
+  touchHoverHeight: 0.013
   touchDepth: 0.04
   maxCellSearchDist: 0.03
   maxHoverPreviewDistance: 0.1
@@ -1564,6 +1564,11 @@ MonoBehaviour:
   rightHandSkeleton: {fileID: 113860855}
   pressDistanceMeters: 0.04
   panelWorldWidthMeters: 0.12
+  followHead: 1
+  headAnchor: {fileID: 0}
+  distanceMeters: 0.5
+  heightOffsetMeters: 0
+  lateralOffsetMeters: 0.2
   startHue: 0.33
   saturation: 1
   lightness: 0.5

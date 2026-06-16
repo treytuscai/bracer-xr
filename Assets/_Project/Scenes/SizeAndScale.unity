@@ -1493,6 +1493,11 @@ MonoBehaviour:
   rightHandSkeleton: {fileID: 0}
   pressDistanceMeters: 0.025
   panelWorldWidthMeters: 0.12
+  followHead: 1
+  headAnchor: {fileID: 0}
+  distanceMeters: 0.5
+  heightOffsetMeters: 0
+  lateralOffsetMeters: 0.2
   panelWorldPosition: {x: 0.2, y: 0.8, z: 0.65}
   panelWorldEulerAngles: {x: 0, y: 0, z: 0}
 --- !u!4 &688295188

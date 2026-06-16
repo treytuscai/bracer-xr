@@ -1215,7 +1215,7 @@ MonoBehaviour:
   panelWorldWidthMeters: 0.18
   followHead: 1
   headAnchor: {fileID: 0}
-  distanceMeters: 0.45
+  distanceMeters: 0.5
   heightOffsetMeters: 0
   lateralOffsetMeters: -0.2
   startHue: 0.5
@@ -1261,7 +1261,7 @@ MonoBehaviour:
   panelWorldWidthMeters: 0.18
   followHead: 1
   headAnchor: {fileID: 0}
-  distanceMeters: 0.45
+  distanceMeters: 0.5
   heightOffsetMeters: 0
   lateralOffsetMeters: 0.2
   startHue: 0.5
