@@ -1839,7 +1839,7 @@ MonoBehaviour:
     displayHeight: 0.35
     displayWidth: 0.35
     vertical:
-      meshU: 0.502
+      meshU: 0.65
       meshV: 0.824
       size: 0.15
       rotationDegrees: 25

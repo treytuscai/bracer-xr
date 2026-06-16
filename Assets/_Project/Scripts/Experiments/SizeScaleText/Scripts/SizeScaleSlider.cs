@@ -7,9 +7,9 @@ using UnityEngine.UI;
 ///   RIGHT track — Size  (switches between images within the current GapGroup)
 ///
 /// PLACEMENT
-///   Works exactly like ForearmColorWheel: place the GameObject in the scene at
-///   the desired world position. The panel is built as children of this Transform
-///   and never moves after Start().
+///   Set <see cref="panelWorldPosition"/> (and optional rotation) on this component,
+///   or move the GameObject in the scene — both are synced at startup.
+///   The panel does not move after that unless you change the Inspector fields in Play mode.
 ///
 /// INTERACTION
 ///   Right index fingertip drives both sliders simultaneously.
@@ -37,6 +37,13 @@ public class SizeScaleSlider : MonoBehaviour
     [Header("Layout")]
     [Tooltip("Physical width of the panel in metres.")]
     [Min(0.05f)] public float panelWorldWidthMeters = 0.22f;
+
+    [Header("Placement")]
+    [Tooltip("World-space position of the Gap/Size slider panel.")]
+    public Vector3 panelWorldPosition = new Vector3(0.2f, 1.2f, 0.35f);
+
+    [Tooltip("World-space rotation of the panel (degrees).")]
+    public Vector3 panelWorldEulerAngles = Vector3.zero;
 
     // ── Canvas layout constants (canvas-pixel units) ──────────────────────────
 
@@ -88,10 +95,26 @@ public class SizeScaleSlider : MonoBehaviour
 
     void Awake()
     {
+        ApplyPlacement();
         ResolveReferences();
         BuildUI();
         RefreshVisuals();
     }
+
+    void ApplyPlacement()
+    {
+        transform.SetPositionAndRotation(
+            panelWorldPosition,
+            Quaternion.Euler(panelWorldEulerAngles));
+    }
+
+#if UNITY_EDITOR
+    void OnValidate()
+    {
+        if (!isActiveAndEnabled) return;
+        ApplyPlacement();
+    }
+#endif
 
     void LateUpdate()
     {
