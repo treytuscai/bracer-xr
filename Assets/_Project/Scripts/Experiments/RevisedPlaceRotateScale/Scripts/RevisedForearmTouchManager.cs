@@ -269,9 +269,11 @@ public class RevisedForearmTouchManager : MonoBehaviour
         {
             if (debugLogGestures)
                 Debug.Log("[RevisedGesture] PLACE in grid cell @ " + interaction.TouchWorldPoint);
-            Placement.CommitPlace(interaction.TouchWorldPoint);
-            carrying = false;
-            sawReleaseSincePickup = false;
+            if (Placement.CommitPlace(interaction.TouchWorldPoint))
+            {
+                carrying = false;
+                sawReleaseSincePickup = false;
+            }
         }
     }
 }

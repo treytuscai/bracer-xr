@@ -1038,9 +1038,9 @@ public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement, IExpe
     }
 
     /// <summary>Place the carried widget back onto the arm at the finger's current contact position.</summary>
-    public void CommitPlace(Vector3 contactWorldPoint)
+    public bool CommitPlace(Vector3 contactWorldPoint)
     {
-        if (interactionMode != InteractionMode.FreePlace || draggedItem == null) return;
+        if (interactionMode != InteractionMode.FreePlace || draggedItem == null) return false;
 
         Transform targetParent = _carryCommitParent != null ? _carryCommitParent : _carrySavedParent;
         if (targetParent != null && draggedItem.parent != targetParent)
@@ -1110,6 +1110,7 @@ public class ArmLayoutController : MonoBehaviour, IForearmWidgetPlacement, IExpe
         draggedItem = null;
         ResetCarryFingerMetadata();
         smoothedSanitizedUv = Vector2.zero;
+        return true;
     }
 
     void ResetCarryFingerMetadata()

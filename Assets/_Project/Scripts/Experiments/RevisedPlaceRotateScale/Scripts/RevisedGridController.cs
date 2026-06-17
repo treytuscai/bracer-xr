@@ -82,7 +82,10 @@ public class RevisedGridController : MonoBehaviour
     Color32[] _cellStates;
     Color32[] _cellTransforms;
 
-    const int MaxSparseAtlasSize = 4096;
+    const int DefaultMaxSparseAtlasSize = 4096;
+    int _runtimeMaxAtlasSize;
+    bool _isRepackingAtlas;
+
     int _atlasPackX;
     int _atlasPackY;
     int _atlasPackRowHeight;
@@ -242,7 +245,9 @@ public class RevisedGridController : MonoBehaviour
         if (_contentAtlas != null)
             Destroy(_contentAtlas);
 
-        int initial = Mathf.Clamp(contentTileResolution * 2, 256, 512);
+        int tile = ComputeBakeTileSize(defaultPlacedScale);
+        int maxDim = MaxAtlasDimension();
+        int initial = Mathf.Clamp(Mathf.Max(tile, contentTileResolution), 256, maxDim);
         _contentAtlas = new Texture2D(initial, initial, TextureFormat.RGBA32, false, true)
         {
             name       = "RevisedGridContentAtlas",
@@ -251,6 +256,21 @@ public class RevisedGridController : MonoBehaviour
         };
         ClearAtlasPixels();
         _contentAtlas.Apply(false);
+        if (_mat != null)
+            _mat.SetTexture(ContentAtlasId, _contentAtlas);
+    }
+
+    int MaxAtlasDimension()
+    {
+        if (_runtimeMaxAtlasSize <= 0)
+        {
+            _runtimeMaxAtlasSize = SystemInfo.maxTextureSize > 0
+                ? SystemInfo.maxTextureSize
+                : DefaultMaxSparseAtlasSize;
+            _runtimeMaxAtlasSize = Mathf.Clamp(_runtimeMaxAtlasSize, 1024, DefaultMaxSparseAtlasSize);
+        }
+
+        return _runtimeMaxAtlasSize;
     }
 
     void ResetAtlasPacker()
@@ -272,6 +292,20 @@ public class RevisedGridController : MonoBehaviour
 
     bool AllocateAtlasSlot(int width, int height, out int destX, out int destY)
     {
+        if (TryAllocateAtlasSlotOnce(width, height, out destX, out destY))
+            return true;
+
+        if (_isRepackingAtlas)
+            return false;
+
+        if (!TryRepackContentAtlas())
+            return false;
+
+        return TryAllocateAtlasSlotOnce(width, height, out destX, out destY);
+    }
+
+    bool TryAllocateAtlasSlotOnce(int width, int height, out int destX, out int destY)
+    {
         destX = 0;
         destY = 0;
         width = Mathf.Clamp(width, 32, maxBakeTileResolution);
@@ -280,24 +314,43 @@ public class RevisedGridController : MonoBehaviour
         if (_contentAtlas == null)
             return false;
 
+        int maxDim = MaxAtlasDimension();
+
         if (_atlasPackX + width > _contentAtlas.width)
         {
-            _atlasPackX = 0;
-            _atlasPackY += _atlasPackRowHeight;
-            _atlasPackRowHeight = 0;
+            int neededWidth = _atlasPackX + width;
+            if (neededWidth <= maxDim)
+            {
+                int newW = Mathf.Min(maxDim, Mathf.Max(_contentAtlas.width * 2, neededWidth));
+                int newH = Mathf.Max(_contentAtlas.height, _atlasPackY + _atlasPackRowHeight);
+                if (newW > _contentAtlas.width)
+                    GrowSparseAtlas(newW, newH);
+            }
+
+            if (_atlasPackX + width > _contentAtlas.width)
+            {
+                _atlasPackX = 0;
+                _atlasPackY += _atlasPackRowHeight;
+                _atlasPackRowHeight = 0;
+            }
         }
 
         if (_atlasPackY + height > _contentAtlas.height)
         {
-            int newW = Mathf.Max(_contentAtlas.width, width);
+            int newW = Mathf.Max(_contentAtlas.width, _atlasPackX + width);
             int newH = Mathf.Max(_contentAtlas.height + height, _contentAtlas.height * 2);
-            if (newW > MaxSparseAtlasSize || newH > MaxSparseAtlasSize)
+            newW = Mathf.Min(newW, maxDim);
+            newH = Mathf.Min(newH, maxDim);
+            if (newW > maxDim || newH > maxDim)
             {
                 Debug.LogWarning("[RevisedGrid] Sparse content atlas exceeded max size.");
                 return false;
             }
             GrowSparseAtlas(newW, newH);
         }
+
+        if (_atlasPackX + width > _contentAtlas.width || _atlasPackY + height > _contentAtlas.height)
+            return false;
 
         destX = _atlasPackX;
         destY = _atlasPackY;
@@ -306,10 +359,58 @@ public class RevisedGridController : MonoBehaviour
         return true;
     }
 
+    bool TryRepackContentAtlas()
+    {
+        if (_contentAtlas == null || _cellMeta.Count == 0)
+            return false;
+
+        _isRepackingAtlas = true;
+        try
+        {
+            var entries = new System.Collections.Generic.List<(int col, int row, CellMetadata meta)>();
+            foreach (var kv in _cellMeta)
+            {
+                if (kv.Value.SourcePixels == null)
+                    continue;
+
+                int col = kv.Key % columns;
+                int row = kv.Key / columns;
+                CellMetadata meta = kv.Value;
+                meta.AtlasX = 0;
+                meta.AtlasY = 0;
+                meta.BakeWidth = 0;
+                meta.BakeHeight = 0;
+                entries.Add((col, row, meta));
+            }
+
+            if (entries.Count == 0)
+                return false;
+
+            InitializeSparseAtlas();
+
+            foreach (var (col, row, meta) in entries)
+            {
+                _cellMeta[CellToIndex(col, row)] = meta;
+                if (!RebakeCell(col, row))
+                {
+                    Debug.LogWarning($"[RevisedGrid] Atlas repack failed at cell ({col},{row}).");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            _isRepackingAtlas = false;
+        }
+    }
+
     void GrowSparseAtlas(int newWidth, int newHeight)
     {
-        newWidth = Mathf.Min(newWidth, MaxSparseAtlasSize);
-        newHeight = Mathf.Min(newHeight, MaxSparseAtlasSize);
+        int maxDim = MaxAtlasDimension();
+        newWidth = Mathf.Min(newWidth, maxDim);
+        newHeight = Mathf.Min(newHeight, maxDim);
 
         var oldAtlas = _contentAtlas;
         int oldW = oldAtlas != null ? oldAtlas.width : 0;

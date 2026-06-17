@@ -11,7 +11,8 @@ public interface IForearmWidgetPlacement
 
     bool BeginCarryExternal(RectTransform widget, Transform indexTipWorld, bool destroyOnAbort = true);
     void TickCarryFollowFinger(Transform indexTipWorld);
-    void CommitPlace(Vector3 contactWorldPoint);
+    /// <returns>True when the widget was committed to the arm; false if placement was aborted.</returns>
+    bool CommitPlace(Vector3 contactWorldPoint);
     void DestroyCarriedItem();
     void ClearAll();
     bool TryBeginCarryFromSurface(Vector2 surfaceUV, Transform indexTipWorld);

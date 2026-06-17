@@ -215,17 +215,17 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         return Mathf.Max(0.25f, scale);
     }
 
-    public void CommitPlace(Vector3 contactWorldPoint)
+    public bool CommitPlace(Vector3 contactWorldPoint)
     {
-        if (_draggedItem == null || grid == null) return;
+        if (_draggedItem == null || grid == null) return false;
 
         Vector2 uv;
         if (interaction != null && interaction.IsActive)
             uv = interaction.TouchUV;
         else if (!TryGetUVNearWorldPoint(contactWorldPoint, out uv))
-            return;
+            return false;
 
-        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) return;
+        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) return false;
 
         grid.UVToCell(uv, out int col, out int row);
 
@@ -235,7 +235,7 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         if (!grid.TryBakeWidgetIntoCell(_draggedItem, col, row))
         {
             Debug.LogWarning($"[RevisedGridPlacement] Could not bake '{_draggedItem.name}' into cell ({col},{row}).");
-            return;
+            return false;
         }
 
         Destroy(_draggedItem.gameObject);
@@ -243,6 +243,7 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
         _activeIndexTip = null;
         grid?.ClearCarryPreviewSource();
         grid.ClearHighlight();
+        return true;
     }
 
     public void DestroyCarriedItem()
