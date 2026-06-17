@@ -11,13 +11,13 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/_Project/Scenes/experimentSelectScene.unity
     guid: 474ca4ee639f18e459566814f647543a
-  - enabled: 1
+  - enabled: 0
     path: Assets/_Project/Scenes/boundingBoxDemarcation.unity
     guid: 16c2dbc6a27a9e0478bc5b06c9e8b7ea
-  - enabled: 1
+  - enabled: 0
     path: Assets/_Project/Scenes/chooseColorWithColorwheel.unity
     guid: dbbd4f086143a614094ca01f95d1269e
-  - enabled: 1
+  - enabled: 0
     path: Assets/_Project/Scenes/placeRotateScaleInterfaces.unity
     guid: adab5566bdfe0443f8566f66948486a8
   - enabled: 1
