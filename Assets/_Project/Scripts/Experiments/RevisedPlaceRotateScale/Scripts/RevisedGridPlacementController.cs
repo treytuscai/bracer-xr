@@ -229,9 +229,6 @@ public class RevisedGridPlacementController : MonoBehaviour, IForearmWidgetPlace
 
         grid.UVToCell(uv, out int col, out int row);
 
-        if (grid.IsCellOccupied(col, row))
-            grid.ClearCell(col, row);
-
         // Baking reads UI images; the carry preview may have hidden the widget on the fingertip.
         _draggedItem.gameObject.SetActive(true);
 

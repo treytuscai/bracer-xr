@@ -738,9 +738,8 @@ public class RevisedGridController : MonoBehaviour
         var source = widget.GetComponent<RevisedGridCellSource>();
         if (source != null && source.sourcePixels != null && source.SourcePixelWidth > 0 && source.SourcePixelHeight > 0)
         {
-            StoreAndBake(col, row, source.sourcePixels, source.SourcePixelWidth, source.SourcePixelHeight,
+            return StoreAndBake(col, row, source.sourcePixels, source.SourcePixelWidth, source.SourcePixelHeight,
                 source.tint, source.scale, source.rotationDegrees);
-            return true;
         }
 
         if (!TryGetWidgetVisual(widget, out Sprite sprite, out Texture texture, out Color tint))
@@ -762,13 +761,14 @@ public class RevisedGridController : MonoBehaviour
             ? ReadSpritePixels(sprite, dstW, dstH)
             : ReadTexturePixels(texture, dstW, dstH);
 
-        StoreAndBake(col, row, pixels, dstW, dstH, tint, defaultPlacedScale, 0f);
-        return true;
+        return StoreAndBake(col, row, pixels, dstW, dstH, tint, defaultPlacedScale, 0f);
     }
 
-    void StoreAndBake(int col, int row, Color[] pixels, int width, int height, Color tint, float scale, float rotationDegrees)
+    bool StoreAndBake(int col, int row, Color[] pixels, int width, int height, Color tint, float scale, float rotationDegrees)
     {
         int idx = CellToIndex(col, row);
+        bool hadMeta = _cellMeta.TryGetValue(idx, out CellMetadata previousMeta);
+
         _cellMeta[idx] = new CellMetadata
         {
             SourcePixels = pixels,
@@ -778,10 +778,22 @@ public class RevisedGridController : MonoBehaviour
             Scale = scale,
             RotationDegrees = rotationDegrees
         };
-        RebakeCell(col, row);
+
+        if (!RebakeCell(col, row))
+        {
+            if (hadMeta)
+                _cellMeta[idx] = previousMeta;
+            else
+                _cellMeta.Remove(idx);
+
+            Debug.LogWarning($"[RevisedGrid] Bake failed for cell ({col},{row}); placement rolled back.");
+            return false;
+        }
+
         PushCellTransform(col, row);
         MarkCellOccupied(col, row);
         LastWidgetPlacement.RecordAtCell(col, row, scale, rotationDegrees);
+        return true;
     }
 
     void PushCellTransform(int col, int row)
@@ -815,14 +827,15 @@ public class RevisedGridController : MonoBehaviour
         _stateTex.Apply(false);
     }
 
-    void RebakeCell(int col, int row)
+    bool RebakeCell(int col, int row)
     {
         int idx = CellToIndex(col, row);
-        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta) || meta.SourcePixels == null) return;
+        if (!_cellMeta.TryGetValue(idx, out CellMetadata meta) || meta.SourcePixels == null)
+            return false;
 
         int tile = ComputeBakeTileSize(meta.Scale);
         if (!AllocateAtlasSlot(tile, tile, out int destX, out int destY))
-            return;
+            return false;
 
         meta.AtlasX = destX;
         meta.AtlasY = destY;
@@ -839,6 +852,7 @@ public class RevisedGridController : MonoBehaviour
         _contentAtlas.SetPixels(destX, destY, tile, tile, dest);
         _contentAtlas.Apply(false);
         PushAtlasRect(col, row);
+        return true;
     }
 
     Color HardenContentPixel(Color c)
