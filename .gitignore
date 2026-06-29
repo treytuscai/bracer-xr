@@ -108,3 +108,6 @@ InitTestScene*.unity*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Raw demo captures (source for docs/demo.gif; kept local, not committed)
+/demo*.mp4
