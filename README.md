@@ -119,6 +119,8 @@ Once the app is running on the headset:
 
 The surface updates continuously. Keep your hand on it while moving or rotating the arm. There is no need to pull away or recalibrate.
 
+> **Just want to see the reconstruction?** Leave `surfaceMaterial` unset on the `ForearmDepthSurface` component and the mesh renders as a translucent cyan debug surface, no material or textures to author. To project a UI onto it, assign a material whose shader exposes `_MainTex` and set `portraitTexture` / `landscapeTexture`.
+
 ---
 
 ## Example Experiments
