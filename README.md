@@ -10,8 +10,6 @@
 
 This is an on-body interaction system for extended reality: the forearm acts as the display surface and the opposite hand as the input, bringing phone-style direct touch to bare skin.
 
-_Built for the **Ink & Interface** research study, exploring how body artist principles carry over to authoring on-skin interfaces. This repository is the XR prototype behind it: the reconstructed forearm surface those interfaces build on._
-
 <p align="center">
   <img src="docs/demo.gif" alt="Demo: a touchable UI projected onto the reconstructed forearm surface in passthrough on Quest 3." width="640">
 </p>
@@ -125,7 +123,7 @@ The surface updates continuously. Keep your hand on it while moving or rotating 
 
 ## Example Experiments
 
-`master` is the surface system itself. The [`experiment-merge`](https://github.com/treytuscai/bracer-xr/tree/experiment-merge) branch holds example experiment apps from the Ink & Interface study, built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished — read it as a demo of what the surface supports, not as part of the system itself.
+`master` is the surface system itself. The [`experiments`](https://github.com/treytuscai/bracer-xr/tree/experiments) branch holds example experiment apps built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished — read it as a demo of what the surface supports, not as part of the system itself.
 
 ---
 
