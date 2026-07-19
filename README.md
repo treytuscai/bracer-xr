@@ -119,6 +119,8 @@ The surface updates continuously. Keep your hand on it while moving or rotating 
 
 > **Just want to see the reconstruction?** Leave `surfaceMaterial` unset on the `ForearmDepthSurface` component and the mesh renders as a translucent cyan debug surface, no material or textures to author. To project a UI onto it, assign a material whose shader exposes `_MainTex` and set `portraitTexture` / `landscapeTexture`.
 
+> **The on-arm UI is static art.** `portraitTexture` and `landscapeTexture` are fixed images stretched onto the display window; they do not adapt to arm size or shape, so a layout authored for one forearm may not line up on another. Treat `displayWidth` / `displayHeight` / `displayOffset` (and `homeTwistDeg`) as physical fits to the wearer, then author the textures to the window you set.
+
 ---
 
 ## Example Experiments
@@ -176,6 +178,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | `depthStepRatio` | 0.15 | Triangle discontinuity cut: drops a face whose cells differ in true depth by more than this fraction. Grazing-tolerant (fills steep surface, no holes) but cuts self-occluded folds (no webbing) |
 | `displayHeight` / `displayWidth` | 0.4 / 0.4 m | Physical size of the UV display window (equal = square pixels) |
 | `displayOffset` | 0.08 m | Center of the display window along the arm from the wrist |
+| `homeTwistDeg` | 67° | Home-pose wrist-roll offset that anchors the pronation scroll so the home pose lands on the palmar panel. Measured on the reference rig; may differ by rig or arm, so adjust it if the panels sit off. |
 | `orientationMode` | Auto | Auto swaps the portrait/landscape image with the arm's pitch; Portrait/Landscape lock to one |
 | `portraitTexture` | none | Image shown upright; drives the material's UI Texture |
 | `landscapeTexture` | none | Image shown sideways (author it already sideways) |
