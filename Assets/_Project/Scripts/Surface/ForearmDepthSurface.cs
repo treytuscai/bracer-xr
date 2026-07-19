@@ -133,6 +133,15 @@ public class ForearmDepthSurface : MonoBehaviour
     public Texture landscapeTexture;
 
     // ------------------------------------------------------------------
+    // PRONATION — the home anchor for the wrist-twist scroll offset.
+    // ------------------------------------------------------------------
+    [Header("Pronation")]
+    [Tooltip("Home-pose roll offset (deg): the wrist-vs-forearm bone roll at palm-to-camera, subtracted " +
+             "so home lands on the palmar panel. Defaults to ~67° measured on the reference rig; may " +
+             "differ by rig or arm, so adjust if the panels sit off.")]
+    [Range(0f, 180f)] public float homeTwistDeg = 67f;
+
+    // ------------------------------------------------------------------
     // PIPELINE DATA BUSES — shared NativeArrays flowing between stages each frame (SurfaceBuffer =
     // per-cell flags + world hit grid; MeshBuffer = vertex/UV/index arrays for upload).
     // ------------------------------------------------------------------
@@ -198,7 +207,7 @@ public class ForearmDepthSurface : MonoBehaviour
     /// </summary>
     void Awake()
     {
-        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, orientationMode, enablePalm);
+        _armFrame = new ArmFrame(bodySkeleton, centerEyeAnchor, orientationMode, enablePalm, homeTwistDeg);
         _handMask = new HandMask(handMesh, handSkeleton);
         _depthReadback = new DepthReadback(_handMask, handMarginTexels, occlusionMarginTexels, borrowDepthBand);
         _surfaceExtractor = new SurfaceExtractor(seedRadialDist, maxFloodDist, maxFromElbow, connectivityThreshold);

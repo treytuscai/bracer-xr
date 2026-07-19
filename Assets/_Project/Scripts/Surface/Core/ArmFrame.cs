@@ -35,12 +35,6 @@ namespace Surface.Core
         private const int ElbowBoneIndex = 11;
         private const int PalmCapBoneIndex = 30;
 
-        // The signed wrist-vs-elbow roll (deg) read at the home pose (palm to camera). It is nonzero
-        // because the IOBT rig defines the wrist and forearm bone frames with a fixed roll offset about
-        // the arm axis; subtracting it makes home read PI (the palmar panel). A rig property, so it is
-        // stable run-to-run and user-to-user, not a per-session calibration.
-        private const float HomeTwistDeg = 67f;
-
         // ------------------------------------------------------------------
         // REFERENCES
         // _bodySkeleton and _centerEyeAnchor are set at construction.
@@ -57,6 +51,9 @@ namespace Surface.Core
         public DisplayOrientation OrientationMode;
         // When false, HasPalm stays false and the surface is forearm-only.
         public bool EnablePalm;
+        // The wrist-vs-forearm bone roll (deg) at the home pose; subtracted in step 4 so home reads PI
+        // (palmar panel). Defaults to the reference-rig value; may vary by rig or arm.
+        public float HomeTwistDeg;
 
         // ------------------------------------------------------------------
         // TEMPORAL SMOOTHING STATE (survives across frames, damps bone-tracking jitter)
@@ -90,12 +87,13 @@ namespace Surface.Core
         /// <summary>
         /// Stores references for later use. Camera is resolved lazily on the first TryUpdate call.
         /// </summary>
-        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, DisplayOrientation orientationMode, bool enablePalm)
+        public ArmFrame(OVRSkeleton bodySkeleton, Transform centerEyeAnchor, DisplayOrientation orientationMode, bool enablePalm, float homeTwistDeg)
         {
             _bodySkeleton    = bodySkeleton;
             _centerEyeAnchor = centerEyeAnchor;
             OrientationMode = orientationMode;
             EnablePalm = enablePalm;
+            HomeTwistDeg = homeTwistDeg;
         }
 
         /// <summary>
