@@ -124,6 +124,10 @@ public class ForearmDepthSurface : MonoBehaviour
     [Min(0.01f)] public float displayWidth = 0.4f;
     [Tooltip("Center of the display window along the arm axis from the wrist (m).")]
     public float displayOffset = 0.08f;
+    [Tooltip("Home-pose roll offset (deg): the wrist-vs-forearm bone roll at palm-to-camera, subtracted " +
+             "so home lands on the palmar panel. Defaults to ~67° measured on the reference rig; may " +
+             "differ by rig or arm, so adjust if the panels sit off.")]
+    [Range(0f, 180f)] public float homeTwistDeg = 67f;
     [Tooltip("Auto = swap portrait/landscape image with the arm's pitch. Portrait/Landscape = lock to " +
              "one image, no swap.")]
     public DisplayOrientation orientationMode = DisplayOrientation.Auto;
@@ -131,15 +135,6 @@ public class ForearmDepthSurface : MonoBehaviour
     public Texture portraitTexture;
     [Tooltip("Image shown when the arm is horizontal (landscape). Author it sideways: orientation swaps the texture.")]
     public Texture landscapeTexture;
-
-    // ------------------------------------------------------------------
-    // PRONATION — the home anchor for the wrist-twist scroll offset.
-    // ------------------------------------------------------------------
-    [Header("Pronation")]
-    [Tooltip("Home-pose roll offset (deg): the wrist-vs-forearm bone roll at palm-to-camera, subtracted " +
-             "so home lands on the palmar panel. Defaults to ~67° measured on the reference rig; may " +
-             "differ by rig or arm, so adjust if the panels sit off.")]
-    [Range(0f, 180f)] public float homeTwistDeg = 67f;
 
     // ------------------------------------------------------------------
     // PIPELINE DATA BUSES — shared NativeArrays flowing between stages each frame (SurfaceBuffer =
