@@ -18,7 +18,7 @@ This is an on-body interaction system for extended reality: the forearm acts as 
 
 ## How It Works
 
-The forearm surface is reconstructed continuously from the Quest 3's environment depth, which the headset computes by stereo-matching its passthrough cameras. The pipeline spans the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled asynchronously, and the main thread uploads each finished mesh only once its jobs complete.
+The forearm surface is reconstructed each depth frame from the Quest 3's environment depth, which the headset computes by stereo-matching its passthrough cameras. The pipeline spans the GPU and Burst-compiled worker threads and is **frame-pipelined**: reconstruction jobs are scheduled asynchronously, and the main thread uploads each finished mesh only once its jobs complete.
 
 **In brief:** for each new depth frame, take the headset's depth image, discard everything that is not forearm, turn what remains into a mesh, and project a touchable UI onto it.
 
@@ -33,8 +33,8 @@ The forearm surface is reconstructed continuously from the Quest 3's environment
 <summary><b>How each stage works</b></summary>
 
 1. Resolve the wrist and elbow bones from the body skeleton to construct the arm coordinate frame: axis, lateral, and normal vectors, plus the pronation angle and a portrait/landscape orientation.
-2. Render the interacting hand as a full-frame GPU silhouette and grow it into a two-zone mask with a separable dilation — an inner no-trust cushion and a bleed-reconstruct ring. Then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the hand silhouette is cut out of the depth history, the cushion around it is rebuilt at arm depth borrowed from just outside the mask (its own readings are bleed or hand, never trusted), and the stereo "bleed" the finger lifts in the ring beyond that is reconstructed from the same clean arm — so the canvas continues right up to the hand, and the fixes enter history and stay temporally stable.
-3. Read back the stabilized forearm crop from the GPU asynchronously — at the crop's native depth-texel resolution and a single float per texel, so only the arm region ever crosses the bus. A Burst job then unprojects each depth texel into a world-space hit grid on the CPU, using the depth frame's own capture pose; all hand handling already happened during stabilization, so the carved finger arrives invalid and drops out as a hole.
+2. Render the interacting hand as a full-frame GPU silhouette and grow it into a two-zone mask with a separable dilation: an inner no-trust cushion and a bleed-reconstruct ring. Then stabilize the depth with a 3-frame, motion-reprojected per-texel median (the median rejects stereo "flying pixels" so the arm boundary stops flickering; reprojecting the history into the current head pose keeps it stable under head motion). During stabilization the hand silhouette is cut out of the depth history, the cushion around it is rebuilt at arm depth borrowed from just outside the mask (its own readings are bleed or hand, never trusted), and the stereo "bleed" the finger lifts in the ring beyond that is reconstructed from the same clean arm, so the canvas continues right up to the hand, and the fixes enter history and stay temporally stable.
+3. Read back the stabilized forearm crop from the GPU asynchronously, at the crop's native depth-texel resolution and a single float per texel, so only the arm region ever crosses the bus. A Burst job then unprojects each depth texel into a world-space hit grid on the CPU, using the depth frame's own capture pose; all hand handling already happened during stabilization, so the carved finger arrives invalid and drops out as a hole.
 4. A seed region plus BFS flood isolates the patch from background geometry, gated to two cylinders: the forearm and the palm (wrist to the middle-finger knuckle, so the hand is captured when waved or turned but the fingers are excluded).
 5. A parallel Burst boundary smoother de-steps the extracted edge cells (the temporal median in step 2 is the depth denoise).
 6. Generate the mesh: vertices and triangles are emitted in parallel through atomic counters, normals are computed in parallel across the grid, and UVs follow a linear, camera-fixed projection (with a pronation scroll offset).
@@ -53,9 +53,9 @@ UV is a linear projection (not cylindrical). The camera-fixed lateral axis keeps
 
 Everything runs on the headset and the pipeline is built to disappear into the frame budget.
 
-- **Holds the Quest 3's 72 fps** with the full pipeline running (~4 ms GPU per frame against the ~13.9 ms budget).
-- **Reconstruction is gated to the depth sensor's cadence** (~25 Hz). A bit-exact check on the depth reprojection matrix skips redundant frames, so the same depth data is never reconstructed twice; rendering and touch stay decoupled at the headset's full refresh rate.
-- **No main-thread stalls.** The CPU stages are Burst-compiled jobs spread across worker threads and frame-pipelined — the readback, segmentation, and meshing for one depth frame are harvested a frame later, so the main thread never blocks on them.
+- **Holds the Quest 3's 72 fps** with the full pipeline running (~4 ms of app GPU time per frame against the ~13.9 ms budget).
+- **Reconstruction is gated to the depth sensor's cadence** (~25 Hz). A bit-exact check on the depth reprojection matrix skips redundant frames, so the same depth data is never reconstructed twice; rendering and touch stay decoupled at the headset's refresh rate.
+- **No main-thread stalls.** The CPU stages are Burst-compiled jobs spread across worker threads and frame-pipelined: the readback, segmentation, and meshing for one depth frame are harvested a frame later, so the main thread never blocks on them.
 - **Only the arm crosses the bus.** The async GPU readback is cropped to the forearm at the depth texture's native resolution (one float per texel) so the GPU->CPU transfer scales with the arm, not the screen.
 
 > Figures are measured on-device from a clean boot and vary with build, scene, and device state.
@@ -69,9 +69,9 @@ Bracer XR is a research prototype with a deliberately narrow scope:
 - **Quest 3 only.** It depends on Meta's environment depth API and Movement SDK body tracking; it does not run on other headsets.
 - **The depth source is low-resolution.** Quest's environment depth is a single ~320×320 image spread across the entire field of view, so the forearm occupies only a fraction of it. The surface captures the arm and a finger fine, but thin gaps and small, fine-grained features are below what it can resolve.
 - **A hovering finger lifts the depth around itself.** Quest's stereo depth pulls arm texels toward a nearby finger (a mixed-pixel "bleed"), which would raise the reconstructed surface at the contact point. The pipeline reconstructs that ring from the clean arm just outside it, but a slight residual raise remains at the resolution limit.
-- **The arm patch is found from depth, not trusted from the skeleton.** Wrist and elbow bone tracking is only a rough starting point and can be inaccurate, so the patch is seeded from a tight, confident region near the bone axis and grown by a BFS flood through depth-connected cells. The flood is walled to forearm and palm cylinders because, left unbounded, BFS can leak across depth-continuous neighbours into surfaces that are not the arm.
+- **The arm patch is found from depth, not trusted from the skeleton.** Wrist and elbow bone tracking is only a rough starting point and can be inaccurate, so the patch is seeded from a tight, confident region near the bone axis and grown by a BFS flood through depth-connected cells. The flood is walled to forearm and palm cylinders because, left unbounded, BFS can leak across depth-continuous neighbors into surfaces that are not the arm.
 - **One forearm, one interacting hand.** The system reconstructs a single arm and tracks a single touching hand at a time.
-- **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole exactly where its silhouette sits; the surface around it is rebuilt from neighbouring arm, so the canvas reaches the hand. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
+- **The touching hand is masked out, not reconstructed under.** To keep it from corrupting the mesh, the hand is cut from the depth, leaving a hole exactly where its silhouette sits; the surface around it is rebuilt from neighboring arm, so the canvas reaches the hand. Touch is detected from hand tracking rather than by sensing the fingertip in the depth map, so this does not break interaction.
 
 ### Known issues
 
@@ -125,7 +125,7 @@ The surface updates continuously. Keep your hand on it while moving or rotating 
 
 ## Example Experiments
 
-`master` is the surface system itself. The [`experiments`](https://github.com/treytuscai/bracer-xr/tree/experiments) branch holds example experiment apps built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished — read it as a demo of what the surface supports, not as part of the system itself.
+`master` is the surface system itself. The [`experiments`](https://github.com/treytuscai/bracer-xr/tree/experiments) branch holds example experiment apps built on top of the surface together with [Tyler (@tydevlieger)](https://github.com/tydevlieger). That branch is experimental: quick study code, unoptimized and unpolished. Read it as a demo of what the surface supports, not as part of the system itself.
 
 ---
 
@@ -167,7 +167,7 @@ Primary tuning surface, on the `ForearmDepthSurface` component:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `handMarginTexels` | 8 | Depth texels the hand silhouette is grown by, covering the stereo bleed/lift around the hand. The finger inside it is carved from depth history; the bleed ring is reconstructed from clean arm. Raise until the lift clears. |
-| `occlusionMarginTexels` | 1 | Cushion (depth texels) around the hand where measured depth is never trusted — the strongest bleed plus the real hand peeking past the rendered mask. Rebuilt at borrowed arm depth, so the canvas reaches the hand silhouette instead of a wider hole. Stays below `handMarginTexels` |
+| `occlusionMarginTexels` | 1 | Cushion (depth texels) around the hand where measured depth is never trusted: the strongest bleed plus the real hand peeking past the rendered mask. Rebuilt at borrowed arm depth, so the canvas reaches the hand silhouette instead of a wider hole. Stays below `handMarginTexels` |
 | `borrowDepthBand` | 0.03 m | When reconstructing the bleed ring, the depth window behind the nearest borrowed sample that still counts as the same surface (rejects a farther background, e.g. a table behind the arm) |
 | `enablePalm` | true | Include the palm (wrist -> middle-finger MCP) in the reconstruction; off = forearm only |
 | `seedRadialDist` | 0.05 m | Inner radius for confident forearm seed cells |
@@ -195,6 +195,6 @@ Touch tuning, on the `ForearmInteraction` component:
 
 ## License
 
-The original work in this repository (primarily the code under `Assets/_Project/`) is licensed under the [Apache License 2.0](LICENSE) — © 2026 Trey Tuscai. You are free to use, modify, and build upon it, provided you retain the copyright and attribution notices (see [NOTICE](NOTICE)).
+The original work in this repository (primarily the code under `Assets/_Project/`) is licensed under the [Apache License 2.0](LICENSE), © 2026 Trey Tuscai. You are free to use, modify, and build upon it, provided you retain the copyright and attribution notices (see [NOTICE](NOTICE)).
 
 Third-party SDKs vendored elsewhere under `Assets/` and `Packages/` (Meta XR SDK, Meta Movement SDK, etc.) are governed by their own license terms, not the Apache License above.
